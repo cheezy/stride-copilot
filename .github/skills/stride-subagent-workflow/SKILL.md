@@ -58,7 +58,7 @@ Activate this skill **after claiming a task** (via `stride-claiming-tasks`) and 
 
 Use this matrix to determine which custom agents to invoke based on task attributes:
 
-| Task Attributes | task-decomposer | task-explorer | Plan | task-reviewer |
+| Task Attributes | task-decomposer | task-explorer | Plan (manual) | task-reviewer |
 |---|---|---|---|---|
 | small, 0-1 key_files | Skip | Skip | Skip | Skip |
 | small, 2+ key_files | Skip | Run | Skip | Run |
@@ -260,6 +260,10 @@ CUSTOM AGENTS (defined in .github/agents/):
   task-explorer.agent.md    - Reads key_files, finds tests, searches patterns
   task-reviewer.agent.md    - Reviews diff against acceptance criteria & pitfalls
   hook-diagnostician.agent.md - Diagnoses hook failures with prioritized fix plans
+
+PLANNING (no agent — done manually):
+  Create implementation plan from explorer output + task metadata
+  Used when: medium+ complexity OR 3+ key_files OR 3+ acceptance criteria lines
 
 INVOKE DECOMPOSER WHEN:
   Task type is goal, OR large complexity without children, OR 25+ hour estimate
