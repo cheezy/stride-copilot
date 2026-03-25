@@ -6,27 +6,27 @@ This is the GitHub Copilot version of the [Stride plugin](https://github.com/che
 
 ## Installation
 
-Clone or copy this repository's `.github/` directory into your project:
+Install via the Copilot CLI plugin command:
 
 ```bash
-# Clone the repo
-git clone https://github.com/cheezy/stride-copilot.git
-
-# Copy the .github directory into your project
-cp -r stride-copilot/.github/ your-project/.github/
+copilot plugin install cheezy/stride-copilot
 ```
 
-Alternatively, copy the `skills/` and `agents/` directories individually:
+### Plugin Management
 
 ```bash
-# Skills only
-cp -r stride-copilot/.github/skills/ your-project/.github/skills/
-
-# Agents only
-cp -r stride-copilot/.github/agents/ your-project/.github/agents/
+copilot plugin list                        # View installed plugins
+copilot plugin update stride-copilot       # Update to latest version
+copilot plugin uninstall stride-copilot    # Remove plugin
 ```
 
-GitHub Copilot automatically discovers skills in `.github/skills/` and custom agents in `.github/agents/`.
+### Migrating from v1.x (copy-based installation)
+
+If you previously installed by copying the `.github/` directory into your project:
+
+1. Remove the copied `.github/skills/stride-*` and `.github/agents/` files from your project
+2. Install via the plugin command above
+3. The plugin system handles discovery automatically — no manual file copying needed
 
 ## Mandatory Skill Chain
 
@@ -140,13 +140,11 @@ mix credo --strict
 
 ## Updating
 
-To get the latest skills and agents, pull the latest version:
+Update to the latest version:
 
 ```bash
-cd stride-copilot && git pull origin main
+copilot plugin update stride-copilot
 ```
-
-Then re-copy the `.github/` directory into your project.
 
 ## License
 

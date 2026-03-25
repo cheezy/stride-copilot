@@ -1,0 +1,15 @@
+{
+  "name": "stride-copilot",
+  "description": "Task lifecycle skills for Stride kanban: claiming, completing, creating tasks and goals",
+  "version": "2.0.0",
+  "author": {
+    "name": "Jeff Morgan",
+    "email": "cheezy@letstango.ca"
+  },
+  "homepage": "https://github.com/cheezy/stride-copilot",
+  "repository": "https://github.com/cheezy/stride-copilot",
+  "license": "MIT",
+  "keywords": ["stride", "kanban", "tasks", "ai-agents", "workflow"],
+  "agents": "agents/",
+  "skills": ["skills/"]
+}
