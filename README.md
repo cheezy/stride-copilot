@@ -138,6 +138,66 @@ mix test
 mix credo --strict
 ```
 
+## Automatic Hook Execution
+
+The plugin includes automatic hook execution via `hooks.json`. When installed, Stride API calls made through the Copilot CLI are intercepted and the corresponding `.stride.md` hook commands run automatically.
+
+### How It Works
+
+| Stride API Call | Hook Triggered | Timing |
+|----------------|----------------|--------|
+| `POST /api/tasks/claim` | `before_doing` | After claim succeeds (PostToolUse) |
+| `PATCH /api/tasks/:id/complete` | `after_doing` | Before completion runs (PreToolUse, blocks on failure) |
+| `PATCH /api/tasks/:id/complete` | `before_review` | After completion succeeds (PostToolUse) |
+| `PATCH /api/tasks/:id/mark_reviewed` | `after_review` | After review succeeds (PostToolUse) |
+
+### .stride.md Format
+
+Hook commands are defined in `.stride.md` using `## heading` + ` ```bash ` code blocks:
+
+```markdown
+## before_doing
+```bash
+git pull origin main
+mix deps.get
+```
+
+## after_doing
+```bash
+mix test
+mix credo --strict
+```
+```
+
+Each command runs one at a time. If any command fails, execution stops and the hook returns exit code 2 (blocking the API call for PreToolUse hooks).
+
+### Platform Support
+
+- **macOS / Linux**: `stride-hook.sh` runs directly via bash
+- **Windows (Git Bash / WSL)**: `stride-hook.sh` runs directly (bash is available)
+- **Windows (native PowerShell)**: `stride-hook.sh` detects the platform and delegates to `stride-hook.ps1` automatically
+
+No platform-specific configuration needed — the single `hooks.json` entry handles all platforms.
+
+### Windows PowerShell Notes
+
+- The PowerShell script uses `ConvertFrom-Json` (built-in, no jq needed)
+- Execution policy: The delegation uses `-ExecutionPolicy Bypass` to avoid policy blocks
+- Both PowerShell 5.1 (ships with Windows) and PowerShell 7+ (pwsh) are supported
+
+### Environment Variable Caching
+
+After a successful task claim, hook scripts extract task metadata (TASK_ID, TASK_IDENTIFIER, TASK_TITLE, etc.) from the API response and cache them to `.stride-env-cache`. Subsequent hooks can reference these variables in `.stride.md` commands (e.g., `$TASK_IDENTIFIER`). The cache is cleaned up after the `after_review` hook.
+
+Add `.stride-env-cache` to your `.gitignore`.
+
+### Troubleshooting
+
+- **Hooks not firing**: Verify the plugin is installed (`copilot plugin list`) and `hooks.json` is referenced in `plugin.json`
+- **Permission errors on Windows**: Ensure PowerShell execution policy allows scripts, or verify the `-ExecutionPolicy Bypass` flag is working
+- **Hook failures blocking API calls**: PreToolUse hooks (after_doing) block on failure by design. Fix the underlying issue (test failures, lint errors) and retry
+- **Missing .stride.md**: Hooks exit cleanly (code 0) when `.stride.md` is not present — no action needed
+
 ## Updating
 
 Update to the latest version:
