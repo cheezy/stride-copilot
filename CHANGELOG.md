@@ -26,7 +26,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- **Installation method** — Now installed via `copilot plugin install cheezy/stride-copilot` instead of copying the `.github/` directory. Supports `copilot plugin update` and `copilot plugin uninstall`.
+- **Installation method** — Now installed via `copilot plugin install https://github.com/cheezy/stride-copilot` instead of copying the `.github/` directory. Supports `copilot plugin update` and `copilot plugin uninstall`.
 - **README.md** — Updated with new installation instructions, plugin management commands, and migration guide for v1.x users.
 
 ### Added
@@ -43,7 +43,7 @@ All notable changes to this project will be documented in this file.
 
 To upgrade from v1.x:
 1. Remove copied `.github/skills/stride-*` and `.github/agents/` files from your project
-2. Run `copilot plugin install cheezy/stride-copilot`
+2. Run `copilot plugin install https://github.com/cheezy/stride-copilot`
 
 ## [1.0.0] - 2026-03-24
 

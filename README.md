@@ -9,7 +9,7 @@ This is the GitHub Copilot version of the [Stride plugin](https://github.com/che
 Install via the Copilot CLI plugin command:
 
 ```bash
-copilot plugin install cheezy/stride-copilot
+copilot plugin install https://github.com/cheezy/stride-copilot
 ```
 
 ### Plugin Management
