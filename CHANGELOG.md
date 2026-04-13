@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-04-13
+
+### Added
+
+- **`stride-workflow` skill** — Single orchestrator for the complete Stride task lifecycle adapted for GitHub Copilot. Walks through 9 steps: prerequisites, task discovery, claiming with manual hooks, codebase exploration via key_files, implementation, self-review against acceptance criteria, manual hook execution (after_doing + before_review), completion API call, and auto-loop for needs_review=false. No subagent references — all exploration and review is manual.
+
+### Changed
+
+- **`stride-claiming-tasks`** — Rewrote the `AUTOMATION NOTICE` section from speed-focused ("work continuously without asking") to process-focused ("the workflow IS the automation — every step exists because skipping it caused failures"). Added "Recommended: Use the Workflow Orchestrator" section pointing to stride-workflow. Renamed "MANDATORY: Next Skill After Claiming" to standalone mode. Removed "Custom Agent-Guided Implementation" section (absorbed by orchestrator).
+- **`stride-completing-tasks`** — Rewrote the `AUTOMATION NOTICE` section with identical process-over-speed reframing. Added "Arriving from stride-workflow" section. Renamed "MANDATORY: Previous Skill Before Completing" to standalone mode with stride-workflow as recommended path.
+- **`README.md`** — Added stride-workflow to skills list and workflow order diagram as the recommended entry point.
+
 ## [2.1.0] - 2026-03-25
 
 ### Changed

@@ -34,7 +34,13 @@ Every Stride skill is **MANDATORY** — not optional. Each skill contains requir
 
 ### Workflow Order
 
-When working on tasks, skills MUST be activated in this order:
+**Recommended:** Use the single orchestrator skill for the complete lifecycle:
+
+```
+stride-workflow                  ← Activate ONCE — handles claim → explore → implement → review → complete
+```
+
+**Standalone mode** (when you need individual skills):
 
 ```
 stride-claiming-tasks            ← BEFORE calling GET /api/tasks/next or POST /api/tasks/claim
@@ -67,6 +73,10 @@ stride-creating-goals            ← BEFORE calling POST /api/tasks/batch (goals
 | Skip `stride-enriching-tasks` | Sparse task specs → implementing agent wastes 3+ hours on unfocused exploration |
 
 ## Skills
+
+### stride-workflow
+
+**RECOMMENDED** entry point for all task work. Single orchestrator that walks through the complete lifecycle: prerequisites, claiming, codebase exploration, implementation, self-review, hooks, and completion. Eliminates the need to remember which skills to activate at which moments. Activate once and follow through.
 
 ### stride-claiming-tasks
 

@@ -27,15 +27,16 @@ This skill enforces the proper completion workflow: execute BOTH `after_doing` A
 
 ## ⚡ AUTOMATION NOTICE ⚡
 
-**This is a FULLY AUTOMATED workflow. Do NOT prompt the user between steps.**
+**The workflow IS the automation. Every step exists because skipping it caused failures.**
 
-- After completing hooks → AUTOMATICALLY call complete endpoint
-- If needs_review=false → AUTOMATICALLY activate stride-claiming-tasks to claim next task
-- The loop continues: claim → implement → complete → claim → implement → complete
+The agent should work continuously through the full workflow: explore → implement → review → complete. Do not prompt the user between steps — but do not skip steps either. Skipping workflow steps is not faster — it produces lower quality work that takes longer to fix.
 
-**The agent should work continuously without asking "Should I claim next?" or "Continue working?"**
+- Before completing → verify you reviewed your changes against acceptance criteria
+- After hooks succeed → call the complete endpoint with all required fields
+- If needs_review=false → activate stride-claiming-tasks and repeat the full workflow
+- If needs_review=true → STOP and wait for human approval
 
-**ONLY STOP when needs_review=true (human approval required)**
+**Following every step IS the fast path. The loop is: claim → explore → implement → review → complete → claim. Every phase is mandatory.**
 
 ## API Authorization
 
@@ -583,14 +584,25 @@ The API response may include a `skills_update_required` field when your skills a
 1. Pull the latest stride-copilot repository: `cd stride-copilot && git pull origin main`
 2. Retry your original action
 
-## MANDATORY: Previous Skill Before Completing
+## Arriving from stride-workflow
 
-You should have already activated these skills before reaching this point:
+If you are following the `stride-workflow` orchestrator, you arrive here at **Step 6-7** with all prerequisites already satisfied:
+- Task was claimed with proper before_doing hook (Step 2)
+- Codebase was explored and patterns identified (Step 3)
+- Implementation is complete (Step 4)
+- Self-review was performed against acceptance criteria (Step 5)
 
-1. **`stride-claiming-tasks`** — To claim the task with proper before_doing hook execution
-2. **`stride-subagent-workflow`** — To explore, plan, and review based on the decision matrix
+**You can proceed directly to hook execution and completion.** The orchestrator has already guided you through all prior steps.
 
-If you skipped any of these, the after_doing hook is likely to fail. Go back and verify.
+## Previous Skill Before Completing (Standalone Mode)
+
+If you are using this skill standalone (not via the orchestrator), you should have already activated:
+
+1. **`stride-workflow`** (recommended) — The orchestrator handles the full lifecycle. If you used it, you've already completed all prior steps.
+2. **`stride-claiming-tasks`** — To claim the task with proper before_doing hook execution
+3. **`stride-subagent-workflow`** — To explore, plan, and review based on the decision matrix
+
+If you skipped prior workflow steps, the after_doing hook is likely to fail. Go back and verify.
 
 ---
 **References:** For the full field reference, see `api_schema` in the onboarding response (`GET /api/agent/onboarding`). For endpoint details, see the [API Reference](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/api/README.md). For hook failure diagnosis, see the `hook-diagnostician` custom agent (`.github/agents/hook-diagnostician.agent.md`).
