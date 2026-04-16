@@ -205,6 +205,18 @@ Call `PATCH /api/tasks/:id/complete` with ALL required fields:
     "output": "<captured from Step 6>",
     "duration_ms": <captured from Step 6>
   },
+  "explorer_result": {
+    "dispatched": true,
+    "summary": "Explored the 3 key_files and identified the existing pattern to mirror",
+    "duration_ms": 12000
+  },
+  "reviewer_result": {
+    "dispatched": true,
+    "summary": "Reviewed the diff against all acceptance criteria and pitfalls",
+    "duration_ms": 8000,
+    "acceptance_criteria_checked": 5,
+    "issues_found": 0
+  },
   "workflow_steps": [
     {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
     {"name": "planner",        "dispatched": true,  "duration_ms": 8200},
@@ -227,6 +239,8 @@ Call `PATCH /api/tasks/:id/complete` with ALL required fields:
 | `actual_files_changed` | string | Comma-separated paths (NOT an array) |
 | `after_doing_result` | object | `{exit_code, output, duration_ms}` |
 | `before_review_result` | object | `{exit_code, output, duration_ms}` |
+| `explorer_result` | object | `task-explorer` custom agent dispatch result or skip-form — see `stride-completing-tasks` for full shape and skip-reason enum |
+| `reviewer_result` | object | `task-reviewer` custom agent dispatch result or skip-form — see `stride-completing-tasks` for full shape and skip-reason enum |
 | `workflow_steps` | array | Six-entry telemetry array — see **Workflow Telemetry** section below |
 
 ---
@@ -315,6 +329,21 @@ A small task with 0-1 key_files that legitimately skipped exploration, planning,
 - Record entries in the order the steps occurred in the workflow (the order listed in the vocabulary table above).
 - When `dispatched: false`, the `reason` must describe **why** the step was skipped (e.g., decision matrix rule, task metadata, platform constraint) — not merely restate that it was skipped.
 - A missing `workflow_steps` array, or one with fewer than six entries, indicates an incomplete telemetry record.
+
+---
+
+## Explorer and Reviewer Result Rollout
+
+Every `/complete` payload **must** include `explorer_result` and `reviewer_result` as top-level objects. Both are pre-validated by `Kanban.Tasks.CompletionValidation` on the server. The full shape (dispatched-custom-agent vs. self-reported skip), the 40-character non-whitespace summary rule, and the five-value skip-reason enum live in the `stride-completing-tasks` skill — this orchestrator does not duplicate them.
+
+The server is rolling out hard enforcement behind a feature flag `:strict_completion_validation`:
+
+| Phase | Server behavior | Agent impact |
+|---|---|---|
+| **Grace (current)** | Missing or invalid results log a structured warning and the request succeeds | Emit the fields correctly now; the warning volume is a preview of the strict-mode rejection volume |
+| **Strict (after all 5 plugins release)** | Missing or invalid results return `422` with a `failures` list | Any agent not emitting valid fields is locked out of completion |
+
+**Why this matters for the orchestrator:** Steps 3 (explorer dispatch) and 5 (reviewer dispatch) already capture the durations and summaries needed for these fields. Persist those into `explorer_result` and `reviewer_result` in the Step 7 payload. When the decision matrix skips a step — or when you self-explore/self-review — submit the skip form with a reason from the enum and a substantive summary explaining what you did instead. See `stride-completing-tasks` for the exact shape, rejection examples, and minimum-length rule.
 
 ---
 
