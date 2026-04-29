@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.6.0] - 2026-04-29
+
+### Changed
+
+- **All 6 sub-skill `description:` fields** (`stride-claiming-tasks`, `stride-completing-tasks`, `stride-creating-tasks`, `stride-creating-goals`, `stride-enriching-tasks`, `stride-subagent-workflow`) — Reframed as `INTERNAL — invoked only by stride:stride-workflow. Do NOT invoke from a user prompt.` Removed user-intent verbs (`claim a task`, `complete a task`, etc.) so Copilot's auto-activation matcher no longer routes user prompts to the sub-skills. Wording is byte-identical to the equivalent stride 1.10.0 (commit 5c30036) descriptions for cross-plugin consistency.
+- **`stride-workflow` `description:`** — Amplified to enumerate the explicit user-intent phrases that should match the orchestrator: "claim a task", "work on the next stride task", "complete a stride task", "enrich a stride task", "decompose a goal", "create a goal or stride tasks". The phrase list is load-bearing for Copilot's matcher and should not be diluted.
+
+### Added
+
+- **`## STOP — orchestrator check` preamble** — Inserted as the first H2 of every sub-skill body (6 files). The 5-line block instructs an agent that arrived at a sub-skill directly to back out and invoke `stride:stride-workflow` instead. Wording is byte-identical to stride 1.10.0 so cross-plugin grep tooling stays consistent.
+- **`docs/HOOK_RESEARCH.md`** — Captures the research that decided whether stride 1.10.0's PreToolUse(Skill) gate ports to Copilot CLI. Concludes **PATH B: gate is NOT portable** with three independent reasons: Copilot CLI has no skill-activation hook event; the documented Copilot CLI tool-name vocabulary contains no `Skill` tool name (so a `matcher: "Skill"` entry has no event to bind to); Copilot CLI signals deny via stdout `permissionDecision` JSON rather than Claude Code's exit-2 convention.
+
+### Platform constraint
+
+The Layer-1 enforcement (the runtime PreToolUse(Skill) gate that stride 1.10.0 ships for Claude Code) is **not** available on Copilot CLI today. This release ships Layers 2 (description reframing) and 3 (STOP preamble) only. Both layers are prose-based and rely on Copilot's matcher and the agent's own attention to the STOP block in the skill body. If Copilot CLI later exposes a skill-activation event or a `Skill` tool name in its hook payloads, W295 and W296 (currently closed not-applicable) should be reopened to port the gate; the marker contract documented in stride 1.10.0 is intentionally identical so cross-plugin tooling can be shared without further design.
+
+### Source
+
+Motivated by the three-layer defense designed in `docs/plans/stride-plugin-feedback.md` (kanban repo) and ported from stride 1.10.0 (commit 5c30036).
+
 ## [2.5.0] - 2026-04-16
 
 ### Added
