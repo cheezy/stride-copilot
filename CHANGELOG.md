@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.9.0] - 2026-05-20
+
+### Added
+
+- **`hooks/stride-hook.sh`** — Added `capture_changed_files()` per the G148/W719 contract: emits a JSON array of `{path, diff}` entries for every file changed between `$TASK_BASE_REF` and `HEAD`, truncates diffs over 500 lines with the marker `[diff truncated at 500 lines]`, and emits `[binary file — no diff captured]` for files git reports as binary in `--numstat`. Falls back to `HEAD~1` when the base ref is empty or unresolvable; returns `[]` for any degraded path (jq missing, git missing, not in a repo, no commits to diff). The function is defined above the early-exit guards so the test suite can `source` the script to call it in isolation.
+- **`hooks/stride-hook.sh`** — Added `TASK_BASE_REF` (captured via `git rev-parse HEAD` at `before_doing` time) to the `.stride-env-cache` writer so `capture_changed_files` has an anchor when `after_doing` fires.
+- **`hooks/stride-hook.sh`** — Added `finalize_after_doing()` helper and wired it to all three `after_doing` exit points (no-commands branch, all-comments-filtered branch, and post-command-loop). The helper writes the JSON array to `$CLAUDE_PROJECT_DIR/.stride-changed-files.json`.
+- **`hooks/stride-hook.sh`** — Added stale-snapshot cleanup on `before_doing` (`rm -f .stride-changed-files.json`) and lifecycle cleanup on `after_review` (removes both `.stride-env-cache` and `.stride-changed-files.json`).
+- **`hooks/test-stride-hook.sh`** — Added Test Group 7 (22 cases, 7a–7n) covering truncation thresholds (7a 500-line preserved, 7b 750-line truncated with marker as last line, 7c empty stays empty), binary detection (7d numstat `- -` row, 7e text row not flagged, 7f missing file not flagged), real-git integration against a temp repo with text + binary + deleted entries (7g), non-repo fallback (7h), empty-base fallback to `HEAD~1` (7i), end-to-end `after_doing` snapshot write (7j), all-commented `after_doing` path (7k), legacy-bypass guarantee — `before_review` preserves a pre-seeded stale snapshot (7l), empty changed-files list (7m), and null-byte binary file detection (7n). Suite now reports 91 passed / 0 failed (up from 69).
+- **`skills/stride-completing-tasks/SKILL.md`** — Added the `changed_files` row to the Completion Request Field Reference table and a new "Per-File Diff Capture (Optional)" section. The section cites the canonical [`docs/diff-contract.md`](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/diff-contract.md) for the field shape, truncation marker, binary placeholder, and 500-line inclusive cap. It documents the snapshot lifecycle (refreshed on every `after_doing`, cleaned up on `after_review`), the `cat .stride-changed-files.json 2>/dev/null || printf '[]'` read pattern, and the explicit backward-compatibility rule that absent snapshots must produce completions that omit the field entirely (no synthesized diffs).
+
+### Changed
+
+- **`hooks/stride-hook.sh`** — Rewrote the bare `exit 0` early-exit guards as `return 0 2>/dev/null || exit 0` so the test suite can `source` the script to drive `capture_changed_files` in isolation. The guards now sit immediately after the function definition and behave identically when the script is executed normally.
+- **`plugin.json`** — Version bumped from `2.8.0` to `2.9.0`.
+
+### Source
+
+Ported from stride 1.14.0 (commits `7b95b4a` "Add per-file diff capture for completion payloads (W725)" and `07d15d8` "Document optional changed_files completion field (W726)", released as `v1.14.0`). Cross-plugin parity for Stride G148 / W719. Delivered in copilot as W729 (capture + tests + docs) and W730 (test coverage acknowledgment).
+
 ## [2.8.0] - 2026-05-19
 
 ### Changed

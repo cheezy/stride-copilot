@@ -13,3 +13,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Stride orchestrator runtime state (per stride-workflow skill contract)
+.stride/
+.stride-env-cache
+.stride-changed-files.json
