@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.9.1] - 2026-05-20
+
+### Changed
+
+- **`skills/stride-completing-tasks/SKILL.md`** — Closes the canonical-example/checklist gap left behind by 2.9.0 (W729). 2.9.0 added the dedicated `## Per-File Diff Capture (Optional)` section, but the canonical API Request Format example body and the pre-completion verification checklist still omitted `changed_files`, so agents copying from the canonical example never reached the Optional section and never embedded `.stride-changed-files.json` into their completion payload. This release adds (a) `actual_files_changed` + `changed_files` to the canonical example body with a one-entry unified-patch diff, (b) the verification checklist item `Did you embed \`.stride-changed-files.json\` into the payload as \`changed_files\`?`, and (c) the `**Optional:** Include changed_files...` paragraph after the `**Critical:**` line linking to `docs/diff-contract.md`. The W729-authored `## Per-File Diff Capture (Optional)` section is preserved intact as the encoding-rules anchor.
+- **`plugin.json`** — Version bumped from `2.9.0` to `2.9.1`.
+
+### Source
+
+Mirrors stride 1.14.1 (G155/W748) into stride-copilot for cross-plugin parity. Delivered in copilot as W755 (canonical-example + checklist edit) and W757 (this release).
+
 ## [2.9.0] - 2026-05-20
 
 ### Added
