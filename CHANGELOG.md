@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.10.1] - 2026-05-21
+
+### Fixed
+
+- **`skills/stride-completing-tasks/SKILL.md`** — Replaced three occurrences of `"$CLAUDE_PROJECT_DIR/.stride-changed-files.json"` with the defaulted form `"${CLAUDE_PROJECT_DIR:-.}/.stride-changed-files.json"` in the canonical inline-cat pattern. Affected lines: the pre-completion verification checklist item, the canonical `API Request Format` PATCH snippet, and the `Per-File Diff Capture (Optional)` snippet. The inline structure, the `--argjson cf "$(cat ... 2>/dev/null || echo '[]')"` shape, and the binary/truncation contract are unchanged — only the variable expansion is defaulted.
+
+### Why this release
+
+Under Claude Code's TypeScript SDK runtime (the host shape under GitHub Copilot CLI when bridging to Claude Code agents), `$CLAUDE_PROJECT_DIR` is unset/empty, so the bare expansion produced `/.stride-changed-files.json`. The `cat` failed, the `|| echo '[]'` fallback fired, and agents POSTed `changed_files: []` even when the hook had correctly written the snapshot. The defaulted form `${CLAUDE_PROJECT_DIR:-.}` falls back to the current working directory whenever the variable is unset or empty, so the read works under both runtimes.
+
+### Backward compatibility
+
+Wire shape unchanged. Behavior under a non-empty `$CLAUDE_PROJECT_DIR` is byte-identical to v2.10.0. Under the empty-variable shape, agents that follow the canonical SKILL.md pattern now successfully capture the snapshot they were already trying to send.
+
+### Source
+
+Mirrors the stride/ v1.15.1 fix (W767/W768) for the Copilot variant. Implemented as W769 (SKILL.md hotfix) and W770 (release coordination). No marketplace pin update — stride-copilot is not distributed through stride-marketplace.
+
 ## [2.10.0] - 2026-05-20
 
 ### Changed
