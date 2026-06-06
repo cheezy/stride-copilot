@@ -38,7 +38,7 @@ This skill orchestrates custom agents at four points in the Stride workflow: dec
 
 ## Custom Agent Support
 
-This skill uses custom agents defined in `.github/agents/`. If your environment supports custom agent invocation, use the agents as described below. If your environment does not support custom agents, proceed directly to implementation using the task's `key_files`, `patterns_to_follow`, and `acceptance_criteria` as your guide — but follow the same decision logic manually where possible.
+This skill uses custom agents defined in `agents/`. If your environment supports custom agent invocation, use the agents as described below. If your environment does not support custom agents, proceed directly to implementation using the task's `key_files`, `patterns_to_follow`, and `acceptance_criteria` as your guide — but follow the same decision logic manually where possible.
 
 ## The Iron Law
 
@@ -87,7 +87,7 @@ Use this matrix to determine which custom agents to invoke based on task attribu
 
 **When:** During the orchestrator's Step 1 enrichment check, BEFORE claiming. Triggered when the task has empty `key_files` OR missing `testing_strategy` OR empty `verification_steps` OR blank `acceptance_criteria`.
 
-**What to do:** Invoke the `task-enricher` custom agent (`.github/agents/task-enricher.agent.md`), passing the sparse task fields.
+**What to do:** Invoke the `task-enricher` custom agent (`agents/task-enricher.agent.md`), passing the sparse task fields.
 
 Provide the agent with:
 - The task's `identifier` (e.g., `W339`)
@@ -109,7 +109,7 @@ The enricher will return a single JSON object containing the enriched fields: `k
 
 **When:** Task type is `goal`, OR task has `large` complexity with no child tasks, OR task has a 25+ hour estimate.
 
-**What to do:** Invoke the `task-decomposer` custom agent (`.github/agents/task-decomposer.agent.md`), passing the goal/task metadata.
+**What to do:** Invoke the `task-decomposer` custom agent (`agents/task-decomposer.agent.md`), passing the goal/task metadata.
 
 Provide the agent with:
 - The task's `title` and `description`
@@ -139,7 +139,7 @@ The decomposer will return an ordered list of child tasks with:
 
 **When:** Task complexity is medium or large, OR task has 2+ key_files.
 
-**What to do:** Invoke the `task-explorer` custom agent (`.github/agents/task-explorer.agent.md`), passing the task metadata.
+**What to do:** Invoke the `task-explorer` custom agent (`agents/task-explorer.agent.md`), passing the task metadata.
 
 Provide the agent with:
 - The task's `key_files` array (file paths and notes)
@@ -170,7 +170,7 @@ Produce an ordered implementation plan that you follow during implementation.
 
 **When:** Task complexity is medium or large, OR task has 2+ key_files. Skip only for small tasks with 0-1 key_files.
 
-**What to do:** Invoke the `task-reviewer` custom agent (`.github/agents/task-reviewer.agent.md`), passing:
+**What to do:** Invoke the `task-reviewer` custom agent (`agents/task-reviewer.agent.md`), passing:
 - The git diff of all your changes
 - The task's `acceptance_criteria`
 - The task's `pitfalls` array
@@ -191,20 +191,14 @@ The reviewer returns a human-readable prose summary followed by a fenced ```json
 
 After the reviewer returns, extract the first fenced ```json block from its response and use it to populate `reviewer_result` in the completion PATCH payload (constructed via `stride-completing-tasks` and submitted in the orchestrator's Step 7). The same `reviewer_result` map carries both the legacy summary fields (kept for backwards compatibility with older Kanban deploys) and the structured fields (the actual deliverable for downstream consumers — they live inside `reviewer_result`, never under a new top-level API key).
 
-**Extraction pattern** — extract the first ```json fence and parse it:
-
-```python
-import re, json
-m = re.search(r'```json\n(.*?)\n```', reviewer_response, re.DOTALL)
-structured = json.loads(m.group(1))  # the parsed schema
-```
+**Extraction pattern** — scan the reviewer's response for the first fenced ```json block: the opening ` ```json ` fence through the next closing ` ``` ` fence. Take the text between those two fence lines (the fence markers themselves are not part of the payload) and parse it as JSON. The reviewer's response is already in your context, so no file read is needed; if the reviewer instead wrote its response to a file, use the `read` tool to load it first, then scan for the same fence.
 
 **Field mapping into `reviewer_result`:**
 
 - Legacy fields (always populated):
-  - `summary` ← `structured.summary`
-  - `issues_found` ← `sum(structured.issue_counts.values())` (sum only the recognized severity keys you receive; pass through any unknown severity keys verbatim inside the structured `issue_counts` object)
-  - `acceptance_criteria_checked` ← `len(structured.acceptance_criteria)`
+  - `summary` ← the structured block's `summary`
+  - `issues_found` ← the sum of the values in the structured `issue_counts` object (sum only the recognized severity keys you receive; pass through any unknown severity keys verbatim inside the structured `issue_counts` object)
+  - `acceptance_criteria_checked` ← the number of entries in the structured `acceptance_criteria` array
   - `dispatched: true`, `duration_ms: <wall-clock ms>` (as before)
 - Structured fields (copied verbatim from the parsed JSON, but **omit any key the agent did not emit** — do not send empty placeholders):
   - `status`, `issue_counts`, `issues`, `acceptance_criteria`, `testing_strategy`, `patterns`, `pitfalls`, `schema_version`
@@ -217,7 +211,7 @@ Approved
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.2",
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
@@ -226,7 +220,11 @@ Approved
     {"criterion": "All task positions recalculate when a card moves columns", "status": "met", "evidence": "lib/kanban/tasks.ex:142-168"},
     {"criterion": "Existing position-stable behavior unchanged", "status": "met", "evidence": "test/kanban/tasks_test.exs:198-240"},
     {"criterion": "PubSub broadcast emitted exactly once per move", "status": "met", "evidence": "lib/kanban/tasks.ex:172"}
-  ]
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "Move + broadcast paths covered by tests."},
+  "patterns": {"status": "passed", "note": "Mirrors the existing reorder pattern."},
+  "pitfalls": {"status": "passed", "note": "None of the 4 listed pitfalls violated."}
 }
 ```
 ````
@@ -240,7 +238,7 @@ Approved
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "issues_found": 0,
   "acceptance_criteria_checked": 3,
-  "schema_version": "1.0",
+  "schema_version": "1.2",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
   "issues": [],
@@ -248,7 +246,11 @@ Approved
     {"criterion": "All task positions recalculate when a card moves columns", "status": "met", "evidence": "lib/kanban/tasks.ex:142-168"},
     {"criterion": "Existing position-stable behavior unchanged", "status": "met", "evidence": "test/kanban/tasks_test.exs:198-240"},
     {"criterion": "PubSub broadcast emitted exactly once per move", "status": "met", "evidence": "lib/kanban/tasks.ex:172"}
-  ]
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "Move + broadcast paths covered by tests."},
+  "patterns": {"status": "passed", "note": "Mirrors the existing reorder pattern."},
+  "pitfalls": {"status": "passed", "note": "None of the 4 listed pitfalls violated."}
 }
 ```
 
@@ -358,7 +360,7 @@ CUSTOM AGENT WORKFLOW:
 │     └─ Fix any Critical/Important issues found
 └─ 7. Proceed to after_doing hook (stride-completing-tasks)
 
-CUSTOM AGENTS (defined in .github/agents/):
+CUSTOM AGENTS (defined in agents/):
   task-enricher.agent.md    - Enriches sparse tasks before claiming (Pre-Claim phase)
   task-decomposer.agent.md  - Breaks goals into dependency-ordered child tasks
   task-explorer.agent.md    - Reads key_files, finds tests, searches patterns
@@ -387,4 +389,4 @@ This skill sits between claiming and completing in the workflow:
 **FORBIDDEN:** Skipping from claiming directly to completing without checking the decision matrix here. Even for small tasks, you must check the matrix — it takes 5 seconds and prevents wrong decisions.
 
 ---
-**References:** This skill works with `stride-claiming-tasks` (activate after claim) and `stride-completing-tasks` (code review before hooks). Custom agent definitions are in `.github/agents/task-enricher.agent.md`, `.github/agents/task-decomposer.agent.md`, `.github/agents/task-explorer.agent.md`, `.github/agents/task-reviewer.agent.md`, and `.github/agents/hook-diagnostician.agent.md`.
+**References:** This skill works with `stride-claiming-tasks` (activate after claim) and `stride-completing-tasks` (code review before hooks). Custom agent definitions are in `agents/task-enricher.agent.md`, `agents/task-decomposer.agent.md`, `agents/task-explorer.agent.md`, `agents/task-reviewer.agent.md`, and `agents/hook-diagnostician.agent.md`.

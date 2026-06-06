@@ -1,7 +1,7 @@
-# stride-hook.ps1 — Bridges Claude Code hooks to Stride .stride.md hook execution
+# stride-hook.ps1 — Bridges GitHub Copilot's PreToolUse/PostToolUse hooks to Stride .stride.md hook execution
 #
 # PowerShell companion to stride-hook.sh for Windows compatibility.
-# Called by Claude Code's PreToolUse/PostToolUse hooks (configured in hooks.json).
+# Called by GitHub Copilot's PreToolUse/PostToolUse hooks (configured in hooks.json).
 # Receives hook JSON on stdin, determines if the Bash command is a Stride API call,
 # and if so, parses and executes the corresponding .stride.md section.
 #
@@ -24,7 +24,7 @@ $EnvCache = Join-Path $ProjectDir '.stride-env-cache'
 if (-not $Phase) { exit 0 }
 if (-not (Test-Path $StrideMd)) { exit 0 }
 
-# Read Claude Code hook input from stdin
+# Read GitHub Copilot hook input from stdin
 $Input = @($input) -join "`n"
 if (-not $Input) { exit 0 }
 
@@ -147,21 +147,60 @@ if (Test-Path $EnvCache) {
     }
 }
 
+# Helper: resolve the Stride API base URL for the changed_files upload.
+# Primary source is $ProjectDir/.stride_auth.md (the same file the agent reads)
+# — its `**API URL:**` line. Falls back to a literal URL in the intercepted
+# $Command for back-compat when the auth file is absent. Mirror of
+# stride-hook.sh:resolve_stride_api_url.
+function Resolve-StrideApiUrl {
+    $url = ''
+    $authPath = Join-Path $ProjectDir '.stride_auth.md'
+    if (Test-Path $authPath) {
+        foreach ($line in (Get-Content -Path $authPath)) {
+            if ($line -match '\*\*API URL:\*\*' -and $line -match '(https?://[A-Za-z0-9._:/-]+)') {
+                $url = $Matches[1]; break
+            }
+        }
+    }
+    if (-not $url -and $Command -match '(https?://[A-Za-z0-9._-]+(:[0-9]+)?)') { $url = $Matches[1] }
+    return $url
+}
+
+# Helper: resolve the Stride API bearer token for the changed_files upload.
+# Primary source is the production `**API Token:**` line in
+# $ProjectDir/.stride_auth.md — deliberately NOT the `**Local API Token:**`
+# line (the `**API Token:**` pattern does not match `**Local API Token:**`).
+# Falls back to a literal `Bearer <token>` in the intercepted $Command. Never
+# logs the token. Mirror of stride-hook.sh:resolve_stride_api_token.
+function Resolve-StrideApiToken {
+    $token = ''
+    $authPath = Join-Path $ProjectDir '.stride_auth.md'
+    if (Test-Path $authPath) {
+        foreach ($line in (Get-Content -Path $authPath)) {
+            if ($line -match '\*\*API Token:\*\*' -and $line -match '`([^`]+)`') {
+                $token = $Matches[1]; break
+            }
+        }
+    }
+    if (-not $token -and $Command -match 'Bearer\s+([A-Za-z0-9._+/=-]+)') { $token = $Matches[1] }
+    return $token
+}
+
 # Fire-and-forget upload of the per-file diff snapshot to the Stride server.
 # Mirror of stride-hook.sh's finalize_after_doing PUT path. URL and token are
-# parsed from the intercepted agent completion command in $Command — no new
-# env vars or auth file reads. Silently no-ops if any prerequisite is missing
-# (snapshot file, URL, token, TASK_ID) so behavior degrades to the legacy
-# on-disk-only snapshot.
+# resolved by Resolve-StrideApiUrl / Resolve-StrideApiToken — preferring
+# $ProjectDir/.stride_auth.md so the upload works whether the agent's completion
+# curl used literal values or shell variables, with the $Command literal
+# extraction kept as a back-compat fallback. Silently no-ops if any prerequisite
+# is missing (snapshot file, URL, token, TASK_ID) so behavior degrades to the
+# legacy on-disk-only snapshot.
 function Invoke-FinalizeAfterDoing {
     if ($HookName -ne 'after_doing') { return }
     $snapshotPath = Join-Path $ProjectDir '.stride-changed-files.json'
     if (-not (Test-Path $snapshotPath)) { return }
 
-    $apiBase = ''
-    $token = ''
-    if ($Command -match 'https?://[A-Za-z0-9._-]+(:[0-9]+)?') { $apiBase = $Matches[0] }
-    if ($Command -match 'Bearer\s+([A-Za-z0-9._+/=-]+)') { $token = $Matches[1] }
+    $apiBase = Resolve-StrideApiUrl
+    $token = Resolve-StrideApiToken
 
     $taskId = [System.Environment]::GetEnvironmentVariable('TASK_ID', 'Process')
     if (-not $apiBase -or -not $token -or -not $taskId) { return }
@@ -348,7 +387,7 @@ function Invoke-StrideSection {
 }
 
 # Detect an `after_goal` entry in the response's `hooks` array. Handles
-# Claude Code's wrapped form (`tool_response.stdout` is a JSON string),
+# the host's wrapped form (`tool_response.stdout` is a JSON string),
 # the raw-API-JSON form, and the JSON-encoded-string form. Returns $true
 # when an entry with name == "after_goal" is found, $false otherwise.
 # ConvertFrom-Json is always available in PowerShell so no $HAS_JQ-style
@@ -418,11 +457,13 @@ if ($Phase -eq 'post' -and ($Command -match '/api/tasks/[^/]+/(complete|mark_rev
     }
 }
 
-# Clean up env cache after the final hook in the lifecycle. after_goal
-# piggy-backs on after_review when present, so this gate intentionally
-# stays on $HookName == 'after_review'.
-if ($HookName -eq 'after_review' -and (Test-Path $EnvCache)) {
+# Clean up per-lifecycle state after the final hook. after_goal piggy-backs on
+# after_review when present, so this gate intentionally stays on $HookName ==
+# 'after_review'. Mirrors stride-hook.sh, which removes both the env cache and
+# the changed-files snapshot here.
+if ($HookName -eq 'after_review') {
     Remove-Item -Force $EnvCache -ErrorAction SilentlyContinue
+    Remove-Item -Force (Join-Path $ProjectDir '.stride-changed-files.json') -ErrorAction SilentlyContinue
 }
 
 exit 0

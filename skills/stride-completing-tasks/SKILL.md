@@ -39,7 +39,7 @@ This skill enforces the proper completion workflow: execute BOTH `after_doing` A
 
 The agent should work continuously through the full workflow: explore → implement → review → complete. Do not prompt the user between steps — but do not skip steps either. Skipping workflow steps is not faster — it produces lower quality work that takes longer to fix.
 
-- Before completing → verify you reviewed your changes against acceptance criteria
+- Before completing → verify you explored the codebase and reviewed your changes against acceptance criteria
 - After hooks succeed → call the complete endpoint with all required fields
 - If needs_review=false → activate stride-claiming-tasks and repeat the full workflow
 - If needs_review=true → STOP and wait for human approval
@@ -276,7 +276,7 @@ DURATION=$((END_TIME - START_TIME))
 
 ### Diagnostician-Assisted Debugging
 
-When a blocking hook fails, dispatch the `hook-diagnostician` custom agent (`.github/agents/hook-diagnostician.agent.md`) **as the first step** before attempting manual fixes. The diagnostician parses the raw output, categorizes issues by severity, and returns a prioritized fix plan — saving time on complex multi-tool failures.
+When a blocking hook fails, dispatch the `hook-diagnostician` custom agent (`agents/hook-diagnostician.agent.md`) **as the first step** before attempting manual fixes. The diagnostician parses the raw output, categorizes issues by severity, and returns a prioritized fix plan — saving time on complex multi-tool failures.
 
 **When to dispatch:** Any blocking hook failure (after_doing or before_review) where exit_code is non-zero.
 
@@ -354,7 +354,7 @@ curl -X PATCH "$STRIDE_API_URL/api/tasks/$TASK_ID/complete" \
        after_doing_result: {exit_code: 0, output: "...", duration_ms: 45678},
        before_review_result: {exit_code: 0, output: "...", duration_ms: 2340},
        explorer_result: {dispatched: true, summary: "...", duration_ms: 12450},
-       reviewer_result: {dispatched: true, summary: "...", duration_ms: 15300, acceptance_criteria_checked: 5, issues_found: 0},
+       reviewer_result: {dispatched: true, duration_ms: 15300, summary: "...", issues_found: 0, acceptance_criteria_checked: 5, schema_version: "1.2", status: "approved", issue_counts: {critical: 0, important: 0, minor: 0}, issues: [], acceptance_criteria: [], project_checks: [], testing_strategy: {status: "passed"}, patterns: {status: "passed"}, pitfalls: {status: "passed"}},
        workflow_steps: [
          {name: "explorer", dispatched: true, duration_ms: 12450},
          {name: "planner", dispatched: true, duration_ms: 8200},
@@ -398,10 +398,21 @@ match the `--arg` / `--argjson` substitutions above):
   },
   "reviewer_result": {
     "dispatched": true,
-    "summary": "Reviewed the diff against all 5 acceptance criteria and the 3 pitfalls; no issues found",
     "duration_ms": 15300,
+    "summary": "Reviewed the diff against all 5 acceptance criteria and the 3 pitfalls; no issues found",
+    "issues_found": 0,
     "acceptance_criteria_checked": 5,
-    "issues_found": 0
+    "schema_version": "1.2",
+    "status": "approved",
+    "issue_counts": {"critical": 0, "important": 0, "minor": 0},
+    "issues": [],
+    "acceptance_criteria": [
+      {"criterion": "Toggle persists across sessions", "status": "met", "evidence": "lib/foo.ex:142; test/foo_test.exs:88"}
+    ],
+    "project_checks": [],
+    "testing_strategy": {"status": "passed", "note": "Tests cover the new toggle persistence."},
+    "patterns": {"status": "passed", "note": "Follows the existing settings-update pattern."},
+    "pitfalls": {"status": "passed", "note": "No listed pitfall violated."}
   },
   "workflow_steps": [
     {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
@@ -413,6 +424,20 @@ match the `--arg` / `--argjson` substitutions above):
   ]
 }
 ```
+
+When the `task-reviewer` custom agent was dispatched, `reviewer_result` carries the
+reviewer agent's **structured JSON block** (`schema_version`, `status`,
+`issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]`, and the
+per-section `testing_strategy`/`patterns`/`pitfalls` verdicts — the
+fields the Kanban review queue actually renders) copied verbatim, **merged**
+with the dispatch telemetry (`dispatched: true`, `duration_ms`) and the derived
+legacy summary fields (`issues_found`, `acceptance_criteria_checked`,
+`summary`). Do NOT send only the thin legacy envelope — it strips the issues,
+acceptance verdicts, and code-review checks the reviewer produced. Extract the
+fenced ` ```json ` block per the **`stride-subagent-workflow` skill, "Extracting
+the structured review block"**; the block's schema is owned by
+`agents/task-reviewer.agent.md`. The reviewer's full prose+JSON response is
+saved separately as `review_report`.
 
 **Critical:** `after_doing_result`, `before_review_result`, `explorer_result`, `reviewer_result`, and `workflow_steps` are all REQUIRED. The API will reject requests without them.
 
@@ -433,14 +458,50 @@ Every `/complete` call **must** include both `explorer_result` and `reviewer_res
 
 "reviewer_result": {
   "dispatched": true,
-  "summary": "<40+ non-whitespace characters describing what was reviewed>",
   "duration_ms": 8000,
+  "summary": "<40+ non-whitespace characters describing what was reviewed>",
+  "issues_found": 0,
   "acceptance_criteria_checked": 5,
-  "issues_found": 0
+  "schema_version": "1.2",
+  "status": "approved",
+  "issue_counts": {"critical": 0, "important": 0, "minor": 0},
+  "issues": [],
+  "acceptance_criteria": [
+    {"criterion": "<verbatim criterion>", "status": "met", "evidence": "<file:line>"}
+  ],
+  "project_checks": [],
+  "testing_strategy": {"status": "passed", "note": "<rationale>"},
+  "patterns": {"status": "passed", "note": "<rationale>"},
+  "pitfalls": {"status": "passed", "note": "<rationale>"}
 }
 ```
 
-`reviewer_result` additionally requires `acceptance_criteria_checked` and `issues_found` as non-negative integers when `dispatched` is `true`.
+When the `task-reviewer` custom agent was dispatched, `reviewer_result` is the reviewer
+agent's emitted structured JSON block (`schema_version`, `status`,
+`issue_counts`, `issues[]`, `acceptance_criteria[]`, `project_checks[]`, and the
+per-section `testing_strategy`/`patterns`/`pitfalls` verdicts) copied
+verbatim and **merged** with the dispatch telemetry plus the derived legacy
+summary fields. The structured fields are what the Kanban review queue renders
+(issue list, acceptance verdicts, code-review checks); omitting them strips the
+review down to a count with no detail. Extract the fenced ` ```json ` block per
+the `stride-subagent-workflow` skill's "Extracting the structured review block"
+— that section owns the legacy↔structured field mapping (e.g. `issues_found` =
+the sum of the values in `issue_counts`, `acceptance_criteria_checked` = the
+number of entries in `acceptance_criteria`). The structured block's schema
+itself is owned by `agents/task-reviewer.agent.md`; do not redefine it here. The
+legacy `acceptance_criteria_checked` and `issues_found` integers remain required
+(for back-compat) when `dispatched` is `true`. If the reviewer emitted no
+parseable ` ```json ` fence, fall back to the legacy-only envelope and omit the
+structured keys — never invent them (see the `stride-subagent-workflow`
+"Extracting the structured review block" fallback).
+
+Copy exactly the keys the reviewer agent produced. An approved review still
+emits `issues: []` and `project_checks: []` (the agent emits those arrays
+unconditionally), so the empty arrays in the examples above are real, not
+placeholders. But keys the agent did NOT emit — e.g. per-section
+`testing_strategy`/`patterns`/`pitfalls` verdicts on schema versions that don't
+produce them — must be omitted entirely, not sent as empty placeholders (per
+the `stride-subagent-workflow` "Extracting the structured review block" section).
 
 ### Shape 2 — self-reported skip (for decision-matrix skips or no-custom-agent environments)
 
@@ -685,10 +746,19 @@ REQUIRED BODY: {
   },
   "reviewer_result": {
     "dispatched": true,
-    "summary": "<40+ non-whitespace chars>",
     "duration_ms": 8000,
+    "summary": "<40+ non-whitespace chars>",
+    "issues_found": 0,
     "acceptance_criteria_checked": 5,
-    "issues_found": 0
+    "schema_version": "1.2",
+    "status": "approved",
+    "issue_counts": {"critical": 0, "important": 0, "minor": 0},
+    "issues": [],
+    "acceptance_criteria": [{"criterion": "<verbatim>", "status": "met", "evidence": "<file:line>"}],
+    "project_checks": [],
+    "testing_strategy": {"status": "passed"},
+    "patterns": {"status": "passed"},
+    "pitfalls": {"status": "passed"}
   },
   "workflow_steps": [
     {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
@@ -699,6 +769,11 @@ REQUIRED BODY: {
     {"name": "before_review",  "dispatched": true,  "duration_ms": 2340}
   ]
 }
+
+reviewer_result (dispatched) = the task-reviewer custom agent's fenced ```json block
+(schema_version/status/issue_counts/issues[]/acceptance_criteria[]/project_checks[]/testing_strategy/patterns/pitfalls)
+merged with dispatched:true + duration_ms + derived legacy issues_found/acceptance_criteria_checked.
+See stride-subagent-workflow "Extracting the structured review block" for extraction; schema owned by agents/task-reviewer.agent.md.
 
 SKIP FORM for explorer_result / reviewer_result (when subagent not dispatched):
   {"dispatched": false, "reason": "<enum>", "summary": "<40+ non-whitespace chars>"}
@@ -892,4 +967,4 @@ If you are using this skill standalone (not via the orchestrator), you should ha
 If you skipped prior workflow steps, the after_doing hook is likely to fail. Go back and verify.
 
 ---
-**References:** For the full field reference, see `api_schema` in the onboarding response (`GET /api/agent/onboarding`). For endpoint details, see the [API Reference](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/api/README.md). For hook failure diagnosis, see the `hook-diagnostician` custom agent (`.github/agents/hook-diagnostician.agent.md`).
+**References:** For the full field reference, see `api_schema` in the onboarding response (`GET /api/agent/onboarding`). For endpoint details, see the [API Reference](https://raw.githubusercontent.com/cheezy/kanban/refs/heads/main/docs/api/README.md). For hook failure diagnosis, see the `hook-diagnostician` custom agent (`agents/hook-diagnostician.agent.md`).

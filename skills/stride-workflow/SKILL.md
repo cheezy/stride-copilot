@@ -1,6 +1,6 @@
 ---
 name: stride-workflow
-description: Single orchestrator for the complete Stride task lifecycle. Invoke when the user asks to claim a task, work on the next stride task, work on stride tasks, complete a stride task, enrich a stride task, decompose a goal, or create a goal or stride tasks. Replaces invoking stride-claiming-tasks, stride-completing-tasks, stride-creating-tasks, stride-creating-goals, stride-enriching-tasks, or stride-subagent-workflow directly — those are dispatched from inside this orchestrator. Walks through prerequisites, claiming, exploration, implementation, review, hooks, and completion. Handles both Claude Code (with subagent dispatch) and other environments (Cursor/Windsurf/Continue without subagents).
+description: Single orchestrator for the complete Stride task lifecycle. Invoke when the user asks to claim a task, work on the next stride task, work on stride tasks, complete a stride task, enrich a stride task, decompose a goal, or create a goal or stride tasks. Replaces invoking stride-claiming-tasks, stride-completing-tasks, stride-creating-tasks, stride-creating-goals, stride-enriching-tasks, or stride-subagent-workflow directly — those are dispatched from inside this orchestrator. Walks through prerequisites, claiming, exploration, implementation, review, hooks, and completion. Handles both GitHub Copilot (with custom agent dispatch) and environments without custom-agent support (manual exploration and self-review).
 skills_version: 1.0
 ---
 
@@ -35,6 +35,23 @@ claim -> explore -> implement -> review -> complete -> [loop if needs_review=fal
 You do NOT need to activate `stride-claiming-tasks`, `stride-subagent-workflow`, or `stride-completing-tasks` separately. This skill absorbs all of them.
 
 **Note:** The individual skills remain available for standalone use when needed -- for example, when resuming a partially completed task or when only one phase needs to be repeated. This orchestrator is the preferred entry point for new task work.
+
+## Context-Informed Creation
+
+You can ask the orchestrator to create work informed by existing markdown context (for example, a requirements doc, or a directory of design notes). **Copilot CLI has no Claude-style slash-command system**, so there are no `/stride:create-*` commands — instead, activate `stride-workflow` with a **creation intent** (what you want created — tasks/defects or a goal with nested tasks) and an **optional directory path** to the markdown context.
+
+The flow is:
+
+1. The orchestrator enumerates the markdown files at the provided directory path — listing the `.md` files with `glob` and reading each with the `read` tool — and assembles a **read-only context bundle** (the enumerated file contents) plus the **creation intent**.
+2. The orchestrator dispatches the creation sub-skill (`stride-creating-tasks` or `stride-creating-goals`) and **forwards the context bundle verbatim** to it.
+
+**Contract:**
+
+- The context bundle is **read-only** — the creation sub-skills consume it as reference material; they never edit the source markdown.
+- The bundle is forwarded **verbatim** — the orchestrator does not summarize, truncate, or reinterpret it before dispatch.
+- The sub-skill **STOP gate still applies.** Each creation sub-skill begins with a `## STOP — orchestrator check` and runs only when dispatched from inside this orchestrator. Context-informed creation satisfies that gate the sanctioned way — by dispatching from here — it never bypasses or weakens it.
+
+The task-field and batch-shape contracts the creation sub-skills enforce are **not** duplicated here — they live in `stride-creating-tasks` and `stride-creating-goals`.
 
 ---
 
@@ -87,7 +104,7 @@ Review the returned task completely:
 ## Step 2: Claim the Task
 
 1. Read `.stride.md` `## before_doing` section
-2. Execute each command line immediately via the shell tool -- no permission prompts, no confirmation
+2. Execute each command line immediately via the terminal -- no permission prompts, no confirmation
 3. Capture `exit_code`, `output`, `duration_ms`
 4. If hook fails (non-zero exit): fix the issue, re-run -- do NOT proceed
 5. Call `POST /api/tasks/claim` with the captured `before_doing_result`:
@@ -227,14 +244,14 @@ gh pr create \
 ### after_doing hook (blocking, 120s timeout)
 
 1. Read `.stride.md` `## after_doing` section
-2. Execute each command line one at a time via the shell tool
+2. Execute each command line one at a time via the terminal
 3. Capture `exit_code`, `output`, `duration_ms`
 4. If fails: fix issues, re-run until success. Do NOT proceed while failing.
 
 ### before_review hook (blocking, 60s timeout)
 
 1. Read `.stride.md` `## before_review` section
-2. Execute each command line one at a time via the shell tool
+2. Execute each command line one at a time via the terminal
 3. Capture `exit_code`, `output`, `duration_ms`
 4. If fails: fix issues, re-run until success. Do NOT proceed while failing.
 
