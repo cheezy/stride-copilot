@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.14.0] - 2026-06-07
+
+Parity release: brings the Copilot variant to G210 parity by adding `security_considerations` as the **fifth** review_queue-scored field across the creation, enrichment, decomposition, review, completion, and extraction skills/agents. Feature minor (2.13.0 → 2.14.0).
+
+### Added
+
+- **`skills/stride-creating-goals/SKILL.md` + `skills/stride-creating-tasks/SKILL.md` — `security_considerations` as the 5th scored field (mirrors canonical G210).** Adds `security_considerations` everywhere the four-field scored set appears: the review_queue scoring banner, the required/nesting field lists, the minimum-bar list, the Red Flags - STOP list, the Rationalization Table, and the example JSON. `creating-tasks` also gains the `### security_considerations` Embedded-Object-Formats WRONG-vs-RIGHT subsection (array-of-strings shape + the `"None — …"` escape hatch for tasks with no security surface).
+- **`skills/stride-enriching-tasks/SKILL.md` + `agents/task-enricher.agent.md` — Step 5 security pass + 17-item checklist.** Expands enrichment Step 5 from "Identify Risks" to "Identify Risks **and Security**" → `pitfalls`, `security_considerations` (input validation/sanitization, authorization boundaries, secret/credential handling, injection surfaces, data exposure). Grows the pre-submission checklist from 16 to **17** items, and threads `security_considerations` through the PATCH/output example JSON, the field-type reminders, and the Red Flags list.
+- **`agents/task-decomposer.agent.md` — `security_considerations` Required.** Marks `security_considerations` a Required field in the per-task field table, the single-goal output template, and every one of the four worked-example tasks (array-of-strings with concrete, context-appropriate considerations).
+- **`agents/task-reviewer.agent.md` — Step 5 Security Considerations review + schema 1.3.** Adds the "Security Considerations Alignment" review step (gating that the listed considerations were actually implemented), extends the `issues[]` category enum with `"security"`, adds the `security_considerations` per-section verdict object (`passed` | `failed` | `not_assessed`), and extends the consistency rule + review-queue tile list to cover it. Bumps the reviewer `schema_version` **1.2 → 1.3**.
+- **`skills/stride-completing-tasks/SKILL.md` + `skills/stride-subagent-workflow/SKILL.md` — `security_considerations` persistence + extraction.** The structured `reviewer_result` block now carries the `security_considerations` section verdict alongside `testing_strategy` / `patterns` / `pitfalls` (all examples + prose verdict-chains + Shape-1 schema + quick-reference cheat-sheet), at `schema_version` **1.3**. The "Extracting the structured review block" section in `stride-subagent-workflow` (Copilot's extraction location) adds `security_considerations` to the verbatim-copy field map, the worked examples (schema 1.3), and the JSON-parse-failure omit-list. `skills/stride-workflow/SKILL.md` gains a delegation note naming the `security_considerations` verdict and pointing to the extraction section.
+
+### Backward compatibility
+
+Documentation/contract-only release. No hook script, parser contract, env-var matrix, or workflow step changed — every `.stride.md` hook behavior is byte-identical to 2.13.0. The `security_considerations` additions are contract additions: older completions that omit the field continue to validate (the server tolerates the structured keys as `:jsonb`, and an absent section renders nothing). All intentional Copilot adaptations are preserved (tool-name vocabulary `read`/`search`/`glob`, the `.agent.md` suffix, the `tools:` frontmatter, the `hooks.json` mechanism, and the extraction-in-`stride-subagent-workflow` divergence from canonical's `stride-workflow` Step 6).
+
+### Source
+
+G210 parity (W1029 creating-goals/creating-tasks, W1030 enriching-tasks/task-enricher, W1031 task-decomposer/task-reviewer, W1032 completing-tasks/subagent-workflow/stride-workflow, W1033 release). Mirrors the canonical stride/ G210 `security_considerations` fifth-scored-field release into the Copilot variant. No marketplace pin update — stride-copilot is not distributed through a marketplace.
+
 ## [2.13.0] - 2026-06-05
 
 Parity release: brings the Copilot variant up to the canonical stride 1.18.0–1.20.0 reviewer/creation feature set, plus the D54 credential-resolution fix and an adapter-quality uplift. Feature minor (2.12.1 → 2.13.0).
