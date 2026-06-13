@@ -666,13 +666,15 @@ esac
 
 if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
   RESPONSE=$(echo "$INPUT" | jq -r '.tool_response // ""' 2>/dev/null || echo "")
+  TASK_JSON=""
+  INNER=""
+
   if [ -n "$RESPONSE" ]; then
-    # tool_response may come in three shapes depending on the host:
+    # tool_response may come in several shapes depending on the host:
     #   1. {"stdout": "<api-json-string>", ...} — GitHub Copilot Bash tool wrapper
     #   2. "<api-json-string>" — legacy harnesses that stringify the body
     #   3. {"data": {...}} or {"id": ...} — raw API JSON object
-    TASK_JSON=""
-    INNER=""
+    #   4. persisted-output file fallback for oversized responses (W1086)
 
     # Shape 1: wrapper object with .stdout key — peel and parse inner
     if echo "$RESPONSE" | jq -e 'type == "object" and has("stdout")' > /dev/null 2>&1; then
@@ -691,24 +693,73 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
       TASK_JSON="$RESPONSE"
     fi
 
-    if [ -n "$TASK_JSON" ]; then
-      # Values are single-quoted to handle spaces in titles/descriptions.
-      # TASK_BASE_REF anchors per-file diff capture to the commit HEAD pointed
-      # at when the task was claimed (consumed by capture_changed_files at
-      # after_doing time).
-      _base_ref=$(cd "$PROJECT_DIR" && git rev-parse HEAD 2>/dev/null || true)
-      {
-        echo "TASK_ID='$(echo "$TASK_JSON" | jq -r '.id // empty')'"
-        echo "TASK_IDENTIFIER='$(echo "$TASK_JSON" | jq -r '.identifier // empty')'"
-        echo "TASK_TITLE='$(echo "$TASK_JSON" | jq -r '.title // empty')'"
-        echo "TASK_STATUS='$(echo "$TASK_JSON" | jq -r '.status // empty')'"
-        echo "TASK_COMPLEXITY='$(echo "$TASK_JSON" | jq -r '.complexity // empty')'"
-        echo "TASK_PRIORITY='$(echo "$TASK_JSON" | jq -r '.priority // empty')'"
-        echo "TASK_BASE_REF='$_base_ref'"
-      } > "$ENV_CACHE" 2>/dev/null || true
-      # Clear any stale per-file diff snapshot and upload-state from a
-      # previous task (W1094 — a stale state file would mislead the
-      # before_review self-heal into skipping a needed re-upload).
+    # Shape 4: persisted-output file fallback (W1086). When the claim response
+    # is large (e.g. a task already carrying a previous attempt's changed_files
+    # snapshot), Copilot writes the tool output to a file and leaves only a
+    # notice — "Full output saved to: <absolute path>" — in stdout. Recover the
+    # API JSON by reading that file. The path is harness-controlled, so we
+    # require it to be an existing regular file and parse it with jq only —
+    # never source, eval, execute, or write to it.
+    if [ -z "$TASK_JSON" ]; then
+      _notice="$INNER"
+      [ -z "$_notice" ] && _notice="$RESPONSE"
+      if printf '%s' "$_notice" | grep -qi 'saved to'; then
+        # Keep the path from its first "/" to end of the notice line so a path
+        # containing spaces survives; tolerate the notice wrapping it in quotes.
+        _persist_line=$(printf '%s\n' "$_notice" | grep -i 'saved to' | head -1)
+        _persist_path="/${_persist_line#*/}"
+        _persist_path="${_persist_path%\"}"
+        if [ -n "$_persist_line" ] && [ -f "$_persist_path" ]; then
+          _persist_json=$(cat "$_persist_path" 2>/dev/null || echo "")
+          if [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e '.data.id' > /dev/null 2>&1; then
+            TASK_JSON=$(echo "$_persist_json" | jq -c '.data' 2>/dev/null)
+          elif [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e '.id' > /dev/null 2>&1; then
+            TASK_JSON="$_persist_json"
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  if [ -n "$TASK_JSON" ]; then
+    # Values are single-quoted to handle spaces in titles/descriptions.
+    # TASK_BASE_REF anchors per-file diff capture to the commit HEAD pointed
+    # at when the task was claimed (consumed by capture_changed_files at
+    # after_doing time).
+    _base_ref=$(cd "$PROJECT_DIR" && git rev-parse HEAD 2>/dev/null || true)
+    {
+      echo "TASK_ID='$(echo "$TASK_JSON" | jq -r '.id // empty')'"
+      echo "TASK_IDENTIFIER='$(echo "$TASK_JSON" | jq -r '.identifier // empty')'"
+      echo "TASK_TITLE='$(echo "$TASK_JSON" | jq -r '.title // empty')'"
+      echo "TASK_STATUS='$(echo "$TASK_JSON" | jq -r '.status // empty')'"
+      echo "TASK_COMPLEXITY='$(echo "$TASK_JSON" | jq -r '.complexity // empty')'"
+      echo "TASK_PRIORITY='$(echo "$TASK_JSON" | jq -r '.priority // empty')'"
+      echo "TASK_BASE_REF='$_base_ref'"
+    } > "$ENV_CACHE" 2>/dev/null || true
+    # Clear any stale per-file diff snapshot and upload-state from a previous
+    # task (W1094 — a stale state file would mislead the before_review self-heal
+    # into skipping a needed re-upload).
+    rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
+    rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
+  else
+    # (W1086) No parseable response and no usable persisted file. A claim always
+    # opens a new task window, so unconditionally refresh TASK_BASE_REF to
+    # current HEAD and clear the stale per-file snapshot — otherwise a base ref
+    # recorded under a previous claim survives and the after_doing diff spans
+    # every commit since that older claim. Existing TASK_ identity lines are
+    # preserved so a later completion can still recover TASK_ID. Skip silently
+    # when HEAD is unresolvable (not a git repo).
+    _base_ref=$(cd "$PROJECT_DIR" && git rev-parse HEAD 2>/dev/null || true)
+    if [ -n "$_base_ref" ]; then
+      if [ -f "$ENV_CACHE" ]; then
+        _preserved=$(grep -v '^TASK_BASE_REF=' "$ENV_CACHE" 2>/dev/null || true)
+        {
+          [ -n "$_preserved" ] && printf '%s\n' "$_preserved"
+          echo "TASK_BASE_REF='$_base_ref'"
+        } > "$ENV_CACHE" 2>/dev/null || true
+      else
+        echo "TASK_BASE_REF='$_base_ref'" > "$ENV_CACHE" 2>/dev/null || true
+      fi
       rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
       rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
     fi
