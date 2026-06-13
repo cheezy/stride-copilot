@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.17.0] - 2026-06-13
+
+Parity release: brings the Copilot variant up from canonical stride v1.23.0 to **v1.28.0**, porting five canonical releases (goal G229). Copilot divergences are preserved, not "fixed" toward canonical: agents keep the `.agent.md` suffix, there is no `AGENTS.md` (README is the doc surface), there is no marketplace, and the review-block extraction lives in `skills/stride-subagent-workflow/SKILL.md` rather than `stride-workflow` Step 6. Already-shipped items (reviewer `project_checks`/`not_applicable` enum, `security_considerations` scoring, the base64 `changed_files` envelope, and the `reviewer_result` verbatim passthrough) were **not** re-ported.
+
+### Added
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`, `hooks/hooks.json`** (W1118 — canonical **v1.25.0**, W1093–W1096) — *changed_files survives an `after_doing` timeout.* The per-file diff snapshot is now captured and uploaded **before** the `after_doing` gate commands run (early `finalize_after_doing` / `Invoke-FinalizeAfterDoing`, gated on the GLOBAL `$HOOK_NAME` so `after_goal` stays inert), then refreshed after the gate succeeds. A new `.stride-diff-upload-state` file records the last upload outcome (task id + HTTP code only — never credentials), and the `before_review` hook self-heals on a fresh timeout budget: it re-verifies that state and re-captures + re-uploads when no healthy 2xx is on record for the current task (a successful upload is never repeated). Shared helpers `upload_changed_files_snapshot` + `record_diff_upload_state` (bash) and `Invoke-ChangedFilesUpload` + `Write-DiffUploadState` (PowerShell). Both Bash hook timeouts in `hooks.json` rise from 120s to **300s**, `.gitignore` gains `.stride-diff-upload-state`, and the README documents the `after_doing` time budget. The PowerShell upload helper recovers the real HTTP code from a `WebException` so non-2xx outcomes are recorded without `-SkipHttpErrorCheck` (preserves PowerShell 5.1 support).
+
+### Fixed
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (D68 — canonical **v1.26.0**, D65) — *a passing `after_doing` gate no longer renders as a red hook error.* Each successful command's tail-truncated (50-line cap) stdout/stderr is folded into a new `commands_output` array on the success JSON instead of being written to stderr (which Claude Code mislabels as an error even on exit 0). The failure branch is unchanged; the no-jq degraded path still emits no success JSON. `commands_output` is encoded via `jq --arg` / `ConvertTo-Json` so command output cannot inject JSON fields.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (D69 — canonical **v1.27.0**, D67) — the hook's own `.stride-diff-upload-state` and `.stride-changed-files.json` are excluded from the `changed_files` snapshot (bash capture and PowerShell upload), anchored to **exact repo-root paths** so a same-named file in a subdirectory is still captured.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1`** (W1119 — canonical **v1.28.0**, G224/W1086+W1087) — the claim-time `TASK_BASE_REF` refresh is now **unconditional on every detected claim**, with a persisted-output-file fallback that recovers the claim API JSON from a "Full output saved to: …" notice (validated as an existing regular file and parsed read-only — never sourced or executed) so an oversized claim response no longer leaves a stale base ref that makes `changed_files` span unrelated commits. The PowerShell hook now **writes `TASK_BASE_REF` for the first time** and guards property access with `PSObject.Properties.Name` against StrictMode throws.
+
+### Updated
+
+- **`agents/task-reviewer.agent.md`, `skills/stride-subagent-workflow/SKILL.md`, `skills/stride-completing-tasks/SKILL.md`, `skills/stride-workflow/SKILL.md`** (W1117 — canonical **v1.24.0**, G222/W1072–W1076, hardening-only — plus D66 from canonical v1.26.0) — the reviewer dispatch now passes **every** review field the task supplies (adds `security_considerations`, `description`, `what`, `why`); `not_assessed` is reserved strictly for task-empty sections; `reviewer_result` is a mechanical whole-object copy guarded by a **non-bypassable pre-submission self-check** (every section present, `project_checks` count matches, and — D66 — `acceptance_criteria` is an exact 1:1 verbatim restatement of the task's criterion lines with a re-review count self-check).
+
+### Testing
+
+- `hooks/test-stride-hook.sh` (217 assertions) and `hooks/test-stride-hook.ps1` (168 assertions) both pass, including new groups for the early-capture + self-heal (W1118), the `commands_output` D65 contract (D68), the D67 artifact exclusion (D69), and the claim-time base-ref refresh (W1119 — the PowerShell suite's first git-backed fixtures). As part of W1118, the PowerShell test harness was also repaired for PowerShell 7.x (process spawning switched from arg-splitting `Start-Process` to `ProcessStartInfo`, plus StrictMode `$null.Count` guards).
+
+### Source
+
+Goal G229 — five canonical ports: v1.24.0 (G222), v1.25.0 (W1093–W1096), v1.26.0 (D65+D66), v1.27.0 (D67), v1.28.0 (G224). No marketplace pin update — stride-copilot is not distributed through a marketplace.
+
 ## [2.16.0] - 2026-06-08
 
 Parity release: brings the Copilot variant to G220/G219 parity for the reviewer `project_checks` `not_applicable` status and full-checklist emission (canonical: stride v1.23.0, commit a4e7e6f, W1057). Feature minor (2.15.0 → 2.16.0).
