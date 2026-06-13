@@ -130,6 +130,11 @@ if ($HookName -eq 'before_doing') {
                     "TASK_PRIORITY=$($taskJson.priority)"
                 )
                 $cacheLines | Set-Content -Path $EnvCache -Encoding UTF8
+                # Clear any stale per-file diff snapshot and upload-state from a
+                # previous task (W1094 — a stale state file would mislead the
+                # before_review self-heal into skipping a needed re-upload).
+                Remove-Item -Force (Join-Path $ProjectDir '.stride-changed-files.json') -ErrorAction SilentlyContinue
+                Remove-Item -Force (Join-Path $ProjectDir '.stride-diff-upload-state') -ErrorAction SilentlyContinue
             }
         }
     } catch {
@@ -186,6 +191,71 @@ function Resolve-StrideApiToken {
     return $token
 }
 
+# PUT the on-disk snapshot to /api/tasks/<id>/changed_files as the
+# transport-encoded envelope {"changed_files":{"encoding":"base64",
+# "data":"<b64>"}} so an edge request filter does not misread a unified code
+# diff as an attack and drop the upload (D61). The raw file bytes are encoded
+# directly so the wire body carries no recognizable source text. Returns the
+# HTTP status code as a string ('000' on transport failure), warns on stderr
+# for non-2xx, and never throws. Mirror of stride-hook.sh's
+# upload_changed_files_snapshot (W1094) — shared by Invoke-FinalizeAfterDoing
+# and the before_review self-heal. Kept PowerShell 5.1-compatible: rather than
+# -SkipHttpErrorCheck (7+ only), a non-2xx WebException is caught and its real
+# status code recovered from the exception's Response so the self-heal still
+# records the true outcome.
+function Invoke-ChangedFilesUpload {
+    param([string]$TaskId, [string]$ApiBase, [string]$Token)
+    $snapshotPath = Join-Path $ProjectDir '.stride-changed-files.json'
+    $httpCode = '000'
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($snapshotPath)
+        $b64 = [System.Convert]::ToBase64String($bytes)
+        $body = @{ changed_files = @{ encoding = 'base64'; data = $b64 } } |
+            ConvertTo-Json -Depth 5 -Compress
+        $resp = Invoke-WebRequest `
+            -Uri "$ApiBase/api/tasks/$TaskId/changed_files" `
+            -Method Put `
+            -Body $body `
+            -ContentType 'application/json' `
+            -Headers @{ Authorization = "Bearer $Token" } `
+            -UseBasicParsing -TimeoutSec 10
+        $httpCode = "$([int]$resp.StatusCode)"
+    } catch {
+        # A non-2xx response throws a WebException carrying the real status
+        # code — recover it so the self-heal records the true outcome. A
+        # transport failure (no Response: connection refused, DNS, timeout)
+        # stays '000', matching the bash twin's `|| printf '000'`.
+        $_resp = $null
+        try { $_resp = $_.Exception.Response } catch { $_resp = $null }
+        if ($_resp -and $_resp.StatusCode) {
+            $httpCode = "$([int]$_resp.StatusCode)"
+        } else {
+            $httpCode = '000'
+        }
+    }
+    # Surface a failed upload instead of dropping it silently. The diff is
+    # non-fatal to completion, so we warn rather than abort.
+    if ($httpCode -notmatch '^2') {
+        [Console]::Error.WriteLine(
+            "stride-hook: changed_files upload failed (HTTP $httpCode) for task $TaskId")
+    }
+    return $httpCode
+}
+
+# Record the outcome of a changed_files PUT attempt (W1094) so the
+# before_review self-heal can verify it on a fresh timeout budget. Task id
+# and HTTP code ONLY — never the URL or bearer token (the file lives
+# untracked in the project root alongside the other .stride artifacts).
+function Write-DiffUploadState {
+    param([string]$TaskId, [string]$HttpCode)
+    try {
+        Set-Content -Path (Join-Path $ProjectDir '.stride-diff-upload-state') `
+            -Value "task_id=$TaskId`nhttp_code=$HttpCode" -Encoding UTF8
+    } catch {
+        # Best-effort: a failed state write must never block the hook.
+    }
+}
+
 # Fire-and-forget upload of the per-file diff snapshot to the Stride server.
 # Mirror of stride-hook.sh's finalize_after_doing PUT path. URL and token are
 # resolved by Resolve-StrideApiUrl / Resolve-StrideApiToken — preferring
@@ -205,33 +275,54 @@ function Invoke-FinalizeAfterDoing {
     $taskId = [System.Environment]::GetEnvironmentVariable('TASK_ID', 'Process')
     if (-not $apiBase -or -not $token -or -not $taskId) { return }
 
-    try {
-        # Upload the per-file diff snapshot as the transport-encoded envelope
-        # {"changed_files":{"encoding":"base64","data":"<b64>"}} so an edge
-        # request filter does not misread a unified code diff as an attack and
-        # drop the upload (D61). The server decodes it back to the same list.
-        # Encode the raw file bytes directly so the wire body carries no
-        # recognizable source text.
-        $bytes = [System.IO.File]::ReadAllBytes($snapshotPath)
-        $b64 = [System.Convert]::ToBase64String($bytes)
-        $body = @{ changed_files = @{ encoding = 'base64'; data = $b64 } } |
-            ConvertTo-Json -Depth 5 -Compress
-        $resp = Invoke-WebRequest `
-            -Uri "$apiBase/api/tasks/$taskId/changed_files" `
-            -Method Put `
-            -Body $body `
-            -ContentType 'application/json' `
-            -Headers @{ Authorization = "Bearer $token" } `
-            -UseBasicParsing -TimeoutSec 10
-        if ($resp.StatusCode -lt 200 -or $resp.StatusCode -ge 300) {
-            [Console]::Error.WriteLine(
-                "stride-hook: changed_files upload failed (HTTP $($resp.StatusCode)) for task $taskId")
+    $httpCode = Invoke-ChangedFilesUpload -TaskId $taskId -ApiBase $apiBase -Token $token
+    # (W1094) Record the outcome after EVERY PUT attempt so the before_review
+    # self-heal can verify it on a fresh timeout budget. A skipped PUT (missing
+    # preconditions) deliberately writes nothing: missing state means "no
+    # healthy upload on record" and the retry re-checks the same preconditions.
+    Write-DiffUploadState -TaskId $taskId -HttpCode $httpCode
+}
+
+# (W1094) Self-heal for the changed_files upload — mirror of stride-hook.sh's
+# self_heal_changed_files_upload. The after_doing gate can burn the whole hook
+# budget, killing the process before or during the snapshot PUT — or the PUT
+# itself returned non-2xx. before_review (PostToolUse on the same completion
+# curl) runs on a FRESH budget, so it verifies the recorded outcome and re-PUTs
+# the on-disk snapshot when no healthy upload is on record for the current task.
+# Best-effort: never throws, never changes the hook's exit semantics. Like the
+# bash twin's before_review path the on-disk snapshot is the source of truth, so
+# the retry re-uploads it as-is.
+function Invoke-SelfHealChangedFilesUpload {
+    if ($HookName -ne 'before_review') { return }
+    $snapshotPath = Join-Path $ProjectDir '.stride-changed-files.json'
+    if (-not (Test-Path $snapshotPath)) { return }
+    $taskId = [System.Environment]::GetEnvironmentVariable('TASK_ID', 'Process')
+    if (-not $taskId) { return }
+
+    # Healthy 2xx recorded for THIS task → do not re-upload (snapshot semantics
+    # anchor at after_doing time; avoid pointless API load). Missing file,
+    # different task id, or non-2xx/empty code → retry.
+    $stateFile = Join-Path $ProjectDir '.stride-diff-upload-state'
+    $stateTask = ''
+    $stateCode = ''
+    if (Test-Path $stateFile) {
+        try {
+            foreach ($line in Get-Content -Path $stateFile -Encoding UTF8) {
+                if ($line -match '^task_id=(.*)$' -and -not $stateTask) { $stateTask = $Matches[1] }
+                if ($line -match '^http_code=(.*)$' -and -not $stateCode) { $stateCode = $Matches[1] }
+            }
+        } catch {
+            # Unreadable state degrades to "retry".
         }
-    } catch {
-        # Surface a failed upload instead of dropping it silently. The diff is
-        # non-fatal to completion, so we warn rather than abort.
-        [Console]::Error.WriteLine("stride-hook: changed_files upload failed for task $taskId")
     }
+    if ($stateTask -eq $taskId -and $stateCode -match '^2') { return }
+
+    $apiBase = Resolve-StrideApiUrl
+    $token = Resolve-StrideApiToken
+    if (-not $apiBase -or -not $token) { return }
+
+    $httpCode = Invoke-ChangedFilesUpload -TaskId $taskId -ApiBase $apiBase -Token $token
+    Write-DiffUploadState -TaskId $taskId -HttpCode $httpCode
 }
 
 # --- Parse and execute one .stride.md hook section ---
@@ -303,6 +394,15 @@ function Invoke-StrideSection {
     }
 
     Set-Location $ProjectDir
+
+    # Early per-file diff snapshot (W1093) — capture and upload BEFORE the gate
+    # commands run, so a slow or failing after_doing gate can't kill the process
+    # before the diff upload completes. Invoke-FinalizeAfterDoing gates
+    # internally on the GLOBAL $HookName, so this is inert for after_goal (and
+    # every non-after_doing hook). The post-loop call below stays as a refresh
+    # that picks up any files the gate commands themselves changed.
+    Invoke-FinalizeAfterDoing
+
     $secCompletedCmds = @()
     $secStartTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $secCmdIndex = 0
@@ -313,10 +413,29 @@ function Invoke-StrideSection {
         $secStderrFile = [System.IO.Path]::GetTempFileName()
 
         try {
-            $proc = Start-Process -FilePath 'bash' -ArgumentList '-c', $execTrimmed `
-                -RedirectStandardOutput $secStdoutFile `
-                -RedirectStandardError $secStderrFile `
-                -NoNewWindow -Wait -PassThru
+            # ProcessStartInfo.ArgumentList passes each element as an exact
+            # argv entry on every platform. Start-Process -ArgumentList must
+            # NOT be used here: it joins the elements into a single string,
+            # which .NET on Unix re-splits on whitespace, so a multi-word
+            # command reaches bash -c mangled and its output is lost.
+            $secPsi = [System.Diagnostics.ProcessStartInfo]::new()
+            $secPsi.FileName = 'bash'
+            $secPsi.ArgumentList.Add('-c')
+            $secPsi.ArgumentList.Add($execTrimmed)
+            $secPsi.RedirectStandardOutput = $true
+            $secPsi.RedirectStandardError = $true
+            $secPsi.UseShellExecute = $false
+            $secPsi.WorkingDirectory = (Get-Location).Path
+            $proc = [System.Diagnostics.Process]::Start($secPsi)
+            # Drain both pipes concurrently: a synchronous ReadToEnd on stdout
+            # would deadlock if the child fills the stderr pipe buffer (~64KB)
+            # while its stdout is still open — gate commands like `mix compile`
+            # can emit that much warning text.
+            $secOutTask = $proc.StandardOutput.ReadToEndAsync()
+            $secErrTask = $proc.StandardError.ReadToEndAsync()
+            $proc.WaitForExit()
+            Set-Content -Path $secStdoutFile -Value $secOutTask.Result -Encoding UTF8 -NoNewline
+            Set-Content -Path $secStderrFile -Value $secErrTask.Result -Encoding UTF8 -NoNewline
 
             if ($proc.ExitCode -eq 0) {
                 $secCompletedCmds += $execTrimmed
@@ -376,8 +495,10 @@ function Invoke-StrideSection {
         $secCmdIndex++
     }
 
-    # Per-file diff snapshot PUT — no-op outside after_doing (gates on the
-    # GLOBAL $HookName, so calling this for "after_goal" does not retrigger).
+    # Per-file diff snapshot refresh (early call added in W1093) — re-capture
+    # after the gate commands succeeded so files they changed are included.
+    # No-op outside after_doing (gates on the GLOBAL $HookName, so calling this
+    # for "after_goal" does not retrigger).
     Invoke-FinalizeAfterDoing
 
     $secEndTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -445,6 +566,14 @@ function Test-AfterGoalInResponse {
     return $false
 }
 
+# --- (W1094) Changed-files upload self-heal ---
+# Runs only for before_review (gated internally). On a FRESH timeout budget it
+# re-verifies the after_doing upload via .stride-diff-upload-state and re-PUTs
+# the on-disk snapshot when no healthy 2xx is on record for this task. A
+# successful after_doing upload short-circuits (no duplicate PUT). Best-effort:
+# never blocks the primary hook.
+Invoke-SelfHealChangedFilesUpload
+
 # --- Execute the primary hook ---
 $primaryRc = Invoke-StrideSection -Section $HookName
 
@@ -472,6 +601,7 @@ if ($Phase -eq 'post' -and ($Command -match '/api/tasks/[^/]+/(complete|mark_rev
 if ($HookName -eq 'after_review') {
     Remove-Item -Force $EnvCache -ErrorAction SilentlyContinue
     Remove-Item -Force (Join-Path $ProjectDir '.stride-changed-files.json') -ErrorAction SilentlyContinue
+    Remove-Item -Force (Join-Path $ProjectDir '.stride-diff-upload-state') -ErrorAction SilentlyContinue
 }
 
 exit 0

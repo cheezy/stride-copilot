@@ -208,7 +208,15 @@ No platform-specific configuration needed — the single `hooks.json` entry hand
 
 After a successful task claim, hook scripts extract task metadata (TASK_ID, TASK_IDENTIFIER, TASK_TITLE, etc.) from the API response and cache them to `.stride-env-cache`. Subsequent hooks can reference these variables in `.stride.md` commands (e.g., `$TASK_IDENTIFIER`). The cache is cleaned up after the `after_review` hook.
 
-Add `.stride-env-cache` to your `.gitignore`.
+Add `.stride-env-cache`, `.stride-changed-files.json`, and `.stride-diff-upload-state` to your `.gitignore` — all three are temp files written between hook invocations. `.stride-changed-files.json` holds the per-file diff snapshot; `.stride-diff-upload-state` records the last upload outcome (task id + HTTP code only, never credentials). All three are cleaned up automatically at the claim refresh and after the `after_review` hook.
+
+### The `after_doing` time budget
+
+The two Bash hook entries in `hooks/hooks.json` carry a **300-second timeout**. The timeout is a **ceiling, not a guarantee**: the entire `after_doing` section — every command in your `.stride.md` quality gate (test suite with coverage, credo, sobelow, auto-commit) plus the plugin's own per-file diff snapshot work — shares this one budget.
+
+When the budget is exceeded, the hook process is killed. To keep the task's diffs from being lost in that case, the per-file diff snapshot is captured and uploaded **before** the `after_doing` section commands run, then refreshed after all commands succeed. The `before_review` hook (which runs on its own fresh timeout budget) verifies the recorded outcome in `.stride-diff-upload-state` and re-captures + re-uploads when that state is missing, stale (a different task), or non-2xx — a healthy upload is never repeated.
+
+If your project's quality gate runs close to the ceiling, either trim the `.stride.md` `## after_doing` section (move slow steps like a full coverage run into CI) or raise the `timeout` values further in a fork of the plugin.
 
 ### Troubleshooting
 

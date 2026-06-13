@@ -123,6 +123,28 @@ function Invoke-HookScript {
     }
 }
 
+# --- Helper: wait for a listener job to accept connections ---
+# Start-Job spawns a whole pwsh process, so the HttpListener inside it can take
+# longer to come up than the hook subprocess takes to fire its PUT. Poll the
+# port until it accepts a TCP connection (or the timeout elapses) before
+# invoking the hook, otherwise the PUT races the listener startup.
+function Wait-ForListener {
+    param([int]$Port, [int]$TimeoutSeconds = 10)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $client.Connect('localhost', $Port)
+            if ($client.Connected) { return $true }
+        } catch {
+            Start-Sleep -Milliseconds 100
+        } finally {
+            $client.Dispose()
+        }
+    }
+    return $false
+}
+
 # ============================================================
 # Setup: create temp directory with test fixtures
 # ============================================================
@@ -314,11 +336,13 @@ Assert-Exit "no bash block exits 0" 0 $r.ExitCode
 # 2j: Adjacent sections
 Copy-Item (Join-Path $TmpDir 'adjacent-sections.stride.md') (Join-Path $proj2 '.stride.md') -Force
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $proj2
-Assert-Contains "adjacent: before_doing correct" 'echo "before"' ($r.Stderr + $r.Stdout)
-Assert-NotContains "adjacent sections do not bleed" 'echo "after"' $r.Stderr
+# The passing command's OUTPUT (`before` / `after`) is forwarded to stderr; the
+# command TEXT only appears JSON-escaped in stdout, so assert on the output.
+Assert-Contains "adjacent: before_doing correct" 'before' ($r.Stderr + $r.Stdout)
+Assert-NotContains "adjacent sections do not bleed" 'after' $r.Stderr
 
 $r = Invoke-HookScript -InputJson $CompleteJson -Phase 'pre' -ProjectDir $proj2
-Assert-Contains "adjacent: after_doing correct" 'echo "after"' ($r.Stderr + $r.Stdout)
+Assert-Contains "adjacent: after_doing correct" 'after' ($r.Stderr + $r.Stdout)
 
 # ============================================================
 # Test Group 3: Whitespace trimming
@@ -326,10 +350,13 @@ Assert-Contains "adjacent: after_doing correct" 'echo "after"' ($r.Stderr + $r.S
 Write-Host ""
 Write-Host "=== Test Group 3: Whitespace trimming ==="
 
-# Test the TrimStart behavior used in command list building
+# Test the TrimStart behavior used in command list building.
+# NOTE: the parameter must NOT be named $Input — that is a reserved automatic
+# variable (the pipeline enumerator), so a positional bind to it silently
+# misbehaves under Set-StrictMode -Version Latest.
 function Test-TrimStart {
-    param([string]$Input)
-    return $Input.TrimStart()
+    param([string]$Text)
+    return $Text.TrimStart()
 }
 
 Assert-Eq "trim leading spaces" "echo hello" (Test-TrimStart "   echo hello")
@@ -358,15 +385,18 @@ function Build-CmdList {
     return $result
 }
 
+# @() guards the count against $null under Set-StrictMode -Version Latest:
+# a function returning an empty array yields $null on assignment, and
+# $null.Count is a hard error.
 $commands = "# comment`necho `"step one`"`n   echo `"indented step`"`n`necho `"step three`"`n# trailing comment"
-$result = Build-CmdList $commands
+$result = @(Build-CmdList $commands)
 Assert-Eq "filtered to 3 commands" "3" "$($result.Count)"
 Assert-Eq "keeps step one" 'echo "step one"' $result[0]
 Assert-Eq "trims indented step" 'echo "indented step"' $result[1]
 Assert-Eq "keeps step three" 'echo "step three"' $result[2]
 
 $commands = "# only comments`n`n# more comments`n"
-$result = Build-CmdList $commands
+$result = @(Build-CmdList $commands)
 Assert-Eq "all comments filtered to empty" "0" "$($result.Count)"
 
 # ============================================================
@@ -747,8 +777,12 @@ $putListenerJob = Start-Job -ArgumentList $putPort, $putFixture -ScriptBlock {
 }
 
 try {
+    $null = Wait-ForListener -Port $putPort
     $putCompleteCmd = "curl -X PATCH http://localhost:$putPort/api/tasks/99/complete -H `"Authorization: Bearer test_token_xyz`""
-    $putJson = "{`"tool_input`":{`"command`":`"$putCompleteCmd`"}}"
+    # ConvertTo-Json escapes the command's embedded quotes — hand-rolling the
+    # JSON here produces an invalid document whose fallback-regex extraction
+    # truncates the command at the first inner quote, dropping the token.
+    $putJson = @{ tool_input = @{ command = $putCompleteCmd } } | ConvertTo-Json -Compress
     $r = Invoke-HookScript -InputJson $putJson -Phase 'pre' -ProjectDir $putSuccessProj
     Assert-Exit "8a: hook exits 0 after PUT" 0 $r.ExitCode
 
@@ -825,11 +859,13 @@ Set-Content -Path (Join-Path $putFailProj '.stride-env-cache') `
     -Value "TASK_ID=99`nTASK_BASE_REF=abc" -Encoding UTF8
 
 $failCmd = 'curl -X PATCH http://127.0.0.1:1/api/tasks/99/complete -H "Authorization: Bearer tok"'
-$failJson = "{`"tool_input`":{`"command`":`"$failCmd`"}}"
+$failJson = @{ tool_input = @{ command = $failCmd } } | ConvertTo-Json -Compress
 $r = Invoke-HookScript -InputJson $failJson -Phase 'pre' -ProjectDir $putFailProj
 Assert-Exit "8b: hook exits 0 even when PUT fails" 0 $r.ExitCode
 # D61: a failed upload is surfaced to stderr (non-fatal), never silently dropped.
-Assert-Contains "8b: failed PUT warns to stderr" "stride-hook: changed_files upload failed for task" $r.Stderr
+# Invoke-ChangedFilesUpload (W1094) now includes the HTTP code in the warning
+# ('000' on a transport failure like this unreachable port).
+Assert-Contains "8b: failed PUT warns to stderr" "changed_files upload failed (HTTP" $r.Stderr
 $snapshotPath8b = Join-Path $putFailProj '.stride-changed-files.json'
 if (Test-Path $snapshotPath8b) {
     Write-Host "  PASS: 8b: snapshot file persists across failed PUT" -ForegroundColor Green
@@ -890,6 +926,317 @@ $noIdCmd = 'curl -X PATCH http://stride.example.com/api/tasks/99/complete -H "Au
 $noIdJson = "{`"tool_input`":{`"command`":`"$noIdCmd`"}}"
 $r = Invoke-HookScript -InputJson $noIdJson -Phase 'pre' -ProjectDir $noIdProj
 Assert-Exit "8e: hook exits 0 with no TASK_ID" 0 $r.ExitCode
+
+# ============================================================
+# Test Group 9: early upload + before_review self-heal (W1095,
+# mirrors test-stride-hook.sh Groups 11 and 12)
+# ============================================================
+# The ps1 script has no capture step — the pre-seeded on-disk snapshot is the
+# source of truth — so the bash capture-content assertions translate to
+# upload-ordering and state-file assertions here. Unreachable-URL cases use
+# 127.0.0.1:1 so an attempted PUT deterministically records '000' and warns on
+# stderr; listener cases serve multiple requests because after_doing now PUTs
+# twice (early + refresh). Passing-command output is forwarded to stderr (the
+# copilot idiom), so command-output assertions read $r.Stderr, not $r.Stdout.
+Write-Host ""
+Write-Host "=== Test Group 9: early upload + self-heal (W1095) ==="
+
+# Listener that serves $Count requests, appending one compressed JSON record
+# per request to $Fixture (JSON-lines).
+function Start-PutListener {
+    param([int]$Port, [string]$Fixture, [int]$Count = 1)
+    Start-Job -ArgumentList $Port, $Fixture, $Count -ScriptBlock {
+        param($Port, $Fixture, $Count)
+        $l = [System.Net.HttpListener]::new()
+        $l.Prefixes.Add("http://localhost:$Port/")
+        try {
+            $l.Start()
+            for ($i = 0; $i -lt $Count; $i++) {
+                $ctx = $l.GetContext()
+                $req = $ctx.Request
+                $reader = [System.IO.StreamReader]::new($req.InputStream)
+                $body = $reader.ReadToEnd()
+                @{ Method = $req.HttpMethod; Path = $req.Url.AbsolutePath; Auth = $req.Headers['Authorization']; Body = $body } |
+                    ConvertTo-Json -Compress | Add-Content -Path $Fixture -Encoding UTF8
+                $ctx.Response.StatusCode = 200
+                $ctx.Response.OutputStream.Close()
+            }
+        } catch {
+            # Listener tear-down errors are ignored.
+        } finally {
+            if ($l.IsListening) { $l.Stop() }
+        }
+    }
+}
+
+function New-SelfHealProject {
+    param([string]$Name, [string]$StrideMd)
+    $dir = Join-Path $TmpDir $Name
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    Set-Content -Path (Join-Path $dir '.stride.md') -Value $StrideMd -Encoding UTF8
+    Set-Content -Path (Join-Path $dir '.stride-changed-files.json') `
+        -Value '[{"path":"foo.txt","diff":"unified patch body"}]' -Encoding UTF8
+    Set-Content -Path (Join-Path $dir '.stride-env-cache') `
+        -Value "TASK_ID=99`nTASK_BASE_REF=abc" -Encoding UTF8
+    return $dir
+}
+
+$shUnreachableCmd = 'curl -X PATCH http://127.0.0.1:1/api/tasks/99/complete -H "Authorization: Bearer tok"'
+$shUnreachableJson = @{ tool_input = @{ command = $shUnreachableCmd } } | ConvertTo-Json -Compress
+
+# 9a: early-upload ordering — the FIRST section command finds the upload state
+# (written by the early PUT attempt) already on disk.
+$shProjA = New-SelfHealProject -Name 'sh-early-order' -StrideMd @'
+## after_doing
+```bash
+cp .stride-diff-upload-state early-state.txt
+```
+'@
+$r = Invoke-HookScript -InputJson $shUnreachableJson -Phase 'pre' -ProjectDir $shProjA
+Assert-Exit "9a: after_doing section succeeds with early upload attempt" 0 $r.ExitCode
+$earlyState = Get-Content -Raw -Path (Join-Path $shProjA 'early-state.txt') -ErrorAction SilentlyContinue
+if ($earlyState -and $earlyState.Contains('task_id=99')) {
+    Write-Host "  PASS: 9a: upload state existed BEFORE the first section command ran" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 9a: first section command did not find the upload state: $earlyState" -ForegroundColor Red
+    $script:FAIL++
+}
+Assert-NotContains "9a: early upload emits nothing on stdout" "task_id" $r.Stdout
+Assert-Contains "9a: structured success JSON still on stdout" '"status":"success"' $r.Stdout
+
+# 9b: GLOBAL HookName gate — running the after_goal SECTION while the primary
+# hook is after_review must attempt no upload (no stderr warning). The
+# unreachable URL would warn if the gate were broken.
+$shProjB = New-SelfHealProject -Name 'sh-gate' -StrideMd @'
+## after_review
+```bash
+echo "after_review_ran"
+```
+
+## after_goal
+```bash
+echo "after_goal_ran"
+```
+'@
+$shGateResponse = '{"data":{"id":99},"hooks":[{"name":"after_goal"}]}'
+$shGateJson = @{
+    tool_input = @{ command = 'curl -X PATCH http://127.0.0.1:1/api/tasks/99/mark_reviewed -H "Authorization: Bearer tok"' }
+    tool_response = $shGateResponse
+} | ConvertTo-Json -Compress
+$r = Invoke-HookScript -InputJson $shGateJson -Phase 'post' -ProjectDir $shProjB
+Assert-Exit "9b: mark_reviewed with after_goal exits 0" 0 $r.ExitCode
+# Passing-command output is forwarded to stderr in copilot (canonical folds it
+# into the stdout commands_output array instead).
+Assert-Contains "9b: after_goal section ran" "after_goal_ran" ($r.Stderr + $r.Stdout)
+Assert-NotContains "9b: no upload attempted when HookName is not after_doing" "changed_files upload failed" $r.Stderr
+
+# 9c: failing section command — structured failed JSON and exit 2 are
+# preserved, with the early upload attempt already recorded (mirrors 11d).
+$shProjC = New-SelfHealProject -Name 'sh-failed-gate' -StrideMd @'
+## after_doing
+```bash
+bash -c 'exit 7'
+```
+'@
+$r = Invoke-HookScript -InputJson $shUnreachableJson -Phase 'pre' -ProjectDir $shProjC
+Assert-Exit "9c: failing after_doing command still returns 2" 2 $r.ExitCode
+Assert-Contains "9c: structured failed JSON emitted" '"status":"failed"' $r.Stdout
+Assert-Contains "9c: failed JSON carries exit_code 7" '"exit_code":7' $r.Stdout
+$stateC = Get-Content -Raw -Path (Join-Path $shProjC '.stride-diff-upload-state') -ErrorAction SilentlyContinue
+if ($stateC -and $stateC.Contains('task_id=99') -and $stateC.Contains('http_code=000')) {
+    Write-Host "  PASS: 9c: early upload state survives a failed quality gate" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 9c: state missing or wrong after failed gate: $stateC" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# 9d: state file records the real HTTP code, carries no credentials, and
+# after_doing PUTs exactly twice (early + refresh) — mirrors 12a/12b and the
+# bash 9a two-PUT assertion.
+$shProjD = New-SelfHealProject -Name 'sh-state-2xx' -StrideMd @'
+## after_doing
+```bash
+echo "ran"
+```
+'@
+$shPortD = 18890
+$shFixtureD = Join-Path $TmpDir 'sh-fixture-d.jsonl'
+if (Test-Path $shFixtureD) { Remove-Item -Force $shFixtureD }
+$shJobD = Start-PutListener -Port $shPortD -Fixture $shFixtureD -Count 2
+try {
+    $null = Wait-ForListener -Port $shPortD
+    $shJsonD = @{ tool_input = @{ command = "curl -X PATCH http://localhost:$shPortD/api/tasks/99/complete -H `"Authorization: Bearer tok`"" } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $shJsonD -Phase 'pre' -ProjectDir $shProjD
+    Assert-Exit "9d: after_doing with listener exits 0" 0 $r.ExitCode
+    Wait-Job $shJobD -Timeout 8 | Out-Null
+    Remove-Job $shJobD -Force -ErrorAction SilentlyContinue
+    $putCount = 0
+    if (Test-Path $shFixtureD) { $putCount = @(Get-Content $shFixtureD).Count }
+    Assert-Eq "9d: early upload + refresh make exactly two PUT calls" "2" "$putCount"
+    $stateD = Get-Content -Raw -Path (Join-Path $shProjD '.stride-diff-upload-state') -ErrorAction SilentlyContinue
+    Assert-Contains "9d: state records the task id" "task_id=99" $stateD
+    Assert-Contains "9d: state records the 2xx outcome" "http_code=200" $stateD
+    if ($stateD -and ($stateD -match 'Bearer|https?://')) {
+        Write-Host "  FAIL: 9d: state file leaked a credential or URL: $stateD" -ForegroundColor Red
+        $script:FAIL++
+    } else {
+        Write-Host "  PASS: 9d: state file carries no token or URL" -ForegroundColor Green
+        $script:PASS++
+    }
+} finally {
+    if ($shJobD -and $shJobD.State -eq 'Running') {
+        Stop-Job $shJobD -ErrorAction SilentlyContinue
+        Remove-Job $shJobD -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 9e: before_review retries when NO state file exists — the PUT arrives and the
+# outcome is recorded (mirrors 12c).
+$shProjE = New-SelfHealProject -Name 'sh-retry-missing' -StrideMd @'
+## before_review
+```bash
+echo "br_ran"
+```
+'@
+$shPortE = 18891
+$shFixtureE = Join-Path $TmpDir 'sh-fixture-e.jsonl'
+if (Test-Path $shFixtureE) { Remove-Item -Force $shFixtureE }
+$shJobE = Start-PutListener -Port $shPortE -Fixture $shFixtureE -Count 1
+try {
+    $null = Wait-ForListener -Port $shPortE
+    $shJsonE = @{ tool_input = @{ command = "curl -X PATCH http://localhost:$shPortE/api/tasks/99/complete -H `"Authorization: Bearer tok`"" } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $shJsonE -Phase 'post' -ProjectDir $shProjE
+    Assert-Exit "9e: before_review with missing state exits 0" 0 $r.ExitCode
+    Wait-Job $shJobE -Timeout 8 | Out-Null
+    Remove-Job $shJobE -Force -ErrorAction SilentlyContinue
+    if (Test-Path $shFixtureE) {
+        $recE = Get-Content -Raw -Path $shFixtureE | ConvertFrom-Json
+        Assert-Eq "9e: retry PUT method" "PUT" $recE.Method
+        Assert-Contains "9e: retry PUT targets /changed_files" "/api/tasks/99/changed_files" $recE.Path
+    } else {
+        Write-Host "  FAIL: 9e: no retry PUT arrived for missing state" -ForegroundColor Red
+        $script:FAIL++
+    }
+    $stateE = Get-Content -Raw -Path (Join-Path $shProjE '.stride-diff-upload-state') -ErrorAction SilentlyContinue
+    Assert-Contains "9e: retry outcome recorded" "http_code=200" $stateE
+} finally {
+    if ($shJobE -and $shJobE.State -eq 'Running') {
+        Stop-Job $shJobE -ErrorAction SilentlyContinue
+        Remove-Job $shJobE -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 9f: no re-upload on a healthy 2xx for the current task (mirrors 12d) — with an
+# unreachable URL an attempted retry would warn and rewrite the state to 000; a
+# healthy skip leaves both untouched.
+$shProjF = New-SelfHealProject -Name 'sh-healthy' -StrideMd @'
+## before_review
+```bash
+echo "br_ran"
+```
+'@
+Set-Content -Path (Join-Path $shProjF '.stride-diff-upload-state') `
+    -Value "task_id=99`nhttp_code=200" -Encoding UTF8
+$r = Invoke-HookScript -InputJson $shUnreachableJson -Phase 'post' -ProjectDir $shProjF
+Assert-Exit "9f: healthy-state before_review exits 0" 0 $r.ExitCode
+Assert-NotContains "9f: no retry attempted on recorded 2xx" "changed_files upload failed" $r.Stderr
+$stateF = Get-Content -Raw -Path (Join-Path $shProjF '.stride-diff-upload-state') -ErrorAction SilentlyContinue
+Assert-Contains "9f: healthy state left untouched" "http_code=200" $stateF
+
+# 9g: retry on a state naming a DIFFERENT task id, and on a recorded non-2xx
+# (mirrors 12e/12f) — the unreachable URL records the attempt as 000 and warns.
+$shProjG = New-SelfHealProject -Name 'sh-stale-id' -StrideMd @'
+## before_review
+```bash
+echo "br_ran"
+```
+'@
+Set-Content -Path (Join-Path $shProjG '.stride-diff-upload-state') `
+    -Value "task_id=88`nhttp_code=200" -Encoding UTF8
+$r = Invoke-HookScript -InputJson $shUnreachableJson -Phase 'post' -ProjectDir $shProjG
+Assert-Contains "9g: stale task id triggers the retry (warning emitted)" "changed_files upload failed" $r.Stderr
+$stateG = Get-Content -Raw -Path (Join-Path $shProjG '.stride-diff-upload-state') -ErrorAction SilentlyContinue
+Assert-Contains "9g: state rewritten for the current task" "task_id=99" $stateG
+
+$shProjG2 = New-SelfHealProject -Name 'sh-non2xx' -StrideMd @'
+## before_review
+```bash
+echo "br_ran"
+```
+'@
+Set-Content -Path (Join-Path $shProjG2 '.stride-diff-upload-state') `
+    -Value "task_id=99`nhttp_code=503" -Encoding UTF8
+$r = Invoke-HookScript -InputJson $shUnreachableJson -Phase 'post' -ProjectDir $shProjG2
+Assert-Contains "9g: recorded non-2xx triggers the retry (warning emitted)" "changed_files upload failed" $r.Stderr
+Assert-Exit "9g: failed retry never fails the before_review hook" 0 $r.ExitCode
+
+# 9h: claim refresh removes the previous task's snapshot and upload state
+# (mirrors 12h and the bash claim-refresh rm sites).
+$shProjH = Join-Path $TmpDir 'sh-claim-cleanup'
+New-Item -ItemType Directory -Path $shProjH -Force | Out-Null
+Set-Content -Path (Join-Path $shProjH '.stride.md') -Value @'
+## before_doing
+```bash
+echo "claimed"
+```
+'@ -Encoding UTF8
+Set-Content -Path (Join-Path $shProjH '.stride-changed-files.json') `
+    -Value '[{"path":"stale.txt","diff":"old"}]' -Encoding UTF8
+Set-Content -Path (Join-Path $shProjH '.stride-diff-upload-state') `
+    -Value "task_id=88`nhttp_code=200" -Encoding UTF8
+$shClaimJson = @{
+    tool_input = @{ command = 'curl -X POST https://stridelikeaboss.com/api/tasks/claim' }
+    tool_response = '{"data":{"id":42,"identifier":"W42","title":"T","status":"in_progress","complexity":"small","priority":"low"}}'
+} | ConvertTo-Json -Compress
+$r = Invoke-HookScript -InputJson $shClaimJson -Phase 'post' -ProjectDir $shProjH
+Assert-Exit "9h: claim refresh exits 0" 0 $r.ExitCode
+if (-not (Test-Path (Join-Path $shProjH '.stride-diff-upload-state'))) {
+    Write-Host "  PASS: 9h: claim refresh removes the previous task's upload state" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 9h: stale upload state survived the claim refresh" -ForegroundColor Red
+    $script:FAIL++
+}
+if (-not (Test-Path (Join-Path $shProjH '.stride-changed-files.json'))) {
+    Write-Host "  PASS: 9h: claim refresh removes the previous task's snapshot" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 9h: stale snapshot survived the claim refresh" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# 9i: after_review cleanup removes the snapshot and upload state (mirrors 12i).
+$shProjI = Join-Path $TmpDir 'sh-review-cleanup'
+New-Item -ItemType Directory -Path $shProjI -Force | Out-Null
+Set-Content -Path (Join-Path $shProjI '.stride.md') -Value @'
+## after_review
+```bash
+echo "reviewed"
+```
+'@ -Encoding UTF8
+Set-Content -Path (Join-Path $shProjI '.stride-changed-files.json') `
+    -Value '[{"path":"stale.txt","diff":"old"}]' -Encoding UTF8
+Set-Content -Path (Join-Path $shProjI '.stride-diff-upload-state') `
+    -Value "task_id=99`nhttp_code=200" -Encoding UTF8
+$shReviewJson = @{ tool_input = @{ command = 'curl -X PATCH https://stridelikeaboss.com/api/tasks/99/mark_reviewed' } } | ConvertTo-Json -Compress
+$r = Invoke-HookScript -InputJson $shReviewJson -Phase 'post' -ProjectDir $shProjI
+Assert-Exit "9i: after_review cleanup exits 0" 0 $r.ExitCode
+if (-not (Test-Path (Join-Path $shProjI '.stride-diff-upload-state'))) {
+    Write-Host "  PASS: 9i: after_review cleanup removes the upload state" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 9i: upload state survived the after_review cleanup" -ForegroundColor Red
+    $script:FAIL++
+}
+if (-not (Test-Path (Join-Path $shProjI '.stride-changed-files.json'))) {
+    Write-Host "  PASS: 9i: after_review cleanup removes the snapshot" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 9i: snapshot survived the after_review cleanup" -ForegroundColor Red
+    $script:FAIL++
+}
 
 # ============================================================
 # Summary

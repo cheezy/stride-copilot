@@ -224,6 +224,63 @@ resolve_stride_api_token() {
   printf '%s' "$_tok"
 }
 
+# Helper: PUT the on-disk per-file diff snapshot to the Stride server. We send
+# the transport-encoded envelope {"changed_files":{"encoding":"base64","data":
+# "<b64>"}} rather than the raw array so an edge request filter does not misread
+# a code diff as an attack and drop the upload (D61). The server decodes it back
+# to the same list. The base64 MUST be single-line so the value is valid inside
+# the JSON string (strip any wrap newlines). When base64 is unavailable we fall
+# back to the raw {"changed_files":[...]} shape — a bare top-level array would
+# land at params['_json'] and persist as NULL. Prints the HTTP code on stdout
+# ('000' on transport failure), warns on stderr for non-2xx, always returns 0.
+# Shared by finalize_after_doing and the before_review self-heal (W1094) —
+# callers MUST capture stdout or the code would leak into the hook's
+# structured-JSON stdout contract.
+upload_changed_files_snapshot() {
+  local _task_id="$1" _api_base="$2" _token="$3"
+  local _b64="" _http_code
+  if command -v base64 > /dev/null 2>&1; then
+    _b64=$(base64 < "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null | tr -d '\r\n')
+  fi
+
+  if [ -n "$_b64" ]; then
+    _http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+      -H "Authorization: Bearer $_token" \
+      -H 'Content-Type: application/json' \
+      -d "{\"changed_files\":{\"encoding\":\"base64\",\"data\":\"$_b64\"}}" \
+      "$_api_base/api/tasks/$_task_id/changed_files" 2>/dev/null || printf '000')
+  else
+    _http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
+      -H "Authorization: Bearer $_token" \
+      -H 'Content-Type: application/json' \
+      -d "{\"changed_files\":$(cat "$PROJECT_DIR/.stride-changed-files.json")}" \
+      "$_api_base/api/tasks/$_task_id/changed_files" 2>/dev/null || printf '000')
+  fi
+
+  # Surface a failed upload instead of dropping it silently. The diff is
+  # non-fatal to completion, so we warn rather than abort.
+  case "$_http_code" in
+    2*) : ;;
+    *)
+      printf 'stride-hook: changed_files upload failed (HTTP %s) for task %s\n' \
+        "$_http_code" "$_task_id" >&2
+      ;;
+  esac
+  printf '%s' "$_http_code"
+  return 0
+}
+
+# Helper: record the outcome of a changed_files PUT attempt (W1094) so the
+# before_review self-heal can verify it on a fresh timeout budget. Task id
+# and HTTP code ONLY — never the URL or bearer token (the file lives
+# untracked in the project root alongside the other .stride artifacts).
+record_diff_upload_state() {
+  {
+    printf 'task_id=%s\n' "$1"
+    printf 'http_code=%s\n' "$2"
+  } > "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
+}
+
 # Helper: persist the per-file diff snapshot, then fire-and-forget PUT it to
 # the Stride server. Runs only for after_doing; capture and upload failures
 # are both non-fatal. URL and token are resolved by resolve_stride_api_url /
@@ -246,46 +303,68 @@ finalize_after_doing() {
       _api_base=$(resolve_stride_api_url)
       _token=$(resolve_stride_api_token)
       if [ -n "$_api_base" ] && [ -n "$_token" ]; then
-        # Upload the per-file diff snapshot. We send the transport-encoded
-        # envelope {"changed_files":{"encoding":"base64","data":"<b64>"}} rather
-        # than the raw array so an edge request filter does not misread a code
-        # diff as an attack and drop the upload (D61). The server decodes it
-        # back to the same list. The base64 MUST be single-line so the value is
-        # valid inside the JSON string (strip any wrap newlines). When base64 is
-        # unavailable we fall back to the raw {"changed_files":[...]} shape — a
-        # bare top-level array would land at params['_json'] and persist as NULL.
-        local _b64 _http_code
-        _b64=""
-        if command -v base64 > /dev/null 2>&1; then
-          _b64=$(base64 < "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null | tr -d '\r\n')
-        fi
-
-        if [ -n "$_b64" ]; then
-          _http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-            -H "Authorization: Bearer $_token" \
-            -H 'Content-Type: application/json' \
-            -d "{\"changed_files\":{\"encoding\":\"base64\",\"data\":\"$_b64\"}}" \
-            "$_api_base/api/tasks/$TASK_ID/changed_files" 2>/dev/null || printf '000')
-        else
-          _http_code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT \
-            -H "Authorization: Bearer $_token" \
-            -H 'Content-Type: application/json' \
-            -d "{\"changed_files\":$(cat "$PROJECT_DIR/.stride-changed-files.json")}" \
-            "$_api_base/api/tasks/$TASK_ID/changed_files" 2>/dev/null || printf '000')
-        fi
-
-        # Surface a failed upload instead of dropping it silently. The diff is
-        # non-fatal to completion, so we warn rather than abort.
-        case "$_http_code" in
-          2*) : ;;
-          *)
-            printf 'stride-hook: changed_files upload failed (HTTP %s) for task %s\n' \
-              "$_http_code" "$TASK_ID" >&2
-            ;;
-        esac
+        # Upload via the shared D61 transport-envelope helper.
+        local _http_code
+        _http_code=$(upload_changed_files_snapshot "$TASK_ID" "$_api_base" "$_token")
+        # (W1094) Record the outcome after EVERY PUT attempt so the
+        # before_review self-heal can verify it on a fresh timeout budget.
+        # A skipped PUT (missing preconditions) deliberately writes nothing:
+        # missing state means "no healthy upload on record" and the retry
+        # re-checks the same preconditions itself.
+        record_diff_upload_state "$TASK_ID" "$_http_code"
       fi
     fi
   fi
+}
+
+# --- (W1094) Self-heal for the changed_files upload ---
+# The after_doing gate can burn the whole hook budget, killing the process
+# before or during the snapshot PUT — or the PUT itself returned non-2xx.
+# before_review (PostToolUse on the same completion curl) runs on a FRESH
+# budget, so it verifies the recorded outcome and re-captures + re-PUTs when no
+# healthy upload is on record for the current task. Best-effort: never returns
+# non-zero, and never touches the snapshot file unless a retry PUT is actually
+# possible (preserves the on-disk snapshot for degraded environments and legacy
+# consumers).
+self_heal_changed_files_upload() {
+  [ "${HOOK_NAME:-}" = "before_review" ] || return 0
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
+  command -v curl > /dev/null 2>&1 || return 0
+  [ -n "${TASK_ID:-}" ] || return 0
+
+  # Healthy 2xx recorded for THIS task → do not re-upload (snapshot
+  # semantics anchor at after_doing time; avoid pointless API load).
+  # Missing file, different task id, or non-2xx/empty code → retry.
+  local _state_file="$PROJECT_DIR/.stride-diff-upload-state"
+  local _state_task="" _state_code=""
+  if [ -f "$_state_file" ]; then
+    _state_task=$(grep '^task_id=' "$_state_file" 2>/dev/null | head -n 1 | cut -d= -f2- || true)
+    _state_code=$(grep '^http_code=' "$_state_file" 2>/dev/null | head -n 1 | cut -d= -f2- || true)
+  fi
+  if [ "$_state_task" = "${TASK_ID:-}" ]; then
+    case "$_state_code" in
+      2*) return 0 ;;
+    esac
+  fi
+
+  # Resolve credentials BEFORE overwriting the snapshot — when no PUT is
+  # possible the stale on-disk snapshot must be left untouched.
+  local _api_base _token
+  _api_base=$(resolve_stride_api_url)
+  _token=$(resolve_stride_api_token)
+  if [ -z "$_api_base" ] || [ -z "$_token" ]; then
+    return 0
+  fi
+
+  # Re-capture against the claim-time base ref. The subshell cd anchors git
+  # to the project repo without disturbing the main script's cwd (the
+  # before_review section's own `cd "$PROJECT_DIR"` has not run yet).
+  local _snapshot _http_code
+  _snapshot=$( (cd "$PROJECT_DIR" && capture_changed_files "${TASK_BASE_REF:-}") 2>/dev/null || printf '[]')
+  printf '%s\n' "$_snapshot" > "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
+  _http_code=$(upload_changed_files_snapshot "$TASK_ID" "$_api_base" "$_token")
+  record_diff_upload_state "$TASK_ID" "$_http_code"
+  return 0
 }
 
 # --- Parse and execute one .stride.md hook section ---
@@ -350,6 +429,15 @@ run_stride_section() {
   fi
 
   cd "$PROJECT_DIR"
+
+  # Early per-file diff snapshot (W1093) — capture and upload BEFORE the gate
+  # commands run, so a slow or failing after_doing gate can't kill the process
+  # before the diff upload completes. finalize_after_doing gates internally on
+  # the GLOBAL $HOOK_NAME, so this is inert for after_goal (and every
+  # non-after_doing hook). The post-loop call below stays as a refresh that
+  # picks up any files the gate commands themselves changed.
+  finalize_after_doing
+
   local _completed_file
   _completed_file=$(mktemp)
   local _start_secs
@@ -425,8 +513,10 @@ run_stride_section() {
     _cmd_index=$((_cmd_index + 1))
   done
 
-  # Per-file diff snapshot (G148/W719) — no-op outside after_doing (gates on
-  # the GLOBAL $HOOK_NAME). Calling this for "after_goal" does NOT retrigger.
+  # Per-file diff snapshot refresh (G148/W719; early call added in W1093) —
+  # re-capture after the gate commands succeeded so files they changed are
+  # included. No-op outside after_doing (gates on the GLOBAL $HOOK_NAME);
+  # calling this for "after_goal" does NOT retrigger.
   finalize_after_doing
 
   _end_secs=$(date +%s)
@@ -590,8 +680,11 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
         echo "TASK_PRIORITY='$(echo "$TASK_JSON" | jq -r '.priority // empty')'"
         echo "TASK_BASE_REF='$_base_ref'"
       } > "$ENV_CACHE" 2>/dev/null || true
-      # Clear any stale per-file diff snapshot from a previous task.
+      # Clear any stale per-file diff snapshot and upload-state from a
+      # previous task (W1094 — a stale state file would mislead the
+      # before_review self-heal into skipping a needed re-upload).
       rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
+      rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
     fi
   fi
 fi
@@ -602,6 +695,14 @@ if [ -f "$ENV_CACHE" ]; then
   . "$ENV_CACHE" 2>/dev/null || true
   set +a
 fi
+
+# --- (W1094) Changed-files upload self-heal ---
+# Runs only for before_review (gated internally). On a FRESH timeout budget it
+# re-verifies the after_doing upload via .stride-diff-upload-state and
+# re-captures + re-PUTs when no healthy 2xx is on record for this task. A
+# successful after_doing upload short-circuits (no duplicate PUT). Best-effort:
+# never blocks the primary hook.
+self_heal_changed_files_upload || true
 
 # --- Execute the primary hook ---
 # run_stride_section emits the structured JSON itself (success or failed
@@ -640,6 +741,7 @@ fi
 if [ "$HOOK_NAME" = "after_review" ]; then
   rm -f "$ENV_CACHE" 2>/dev/null || true
   rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
+  rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
 fi
 
 exit 0
