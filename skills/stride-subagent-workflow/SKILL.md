@@ -170,12 +170,17 @@ Produce an ordered implementation plan that you follow during implementation.
 
 **When:** Task complexity is medium or large, OR task has 2+ key_files. Skip only for small tasks with 0-1 key_files.
 
-**What to do:** Invoke the `task-reviewer` custom agent (`agents/task-reviewer.agent.md`), passing:
-- The git diff of all your changes
+**What to do:** Invoke the `task-reviewer` custom agent (`agents/task-reviewer.agent.md`), passing the git diff of all your changes AND **every review field the task supplies — NO EXCEPTIONS, never a subset:**
 - The task's `acceptance_criteria`
 - The task's `pitfalls` array
 - The task's `patterns_to_follow` text
 - The task's `testing_strategy` object
+- The task's `security_considerations`
+- The task's `description`
+- The task's `what`
+- The task's `why`
+
+This input list is owned by the reviewer's contract — keep it in sync with the "You will receive" line in `agents/task-reviewer.agent.md`; do not maintain a shorter list here. Omitting a supplied field (most often `security_considerations`) is the D60 defect where a task's security considerations came back `not_assessed`.
 
 The reviewer returns a human-readable prose summary followed by a fenced ```json block. The schema of that block is owned by [`stride/agents/task-reviewer.md`](https://github.com/cheezy/stride/blob/main/agents/task-reviewer.md) — do not duplicate field definitions here.
 
@@ -200,7 +205,7 @@ After the reviewer returns, extract the first fenced ```json block from its resp
   - `issues_found` ← the sum of the values in the structured `issue_counts` object (sum only the recognized severity keys you receive; pass through any unknown severity keys verbatim inside the structured `issue_counts` object)
   - `acceptance_criteria_checked` ← the number of entries in the structured `acceptance_criteria` array
   - `dispatched: true`, `duration_ms: <wall-clock ms>` (as before)
-- Structured fields — **copy the reviewer's entire parsed JSON object verbatim** into `reviewer_result`, then overlay the legacy fields above on top. Do **not** maintain an allow-list of which structured keys to copy: whatever the agent emitted is persisted as-is, so any field the schema gains later flows through automatically (this is exactly how `project_checks` was being dropped — an enumerated copy-list silently omitted it). The structured key-set is owned by `agents/task-reviewer.agent.md`; passthrough it, never re-enumerate it here. Concretely, the reviewer currently emits `status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, and `schema_version` — but treat that as illustrative, not exhaustive. Because you copy the parsed JSON verbatim, keys the agent did not emit are simply absent (no empty placeholders to send).
+- Structured fields — **copy the reviewer's entire parsed JSON object verbatim** into `reviewer_result`, then overlay the legacy fields above on top. Do **not** maintain an allow-list of which structured keys to copy: whatever the agent emitted is persisted as-is, so any field the schema gains later flows through automatically (this is exactly how `project_checks` was being dropped — an enumerated copy-list silently omitted it). The structured key-set is owned by `agents/task-reviewer.agent.md`; passthrough it, never re-enumerate it here. Concretely, the reviewer currently emits `status`, `issue_counts`, `issues`, `acceptance_criteria`, `project_checks`, `testing_strategy`, `patterns`, `pitfalls`, `security_considerations`, and `schema_version` — but treat that as illustrative, not exhaustive. Because you copy the parsed JSON verbatim, keys the agent did not emit are simply absent (no empty placeholders to send). **Hand-typing, re-typing, or sub-selecting `reviewer_result` is FORBIDDEN — no exceptions, no small-task or brevity shortcut. The mechanical whole-object copy + mandatory self-check below is the only correct path; if the self-check fails, fix the copy, never weaken the check.**
 
 **Worked example.** Given the reviewer response below (truncated for brevity)…
 
@@ -254,6 +259,13 @@ Approved
   "security_considerations": {"status": "passed", "note": "Move query scoped to the current user's board; no new input or injection surface."}
 }
 ```
+
+**Mandatory self-check — run before EVERY completion, NO EXCEPTIONS.** After building `reviewer_result`, verify the whole-object copy dropped nothing before you submit it via `stride-completing-tasks`:
+
+- **Every section present.** Every key the reviewer emitted in its structured block also appears in `reviewer_result`. If any section the reviewer produced is missing, you trimmed the output.
+- **`project_checks` count matches.** The number of entries in `reviewer_result.project_checks` equals the number the reviewer emitted — never trim or sub-select `project_checks` (a sub-selected copy-list is exactly how `project_checks` was being dropped).
+
+A failing self-check means the copy is wrong, not that the check is too strict: fix the copy and re-check, never weaken the check, and never submit a trimmed `reviewer_result`. (The Kanban server now hard-rejects a report that drops sections, so a failing self-check is also a failing completion — catch it here, before you submit.)
 
 Legacy + structured fields coexist in the same map; the server persists `reviewer_result` as `:jsonb` and tolerates the structured keys today (G143/W688 will validate them explicitly).
 
