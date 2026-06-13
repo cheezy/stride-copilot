@@ -260,12 +260,12 @@ Copy-Item (Join-Path $TmpDir 'basic.stride.md') (Join-Path $proj '.stride.md')
 # 1a: Standard claim command extracts correctly
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"}}' -Phase 'post' -ProjectDir $proj
 Assert-Exit "standard claim URL exits 0" 0 $r.ExitCode
-Assert-Contains "claim runs before_doing" "pulling latest" $r.Stderr
+Assert-Contains "claim runs before_doing" "pulling latest" $r.Stdout
 
 # 1b: Complete command extracts correctly
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/123/complete"}}' -Phase 'pre' -ProjectDir $proj
 Assert-Exit "complete URL exits 0" 0 $r.ExitCode
-Assert-Contains "pre-complete runs after_doing" "running tests" $r.Stderr
+Assert-Contains "pre-complete runs after_doing" "running tests" $r.Stdout
 
 # 1c: No command key present
 $r = Invoke-HookScript -InputJson '{"tool_input":{"other_key":"some value"}}' -Phase 'post' -ProjectDir $proj
@@ -295,22 +295,22 @@ $ReviewJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.c
 # 2a-d: Parse all 4 sections from basic file
 Copy-Item (Join-Path $TmpDir 'basic.stride.md') (Join-Path $proj2 '.stride.md') -Force
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $proj2
-Assert-Contains "basic: before_doing line 1" 'pulling latest' $r.Stderr
-Assert-Contains "basic: before_doing line 2" 'getting deps' $r.Stderr
+Assert-Contains "basic: before_doing line 1" 'pulling latest' $r.Stdout
+Assert-Contains "basic: before_doing line 2" 'getting deps' $r.Stdout
 
 $r = Invoke-HookScript -InputJson $CompleteJson -Phase 'pre' -ProjectDir $proj2
-Assert-Contains "basic: after_doing line 1" 'running tests' $r.Stderr
-Assert-Contains "basic: after_doing line 2" 'running credo' $r.Stderr
+Assert-Contains "basic: after_doing line 1" 'running tests' $r.Stdout
+Assert-Contains "basic: after_doing line 2" 'running credo' $r.Stdout
 
 $r = Invoke-HookScript -InputJson $CompleteJson -Phase 'post' -ProjectDir $proj2
-Assert-Contains "basic: before_review" 'creating pr' $r.Stderr
+Assert-Contains "basic: before_review" 'creating pr' $r.Stdout
 
 $r = Invoke-HookScript -InputJson $ReviewJson -Phase 'post' -ProjectDir $proj2
-Assert-Contains "basic: after_review" 'deploying' $r.Stderr
+Assert-Contains "basic: after_review" 'deploying' $r.Stdout
 
 # 2e: Sections don't bleed
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $proj2
-Assert-NotContains "sections do not bleed" 'running tests' $r.Stderr
+Assert-NotContains "sections do not bleed" 'running tests' $r.Stdout
 
 # 2f: Hook not present in file
 Copy-Item (Join-Path $TmpDir 'no-hook.stride.md') (Join-Path $proj2 '.stride.md') -Force
@@ -325,8 +325,8 @@ Assert-Exit "empty code block exits 0" 0 $r.ExitCode
 # 2h: Only first code block captured
 Copy-Item (Join-Path $TmpDir 'multiple-code-blocks.stride.md') (Join-Path $proj2 '.stride.md') -Force
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $proj2
-Assert-Contains "first block captured" 'first command' $r.Stderr
-Assert-NotContains "second block ignored" 'should not appear' $r.Stderr
+Assert-Contains "first block captured" 'first command' $r.Stdout
+Assert-NotContains "second block ignored" 'should not appear' $r.Stdout
 
 # 2i: Section with no bash block
 Copy-Item (Join-Path $TmpDir 'no-bash-block.stride.md') (Join-Path $proj2 '.stride.md') -Force
@@ -336,13 +336,13 @@ Assert-Exit "no bash block exits 0" 0 $r.ExitCode
 # 2j: Adjacent sections
 Copy-Item (Join-Path $TmpDir 'adjacent-sections.stride.md') (Join-Path $proj2 '.stride.md') -Force
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $proj2
-# The passing command's OUTPUT (`before` / `after`) is forwarded to stderr; the
-# command TEXT only appears JSON-escaped in stdout, so assert on the output.
-Assert-Contains "adjacent: before_doing correct" 'before' ($r.Stderr + $r.Stdout)
-Assert-NotContains "adjacent sections do not bleed" 'after' $r.Stderr
+# The passing command's OUTPUT (`before` / `after`) is now folded into the
+# success JSON's commands_output on stdout (D65), not written to stderr.
+Assert-Contains "adjacent: before_doing correct" 'before' $r.Stdout
+Assert-NotContains "adjacent sections do not bleed" 'after' $r.Stdout
 
 $r = Invoke-HookScript -InputJson $CompleteJson -Phase 'pre' -ProjectDir $proj2
-Assert-Contains "adjacent: after_doing correct" 'after' ($r.Stderr + $r.Stdout)
+Assert-Contains "adjacent: after_doing correct" 'after' $r.Stdout
 
 # ============================================================
 # Test Group 3: Whitespace trimming
@@ -432,22 +432,22 @@ echo "after_review_executed"
 # 5a: Claim triggers before_doing
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim -d {}"}}' -Phase 'post' -ProjectDir $proj5
 Assert-Exit "claim exits 0" 0 $r.ExitCode
-Assert-Contains "claim runs before_doing" "before_doing_executed" $r.Stderr
+Assert-Contains "claim runs before_doing" "before_doing_executed" $r.Stdout
 
 # 5b: Pre-complete triggers after_doing
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete"}}' -Phase 'pre' -ProjectDir $proj5
 Assert-Exit "pre-complete exits 0" 0 $r.ExitCode
-Assert-Contains "pre-complete runs after_doing" "after_doing_executed" $r.Stderr
+Assert-Contains "pre-complete runs after_doing" "after_doing_executed" $r.Stdout
 
 # 5c: Post-complete triggers before_review
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete"}}' -Phase 'post' -ProjectDir $proj5
 Assert-Exit "post-complete exits 0" 0 $r.ExitCode
-Assert-Contains "post-complete runs before_review" "before_review_executed" $r.Stderr
+Assert-Contains "post-complete runs before_review" "before_review_executed" $r.Stdout
 
 # 5d: Mark-reviewed triggers after_review
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/99/mark_reviewed"}}' -Phase 'post' -ProjectDir $proj5
 Assert-Exit "mark-reviewed exits 0" 0 $r.ExitCode
-Assert-Contains "mark-reviewed runs after_review" "after_review_executed" $r.Stderr
+Assert-Contains "mark-reviewed runs after_review" "after_review_executed" $r.Stdout
 
 # 5e: Non-stride command exits cleanly
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"ls -la"}}' -Phase 'post' -ProjectDir $proj5
@@ -478,7 +478,13 @@ echo "step three should not run"
 
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"}}' -Phase 'post' -ProjectDir $failProj
 Assert-Exit "failing hook exits 2" 2 $r.ExitCode
-Assert-Contains "failing hook ran step one" "step one passes" $r.Stderr
+# The failure message stays on stderr — load-bearing for the PreToolUse blocking
+# semantic (exit 2 + stderr message).
+Assert-Contains "failing hook reports failure on stderr" "hook failed on command 2/3" $r.Stderr
+# D65: the earlier PASSING command's output must NOT leak to stderr (and on the
+# failure path it is not folded into commands_output either — the failed JSON
+# carries only commands_completed/remaining).
+Assert-NotContains "passing command output kept off stderr" "step one passes" $r.Stderr
 Assert-NotContains "stops execution after failure" "step three should not run" $r.Stderr
 
 # 5i: Hook with multiple successful commands
@@ -495,9 +501,9 @@ echo "test_three"
 
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete"}}' -Phase 'pre' -ProjectDir $multiProj
 Assert-Exit "multi-command exits 0" 0 $r.ExitCode
-Assert-Contains "multi-command: step 1" "test_one" $r.Stderr
-Assert-Contains "multi-command: step 2" "test_two" $r.Stderr
-Assert-Contains "multi-command: step 3" "test_three" $r.Stderr
+Assert-Contains "multi-command: step 1" "test_one" $r.Stdout
+Assert-Contains "multi-command: step 2" "test_two" $r.Stdout
+Assert-Contains "multi-command: step 3" "test_three" $r.Stdout
 
 # 5j: Missing section exits 0
 $partialProj = Join-Path $TmpDir 'partial-project'
@@ -529,7 +535,7 @@ New-Item -ItemType Directory -Path $noNewlineProj -Force | Out-Null
 
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $noNewlineProj
 Assert-Exit "no trailing newline exits 0" 0 $r.ExitCode
-Assert-Contains "no trailing newline runs command" "no trailing newline" $r.Stderr
+Assert-Contains "no trailing newline runs command" "no trailing newline" $r.Stdout
 
 # 6b: Command with environment variable references
 $envProj = Join-Path $TmpDir 'env-project'
@@ -543,7 +549,7 @@ echo "home=$HOME"
 
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $envProj
 Assert-Exit "env var expansion exits 0" 0 $r.ExitCode
-Assert-Contains "env var expanded" "home=" $r.Stderr
+Assert-Contains "env var expanded" "home=" $r.Stdout
 
 # 6c: .stride.md with CRLF line endings
 $crlfProj = Join-Path $TmpDir 'crlf-project'
@@ -556,7 +562,7 @@ New-Item -ItemType Directory -Path $crlfProj -Force | Out-Null
 
 $r = Invoke-HookScript -InputJson $ClaimJson -Phase 'post' -ProjectDir $crlfProj
 Assert-Exit "CRLF line endings exits 0" 0 $r.ExitCode
-Assert-Contains "CRLF runs command" "crlf test" $r.Stderr
+Assert-Contains "CRLF runs command" "crlf test" $r.Stdout
 
 # 6d: JSON with tool_response (env caching path)
 $cacheProj = Join-Path $TmpDir 'cache-project'
@@ -571,8 +577,8 @@ echo "id=$TASK_IDENTIFIER title=$TASK_TITLE"
 $claimWithResponse = '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"},"tool_response":"{\"data\":{\"id\":42,\"identifier\":\"W99\",\"title\":\"Test Task\",\"status\":\"doing\",\"complexity\":\"small\",\"priority\":\"high\"}}"}'
 $r = Invoke-HookScript -InputJson $claimWithResponse -Phase 'post' -ProjectDir $cacheProj
 Assert-Exit "env caching exits 0" 0 $r.ExitCode
-Assert-Contains "env cache: identifier" "id=W99" $r.Stderr
-Assert-Contains "env cache: title" "title=Test Task" $r.Stderr
+Assert-Contains "env cache: identifier" "id=W99" $r.Stdout
+Assert-Contains "env cache: title" "title=Test Task" $r.Stdout
 # Clean up cache
 $cacheFile = Join-Path $cacheProj '.stride-env-cache'
 if (Test-Path $cacheFile) { Remove-Item -Force $cacheFile }
@@ -581,6 +587,28 @@ if (Test-Path $cacheFile) { Remove-Item -Force $cacheFile }
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"}}' -Phase 'post' -ProjectDir $proj5
 Assert-Contains "success JSON has hook field" '"hook"' $r.Stdout
 Assert-Contains "success JSON has status" '"success"' $r.Stdout
+# D65: success JSON carries the per-command output array and writes no stderr.
+Assert-Contains "success JSON has commands_output field" '"commands_output"' $r.Stdout
+Assert-Eq "success path writes nothing to stderr" "" $r.Stderr.Trim()
+$successObj = $r.Stdout | ConvertFrom-Json
+Assert-Eq "success stdout parses to status success" "success" $successObj.status
+
+# 6e2: D65 — a PASSING command that writes to STDERR (exit 0) is the exact
+# production trigger. Its stderr must NOT reach fd 2 (where Claude Code
+# mislabels it); it must land in the success JSON's commands_output[].stderr.
+$stderrOkProj = Join-Path $TmpDir 'stderr-ok-project'
+New-Item -ItemType Directory -Path $stderrOkProj -Force | Out-Null
+Set-Content -Path (Join-Path $stderrOkProj '.stride.md') -Value @'
+## before_doing
+```bash
+echo "compiling to stderr" 1>&2
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"}}' -Phase 'post' -ProjectDir $stderrOkProj
+Assert-Exit "stderr-writing passing gate exits 0" 0 $r.ExitCode
+Assert-Eq "stderr-writing passing gate writes nothing to fd 2" "" $r.Stderr.Trim()
+$soObj = $r.Stdout | ConvertFrom-Json
+Assert-Contains "passing command's stderr folded into commands_output" "compiling to stderr" $soObj.commands_output[0].stderr
 
 # 6f: Structured JSON output on failure
 $r = Invoke-HookScript -InputJson '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"}}' -Phase 'post' -ProjectDir $failProj
@@ -645,8 +673,8 @@ $agInputPresent = Build-AfterGoalInput `
     -HookNames @('after_doing', 'before_review', 'after_review', 'after_goal')
 $r = Invoke-HookScript -InputJson $agInputPresent -Phase 'post' -ProjectDir $agProj
 Assert-Exit "7a: end-to-end after_goal present exits 0" 0 $r.ExitCode
-Assert-Contains "7a: primary before_review ran" "before_review_ran" $r.Stderr
-Assert-Contains "7a: after_goal section ran" "after_goal_ran" $r.Stderr
+Assert-Contains "7a: primary before_review ran" "before_review_ran" $r.Stdout
+Assert-Contains "7a: after_goal section ran" "after_goal_ran" $r.Stdout
 Assert-Contains "7a: structured success JSON for after_goal on stdout" '"hook":"after_goal"' $r.Stdout
 
 # 7b: after_goal in response + ## after_goal section ABSENT (back-compat).
@@ -675,7 +703,7 @@ echo "after_review_ran"
 '@ -Encoding UTF8
 $r = Invoke-HookScript -InputJson $agInputPresent -Phase 'post' -ProjectDir $agProjMissing
 Assert-Exit "7b: end-to-end after_goal-missing-section exits 0 (back-compat)" 0 $r.ExitCode
-Assert-Contains "7b: primary before_review still ran" "before_review_ran" $r.Stderr
+Assert-Contains "7b: primary before_review still ran" "before_review_ran" $r.Stdout
 Assert-NotContains "7b: missing ## after_goal emits no after_goal JSON" '"hook":"after_goal"' $r.Stdout
 
 # 7c: after_goal NOT in response -> behavior unchanged.
@@ -684,8 +712,8 @@ $agInputAbsent = Build-AfterGoalInput `
     -HookNames @('after_doing', 'before_review', 'after_review')
 $r = Invoke-HookScript -InputJson $agInputAbsent -Phase 'post' -ProjectDir $agProj
 Assert-Exit "7c: end-to-end after_goal-absent exits 0" 0 $r.ExitCode
-Assert-Contains "7c: primary before_review ran" "before_review_ran" $r.Stderr
-Assert-NotContains "7c: after_goal absent does not execute the section" "after_goal_ran" $r.Stderr
+Assert-Contains "7c: primary before_review ran" "before_review_ran" $r.Stdout
+Assert-NotContains "7c: after_goal absent does not execute the section" "after_goal_ran" $r.Stdout
 
 # 7d: after_goal section command exits non-zero -> structured failure JSON
 # surfaces on stdout; script exit code stays 0.
@@ -719,8 +747,8 @@ $agInputMr = Build-AfterGoalInput `
     -HookNames @('after_review', 'after_goal')
 $r = Invoke-HookScript -InputJson $agInputMr -Phase 'post' -ProjectDir $agProj
 Assert-Exit "7e: end-to-end after_goal on mark_reviewed exits 0" 0 $r.ExitCode
-Assert-Contains "7e: mark_reviewed runs after_review" "after_review_ran" $r.Stderr
-Assert-Contains "7e: mark_reviewed runs after_goal" "after_goal_ran" $r.Stderr
+Assert-Contains "7e: mark_reviewed runs after_review" "after_review_ran" $r.Stdout
+Assert-Contains "7e: mark_reviewed runs after_goal" "after_goal_ran" $r.Stdout
 
 # ============================================================
 # Test Group 8: PUT snapshot upload (W839 — G162 port)
