@@ -955,6 +955,91 @@ $noIdJson = "{`"tool_input`":{`"command`":`"$noIdCmd`"}}"
 $r = Invoke-HookScript -InputJson $noIdJson -Phase 'pre' -ProjectDir $noIdProj
 Assert-Exit "8e: hook exits 0 with no TASK_ID" 0 $r.ExitCode
 
+# 8f (D67): Invoke-ChangedFilesUpload strips the hook's own root artifacts from
+# the snapshot before PUT. The ps1 has no capture step, so this upload-side
+# filter is the equivalent enforcement point. A same-named file in a
+# subdirectory is kept; the legitimate change is kept.
+$exclProj = Join-Path $TmpDir 'put-exclude-project'
+New-Item -ItemType Directory -Path $exclProj -Force | Out-Null
+Set-Content -Path (Join-Path $exclProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "ran"
+```
+'@ -Encoding UTF8
+Set-Content -Path (Join-Path $exclProj '.stride-changed-files.json') `
+    -Value '[{"path":".stride-diff-upload-state","diff":"state body"},{"path":"lib/foo.ex","diff":"real patch"},{"path":"sub/.stride-changed-files.json","diff":"user file"},{"path":".stride-changed-files.json","diff":"snapshot body"}]' -Encoding UTF8
+Set-Content -Path (Join-Path $exclProj '.stride-env-cache') `
+    -Value "TASK_ID=99`nTASK_BASE_REF=abc" -Encoding UTF8
+
+$exclPort = 18882
+$exclFixture = Join-Path $TmpDir 'put-exclude-fixture.json'
+if (Test-Path $exclFixture) { Remove-Item -Force $exclFixture }
+
+$exclListenerJob = Start-Job -ArgumentList $exclPort, $exclFixture -ScriptBlock {
+    param($Port, $Fixture)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start()
+        $ctx = $l.GetContext()
+        $req = $ctx.Request
+        $reader = [System.IO.StreamReader]::new($req.InputStream)
+        $body = $reader.ReadToEnd()
+        @{ Body = $body } | ConvertTo-Json -Compress | Set-Content -Path $Fixture -Encoding UTF8
+        $resp = $ctx.Response
+        $resp.StatusCode = 200
+        $resp.OutputStream.Close()
+    } catch {
+        # Listener tear-down errors are ignored.
+    } finally {
+        if ($l.IsListening) { $l.Stop() }
+    }
+}
+
+try {
+    $null = Wait-ForListener -Port $exclPort
+    $exclCmd = "curl -X PATCH http://localhost:$exclPort/api/tasks/99/complete -H `"Authorization: Bearer test_token_xyz`""
+    $exclJson = @{ tool_input = @{ command = $exclCmd } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $exclJson -Phase 'pre' -ProjectDir $exclProj
+    Assert-Exit "8f: hook exits 0 after filtered PUT" 0 $r.ExitCode
+
+    Wait-Job $exclListenerJob -Timeout 8 | Out-Null
+    Remove-Job $exclListenerJob -Force -ErrorAction SilentlyContinue
+
+    if (Test-Path $exclFixture) {
+        $record = Get-Content -Raw -Path $exclFixture | ConvertFrom-Json
+        $parsedBody = $record.Body | ConvertFrom-Json
+        $decoded = [System.Convert]::FromBase64String($parsedBody.changed_files.data)
+        $decodedText = [System.Text.Encoding]::UTF8.GetString($decoded)
+        $entries = @($decodedText | ConvertFrom-Json)
+        $paths = @($entries | ForEach-Object { $_.path })
+        Assert-Eq "8f: filtered snapshot keeps only the non-artifact entries" "2" "$($entries.Count)"
+        if ($paths -contains 'lib/foo.ex' -and $paths -contains 'sub/.stride-changed-files.json') {
+            Write-Host "  PASS: 8f: real file and subdir same-named file survive the filter" -ForegroundColor Green
+            $script:PASS++
+        } else {
+            Write-Host "  FAIL: 8f: expected lib/foo.ex + sub/.stride-changed-files.json, got: $($paths -join ', ')" -ForegroundColor Red
+            $script:FAIL++
+        }
+        if ($paths -notcontains '.stride-diff-upload-state' -and $paths -notcontains '.stride-changed-files.json') {
+            Write-Host "  PASS: 8f: root upload-state and snapshot artifacts stripped from PUT body" -ForegroundColor Green
+            $script:PASS++
+        } else {
+            Write-Host "  FAIL: 8f: root artifacts leaked into PUT body: $($paths -join ', ')" -ForegroundColor Red
+            $script:FAIL++
+        }
+    } else {
+        Write-Host "  FAIL: 8f: filtered PUT did not arrive at listener" -ForegroundColor Red
+        $script:FAIL++
+    }
+} finally {
+    if ($exclListenerJob -and $exclListenerJob.State -eq 'Running') {
+        Stop-Job $exclListenerJob -ErrorAction SilentlyContinue
+        Remove-Job $exclListenerJob -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # ============================================================
 # Test Group 9: early upload + before_review self-heal (W1095,
 # mirrors test-stride-hook.sh Groups 11 and 12)

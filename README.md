@@ -208,7 +208,7 @@ No platform-specific configuration needed — the single `hooks.json` entry hand
 
 After a successful task claim, hook scripts extract task metadata (TASK_ID, TASK_IDENTIFIER, TASK_TITLE, etc.) from the API response and cache them to `.stride-env-cache`. Subsequent hooks can reference these variables in `.stride.md` commands (e.g., `$TASK_IDENTIFIER`). The cache is cleaned up after the `after_review` hook.
 
-Add `.stride-env-cache`, `.stride-changed-files.json`, and `.stride-diff-upload-state` to your `.gitignore` — all three are temp files written between hook invocations. `.stride-changed-files.json` holds the per-file diff snapshot; `.stride-diff-upload-state` records the last upload outcome (task id + HTTP code only, never credentials). All three are cleaned up automatically at the claim refresh and after the `after_review` hook.
+Add `.stride-env-cache`, `.stride-changed-files.json`, and `.stride-diff-upload-state` to your `.gitignore` — all three are temp files written between hook invocations. `.stride-changed-files.json` holds the per-file diff snapshot; `.stride-diff-upload-state` records the last upload outcome (task id + HTTP code only, never credentials). All three are cleaned up automatically at the claim refresh and after the `after_review` hook. As a backstop, `capture_changed_files` also excludes `.stride-diff-upload-state` and `.stride-changed-files.json` from the snapshot — anchored to the repository root, so a same-named file in a subdirectory of your project is still captured — and the upload path strips them before PUT, so even an untracked or accidentally-committed state file never appears in a task's `changed_files`.
 
 ### The `after_doing` time budget
 
