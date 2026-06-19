@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.18.0] - 2026-06-19
+
+Parity release: ports the canonical stride **v1.29.0** change (goal G243 → Copilot goal G244), documenting the `technical_details` task field across the Copilot variant. Copilot divergences are preserved: agents keep the `.agent.md` suffix and there is no marketplace.
+
+### Added
+
+- **`technical_details` task field documentation** (W1183–W1185 — canonical **v1.29.0**, G243/W1179–W1181) — `technical_details` is an **optional, free-form JSON object** (arbitrary keys/values) a task may carry for any additional technical context that does not fit the structured fields — data shapes, gotchas, key decisions, reference links. Unlike `testing_strategy` it has **no fixed keys**, and it is **not** one of the five review_queue-scored fields (`acceptance_criteria`, `testing_strategy`, `security_considerations`, `pitfalls`, `patterns_to_follow`), so a blank `{}` is never a scoring gap. Documented consistently in the creation contracts (`skills/stride-creating-tasks/SKILL.md` Field Quick Reference, complete-task example, Embedded Object Formats — contrasted with `testing_strategy`; `skills/stride-creating-goals/SKILL.md` nested-task note), the enrichment/decomposition guidance (`agents/task-enricher.agent.md` + `skills/stride-enriching-tasks/SKILL.md` — optional, populate from discovered context only, never fabricated, no secrets; `agents/task-decomposer.agent.md` MAY-carry note), and the workflow/exploration references (`skills/stride-workflow/SKILL.md` Step 1 review list; `agents/task-explorer.agent.md` folds it into the summary).
+
+### Backward compatibility
+
+Documentation-only. No wire-shape, hook, or `.stride.md` / `.stride_auth.md` change; `technical_details` is optional everywhere it appears and is never added to any scored-field set, so tasks that omit it behave exactly as before.
+
 ## [2.17.0] - 2026-06-13
 
 Parity release: brings the Copilot variant up from canonical stride v1.23.0 to **v1.28.0**, porting five canonical releases (goal G229). Copilot divergences are preserved, not "fixed" toward canonical: agents keep the `.agent.md` suffix, there is no `AGENTS.md` (README is the doc surface), there is no marketplace, and the review-block extraction lives in `skills/stride-subagent-workflow/SKILL.md` rather than `stride-workflow` Step 6. Already-shipped items (reviewer `project_checks`/`not_applicable` enum, `security_considerations` scoring, the base64 `changed_files` envelope, and the `reviewer_result` verbatim passthrough) were **not** re-ported.
