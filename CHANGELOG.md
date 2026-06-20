@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.19.0] - 2026-06-20
+
+Parity release: ports the canonical stride **v1.30.0** change (goal G254), documenting the `created_by_agent` task field across the Copilot creation skills. Copilot divergences are preserved: agents keep the `.agent.md` suffix and there is no marketplace. Delivered under task W1234.
+
+### Added
+
+Agent-created tasks previously landed with `created_by_agent` nil, so the `/agents` activity feed rendered an uninformative `?` avatar on every `created` row. The creation skills now document the field on the create request bodies:
+
+- **`skills/stride-creating-tasks/SKILL.md`** — `created_by_agent` added to the complete-task example, the Field Quick Reference table (string, create-only, forbidden on `PATCH`), and an explanatory note: set it to the plugin's own agent name (`"GitHub Copilot"` — the exact value sent as `agent_name` on claim/complete), never the `ai_agent:<model>` token form, so one agent stays one roster identity.
+- **`skills/stride-creating-goals/SKILL.md`** — `created_by_agent` added to the batch goal example with a note that the server propagates the goal's value to every nested child task.
+
+Documentation-only: no wire-shape, hook, or auth change; `created_by_agent` is optional on create, was already accepted by the API, and is forbidden on `PATCH`.
+
 ## [2.18.0] - 2026-06-19
 
 Parity release: ports the canonical stride **v1.29.0** change (goal G243 → Copilot goal G244), documenting the `technical_details` task field across the Copilot variant. Copilot divergences are preserved: agents keep the `.agent.md` suffix and there is no marketplace.
