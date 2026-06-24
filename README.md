@@ -6,7 +6,14 @@ This is the GitHub Copilot version of the [Stride plugin](https://github.com/che
 
 ## Installation
 
-Install via the Copilot CLI plugin command:
+**From the Stride Copilot marketplace** (recommended):
+
+```bash
+copilot plugin marketplace add cheezy/stride-copilot-marketplace
+copilot plugin install stride-copilot
+```
+
+**Directly from the repository** (alternative):
 
 ```bash
 copilot plugin install https://github.com/cheezy/stride-copilot
