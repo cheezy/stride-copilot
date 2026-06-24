@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.20.0] - 2026-06-24
+
+Distribution release: stride-copilot is now published in a GitHub Copilot CLI marketplace, [`cheezy/stride-copilot-marketplace`](https://github.com/cheezy/stride-copilot-marketplace). This **supersedes the "there is no marketplace" divergence note** carried by earlier entries — going forward stride-copilot is distributed through that marketplace (the historical entries below remain as written, accurate as of their dates). Delivered under goal G266 (W1318 README, W1319 marketplace sync doc, W1320 this release).
+
+### Added
+
+- **`README.md`** (W1318) — the Installation section now documents the marketplace install path as the recommended option: `copilot plugin marketplace add cheezy/stride-copilot-marketplace` then `copilot plugin install stride-copilot`. The direct-from-repository install (`copilot plugin install https://github.com/cheezy/stride-copilot`) is retained as a labeled alternative.
+- **`cheezy/stride-copilot-marketplace` `RELEASE.md`** (W1319) — the marketplace repo gained a documented sync/release process: each plugin is vendored as a pinned copy under `plugins/<name>/`, so a new stride-copilot release must re-vendor the tree (excluding `.git` and secrets) and bump the `marketplace.json` plugin entry version to match this `plugin.json` version. That re-sync is tracked separately (W1321).
+
+### Backward compatibility
+
+Documentation/distribution-only: no wire-shape, hook, `.stride.md` / `.stride_auth.md`, or `.gitignore` change. Existing direct-URL installs continue to work unchanged; the marketplace is an additional install path, not a replacement.
+
 ## [2.19.0] - 2026-06-20
 
 Parity release: ports the canonical stride **v1.30.0** change (goal G254), documenting the `created_by_agent` task field across the Copilot creation skills. Copilot divergences are preserved: agents keep the `.agent.md` suffix and there is no marketplace. Delivered under task W1234.
