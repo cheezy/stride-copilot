@@ -2886,6 +2886,86 @@ STRIDE
 fi
 
 # ============================================================
+# Test Group 15: millisecond duration reporting (W1514)
+# ============================================================
+echo ""
+echo "=== Test Group 15: millisecond duration reporting (W1514) ==="
+
+# 15a: _now_ms returns an all-digit epoch-millisecond value of the right
+# magnitude (13 digits in the 2020s).
+NOW_MS_A=$(source "$HOOK_SCRIPT" 2>/dev/null; _now_ms)
+case "$NOW_MS_A" in
+  '' | *[!0-9]*)
+    echo -e "  ${RED}FAIL${RESET}: 15a: _now_ms not all digits ($NOW_MS_A)"; FAIL=$((FAIL + 1)) ;;
+  *)
+    if [ "${#NOW_MS_A}" -ge 12 ]; then
+      echo -e "  ${GREEN}PASS${RESET}: 15a: _now_ms returns epoch-ms all digits (${#NOW_MS_A} digits)"; PASS=$((PASS + 1))
+    else
+      echo -e "  ${RED}FAIL${RESET}: 15a: _now_ms magnitude too small ($NOW_MS_A)"; FAIL=$((FAIL + 1))
+    fi ;;
+esac
+
+# 15b: _now_ms advances with sub-second fidelity across a 0.15s sleep — proves
+# the active source is high-resolution, not the whole-second last resort (which
+# would report 0 or 1000).
+NOW_MS_DELTA=$(source "$HOOK_SCRIPT" 2>/dev/null; a=$(_now_ms); sleep 0.15; b=$(_now_ms); echo $((b - a)))
+if [ "$NOW_MS_DELTA" -ge 100 ] && [ "$NOW_MS_DELTA" -lt 1000 ]; then
+  echo -e "  ${GREEN}PASS${RESET}: 15b: _now_ms tracks a 0.15s sleep with ms fidelity (${NOW_MS_DELTA}ms)"; PASS=$((PASS + 1))
+else
+  echo -e "  ${RED}FAIL${RESET}: 15b: _now_ms delta ${NOW_MS_DELTA}ms is not sub-second high-resolution"; FAIL=$((FAIL + 1))
+fi
+
+# 15c: perl fallback — with GNU `date +%s%N` forced to fail and EPOCHREALTIME
+# unset, _now_ms still returns an all-digit epoch-ms value via Time::HiRes. This
+# is the path a stock-BSD-date (macOS without coreutils) platform takes.
+if command -v perl > /dev/null 2>&1; then
+  NOW_MS_PERL=$(
+    source "$HOOK_SCRIPT" 2>/dev/null
+    unset EPOCHREALTIME
+    date() { return 1; }   # neutralize the GNU date +%s%N branch
+    _now_ms
+  )
+  case "$NOW_MS_PERL" in
+    '' | *[!0-9]*)
+      echo -e "  ${RED}FAIL${RESET}: 15c: perl fallback not all digits ($NOW_MS_PERL)"; FAIL=$((FAIL + 1)) ;;
+    *)
+      if [ "${#NOW_MS_PERL}" -ge 12 ]; then
+        echo -e "  ${GREEN}PASS${RESET}: 15c: perl fallback yields epoch-ms when date +%N is unavailable"; PASS=$((PASS + 1))
+      else
+        echo -e "  ${RED}FAIL${RESET}: 15c: perl fallback magnitude wrong ($NOW_MS_PERL)"; FAIL=$((FAIL + 1))
+      fi ;;
+  esac
+else
+  echo "  SKIP: 15c perl fallback (perl not available)"
+fi
+
+# 15d: the success JSON emits an integer duration_ms and NO lingering
+# duration_seconds field.
+if command -v jq > /dev/null 2>&1; then
+  MS_PROJ="$TMPDIR_TEST/duration-ms"
+  mkdir -p "$MS_PROJ"
+  cat > "$MS_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo "ms_test"
+```
+STRIDE
+  MS_OUT=$(echo "$COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$MS_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+  if echo "$MS_OUT" | jq -e '.duration_ms | type == "number"' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 15d: success JSON has integer duration_ms"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 15d: success JSON missing numeric duration_ms: $MS_OUT"; FAIL=$((FAIL + 1))
+  fi
+  if echo "$MS_OUT" | jq -e 'has("duration_seconds")' > /dev/null 2>&1; then
+    echo -e "  ${RED}FAIL${RESET}: 15d: lingering duration_seconds field in success JSON"; FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 15d: no lingering duration_seconds field"; PASS=$((PASS + 1))
+  fi
+else
+  echo "  SKIP: 15d duration_ms JSON assertion (jq not available)"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

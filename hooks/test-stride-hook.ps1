@@ -1693,6 +1693,32 @@ Assert-Exit "11c: non-numeric override falls back to default budget (exit 0)" 0 
 Assert-Contains "11c: default-budget command ran to completion" "default_budget_ran" $r.Stdout
 
 # ============================================================
+# Test Group 12: millisecond duration reporting (W1514)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 15 (15d). The success JSON must carry
+# an integer duration_ms (from Stopwatch.Elapsed.TotalMilliseconds) and no
+# lingering duration_seconds field.
+Write-Host ""
+Write-Host "=== Test Group 12: millisecond duration reporting (W1514) ==="
+
+$msProj = Join-Path $TmpDir 'duration-ms'
+New-Item -ItemType Directory -Path $msProj -Force | Out-Null
+Set-Content -Path (Join-Path $msProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "ms_test"
+```
+'@ -Encoding UTF8
+$msCompleteJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+$r = Invoke-HookScript -InputJson $msCompleteJson -Phase 'pre' -ProjectDir $msProj
+Assert-Exit "12a: duration_ms hook exits 0" 0 $r.ExitCode
+Assert-Contains "12a: success JSON carries duration_ms" '"duration_ms":' $r.Stdout
+# ConvertTo-Json -Compress emits an unquoted number for an [int]; a quoted value
+# would mean it was serialized as a string.
+Assert-NotContains "12a: duration_ms is numeric (unquoted)" '"duration_ms":"' $r.Stdout
+Assert-NotContains "12a: no lingering duration_seconds field" 'duration_seconds' $r.Stdout
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

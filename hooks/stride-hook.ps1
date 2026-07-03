@@ -529,7 +529,12 @@ function Invoke-StrideSection {
     # commands_output array (D65). Keeps passing-gate output off stderr so it is
     # not rendered under a false hook-error label.
     $secCmdOutputs = @()
+    # $secStartTime (whole seconds) drives the W1513 per-hook timeout elapsed
+    # math; $secStopwatch (W1514) drives the millisecond duration_ms reported in
+    # the success JSON — independent clocks so timeout budgeting keeps its cheap
+    # second granularity while telemetry gains real sub-second fidelity.
     $secStartTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $secStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     # Per-hook timeout budget (W1513): the whole section shares $secHookLimit
     # seconds; each command waits only for the time REMAINING so the section
     # total can never exceed the limit (nor the 300s host ceiling).
@@ -673,15 +678,15 @@ function Invoke-StrideSection {
     # for "after_goal" does not retrigger).
     Invoke-FinalizeAfterDoing
 
-    $secEndTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $secDuration = $secEndTime - $secStartTime
+    $secStopwatch.Stop()
+    $secDurationMs = [int]$secStopwatch.Elapsed.TotalMilliseconds
 
     $successResult = [ordered]@{
         hook               = $Section
         status             = 'success'
         commands_completed = $secCompletedCmds
         commands_output    = @($secCmdOutputs)
-        duration_seconds   = $secDuration
+        duration_ms        = $secDurationMs
     }
     [Console]::Out.WriteLine(($successResult | ConvertTo-Json -Depth 5 -Compress))
 

@@ -413,6 +413,42 @@ _resolve_timeout_bin() {
   fi
 }
 
+# Current wall-clock time in integer milliseconds, portably (W1514). The hook
+# may run under bash 3.2 (no EPOCHREALTIME) and/or BSD date (no %N), so several
+# high-resolution sources are tried in order, each guarded to accept only an
+# all-digit result, before a whole-second last resort:
+#   1. bash 5+ EPOCHREALTIME  — microsecond, no subprocess
+#   2. GNU `date +%s%N`        — nanosecond (rejected on BSD, whose %N is literal)
+#   3. perl Time::HiRes        — microsecond; core module, present on macOS/Linux
+#   4. `date +%s` * 1000       — ms UNITS at second precision (never sub-second)
+# This satisfies the duration_ms convention without depending on GNU-only
+# `date +%s%N`.
+_now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    # "<secs>.<frac>"; the radix char is locale-dependent, so normalize , -> .
+    local _er="${EPOCHREALTIME//,/.}"
+    local _s="${_er%%.*}" _f="${_er#*.}"
+    _f="${_f}000000"
+    printf '%s%s' "$_s" "${_f:0:3}"
+    return 0
+  fi
+  local _ns
+  _ns=$(date +%s%N 2>/dev/null)
+  case "$_ns" in
+    '' | *[!0-9]*) : ;;
+    *) printf '%s' "$(( _ns / 1000000 ))"; return 0 ;;
+  esac
+  if command -v perl > /dev/null 2>&1; then
+    local _pms
+    _pms=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null)
+    case "$_pms" in
+      '' | *[!0-9]*) : ;;
+      *) printf '%s' "$_pms"; return 0 ;;
+    esac
+  fi
+  printf '%s000' "$(date +%s)"
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Takes a single section name (e.g. "before_doing", "after_goal") and:
 #   1. Parses the first `## <section>` block from .stride.md (first-wins,
@@ -491,12 +527,17 @@ run_stride_section() {
   # commands_output array (D65). Keeps passing-gate output off fd 2 so Claude
   # Code does not render it under a false "PreToolUse:Bash hook error" label.
   _output_file=$(mktemp)
-  local _start_secs
+  # _start_secs (whole seconds) drives the W1513 per-hook timeout elapsed math;
+  # _start_ms (W1514) drives the millisecond duration_ms reported in the success
+  # JSON — the two clocks are independent so timeout budgeting keeps its cheap
+  # second granularity while telemetry gains real sub-second fidelity.
+  local _start_secs _start_ms
   _start_secs=$(date +%s)
+  _start_ms=$(_now_ms)
   local _cmd_index=0
   local _cmd_total=${#_cmd_list[@]}
   local _cmd_stdout_file _cmd_stderr_file _cmd_exit _cmd_stdout _cmd_stderr
-  local _remaining_file _completed_json _remaining_json _output_json _end_secs _duration _i
+  local _remaining_file _completed_json _remaining_json _output_json _duration_ms _i
   # Per-hook timeout budget (W1513): the whole section shares _hook_limit
   # seconds; each command runs under the time REMAINING so the section total
   # can never exceed the limit. _timeout_bin is empty when no timeout utility
@@ -622,8 +663,7 @@ run_stride_section() {
   # calling this for "after_goal" does NOT retrigger.
   finalize_after_doing
 
-  _end_secs=$(date +%s)
-  _duration=$((_end_secs - _start_secs))
+  _duration_ms=$(( $(_now_ms) - _start_ms ))
 
   if [ "$HAS_JQ" = "true" ]; then
     _completed_json=$(jq -R . < "$_completed_file" | jq -s . 2>/dev/null || echo "[]")
@@ -631,7 +671,7 @@ run_stride_section() {
 
     jq -n \
       --arg hook "$_section" \
-      --argjson duration "$_duration" \
+      --argjson duration_ms "$_duration_ms" \
       --argjson completed "$_completed_json" \
       --argjson outputs "$_output_json" \
       '{
@@ -639,7 +679,7 @@ run_stride_section() {
         status: "success",
         commands_completed: $completed,
         commands_output: $outputs,
-        duration_seconds: $duration
+        duration_ms: $duration_ms
       }'
   fi
 
