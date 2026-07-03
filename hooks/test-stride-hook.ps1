@@ -1630,6 +1630,69 @@ echo "claimed"
 }
 
 # ============================================================
+# Test Group 11: per-hook timeout enforcement (W1513)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 14. PowerShell always enforces via
+# WaitForExit(ms) (no external timeout utility needed), so there is no
+# degradation case. Cases are behavioral (Invoke-HookScript) since the ps1
+# exits on load and cannot be dot-sourced for unit tests. STRIDE_HOOK_TIMEOUT_SECS
+# overrides the per-hook budget so the timeout path runs in ~1-2s.
+Write-Host ""
+Write-Host "=== Test Group 11: per-hook timeout enforcement (W1513) ==="
+
+$toProj = Join-Path $TmpDir 'timeout-e2e'
+New-Item -ItemType Directory -Path $toProj -Force | Out-Null
+$toCompleteJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+
+# 11a: a command that outlasts its (overridden 1s) budget is terminated and
+# reported via the existing failed-JSON shape — exit_code 124, a self-describing
+# timeout note, and (after_doing/pre) the exit-2 blocking semantic.
+Set-Content -Path (Join-Path $toProj '.stride.md') -Value @'
+## after_doing
+```bash
+sleep 5
+```
+'@ -Encoding UTF8
+$env:STRIDE_HOOK_TIMEOUT_SECS = '1'
+$r = Invoke-HookScript -InputJson $toCompleteJson -Phase 'pre' -ProjectDir $toProj
+Remove-Item Env:STRIDE_HOOK_TIMEOUT_SECS -ErrorAction SilentlyContinue
+Assert-Exit "11a: timed-out after_doing blocks completion (exit 2)" 2 $r.ExitCode
+Assert-Contains "11a: failed-JSON carries the timeout exit_code 124" '"exit_code":124' $r.Stdout
+Assert-Contains "11a: failure names the per-hook timeout budget" "per-hook timeout budget" ($r.Stdout + $r.Stderr)
+
+# 11b: a fast command well under the (overridden) budget still passes cleanly.
+$toOkProj = Join-Path $TmpDir 'timeout-ok'
+New-Item -ItemType Directory -Path $toOkProj -Force | Out-Null
+Set-Content -Path (Join-Path $toOkProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "fast_command_ran"
+```
+'@ -Encoding UTF8
+$env:STRIDE_HOOK_TIMEOUT_SECS = '5'
+$r = Invoke-HookScript -InputJson $toCompleteJson -Phase 'pre' -ProjectDir $toOkProj
+Remove-Item Env:STRIDE_HOOK_TIMEOUT_SECS -ErrorAction SilentlyContinue
+Assert-Exit "11b: fast command under budget exits 0" 0 $r.ExitCode
+Assert-Contains "11b: fast command ran" "fast_command_ran" $r.Stdout
+
+# 11c: a non-numeric override is ignored — the documented default budget applies
+# (after_doing = 120s), so a 2s command completes rather than being killed.
+$toDefProj = Join-Path $TmpDir 'timeout-default'
+New-Item -ItemType Directory -Path $toDefProj -Force | Out-Null
+Set-Content -Path (Join-Path $toDefProj '.stride.md') -Value @'
+## after_doing
+```bash
+sleep 2
+echo "default_budget_ran"
+```
+'@ -Encoding UTF8
+$env:STRIDE_HOOK_TIMEOUT_SECS = 'abc'
+$r = Invoke-HookScript -InputJson $toCompleteJson -Phase 'pre' -ProjectDir $toDefProj
+Remove-Item Env:STRIDE_HOOK_TIMEOUT_SECS -ErrorAction SilentlyContinue
+Assert-Exit "11c: non-numeric override falls back to default budget (exit 0)" 0 $r.ExitCode
+Assert-Contains "11c: default-budget command ran to completion" "default_budget_ran" $r.Stdout
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

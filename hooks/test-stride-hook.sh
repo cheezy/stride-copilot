@@ -2773,6 +2773,119 @@ STRIDE
 fi
 
 # ============================================================
+# Test Group 14: per-hook timeout enforcement (W1513)
+# ============================================================
+echo ""
+echo "=== Test Group 14: per-hook timeout enforcement (W1513) ==="
+
+# 14a-14d: _hook_timeout_secs maps each routed section to its documented budget
+# (after_doing 120s; everything else, including unknown sections, 60s).
+TO_MAP=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  printf '%s %s %s %s %s\n' \
+    "$(_hook_timeout_secs before_doing)" \
+    "$(_hook_timeout_secs after_doing)" \
+    "$(_hook_timeout_secs before_review)" \
+    "$(_hook_timeout_secs after_goal)" \
+    "$(_hook_timeout_secs some_unknown_section)"
+)
+assert_eq "14a: per-hook budgets (before/after_doing/before_review/after_goal/unknown)" \
+  "60 120 60 60 60" "$TO_MAP"
+
+# 14b: STRIDE_HOOK_TIMEOUT_SECS overrides every section when a positive integer.
+TO_OVERRIDE=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  STRIDE_HOOK_TIMEOUT_SECS=5 _hook_timeout_secs after_doing
+)
+assert_eq "14b: positive override wins over the default budget" "5" "$TO_OVERRIDE"
+
+# 14c: a non-numeric override is ignored; the documented default applies.
+TO_BADOVERRIDE=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  STRIDE_HOOK_TIMEOUT_SECS=abc _hook_timeout_secs after_doing
+)
+assert_eq "14c: non-numeric override falls back to the default budget" "120" "$TO_BADOVERRIDE"
+
+# 14d: a zero override is ignored (must be a positive integer).
+TO_ZEROOVERRIDE=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  STRIDE_HOOK_TIMEOUT_SECS=0 _hook_timeout_secs before_doing
+)
+assert_eq "14d: zero override falls back to the default budget" "60" "$TO_ZEROOVERRIDE"
+
+# 14e: _resolve_timeout_bin resolves cleanly to empty when no timeout utility is
+# on PATH — the documented graceful degradation (no enforcement, no error).
+TO_NOBIN=$(
+  source "$HOOK_SCRIPT" 2>/dev/null
+  PATH="" _resolve_timeout_bin 2>/dev/null
+)
+assert_eq "14e: no timeout utility on PATH resolves to empty (clean degrade)" "" "$TO_NOBIN"
+
+# The remaining cases need a real timeout utility to exercise enforcement.
+if [ -z "$(command -v timeout || command -v gtimeout)" ]; then
+  echo "  SKIP: 14f-14h require a timeout/gtimeout utility (none found)"
+else
+  # 14f: a command that outlasts its (overridden 1s) budget is terminated and
+  # reported via the existing failed-JSON shape — exit_code 124, a self-
+  # describing timeout note, and (after_doing/pre) the exit-2 blocking semantic.
+  TO_E2E_PROJ="$TMPDIR_TEST/timeout-e2e"
+  mkdir -p "$TO_E2E_PROJ"
+  cat > "$TO_E2E_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+sleep 5
+```
+STRIDE
+  TO_COMPLETE_JSON='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+  TO_E2E_OUT=$(echo "$TO_COMPLETE_JSON" | \
+    STRIDE_HOOK_TIMEOUT_SECS=1 CLAUDE_PROJECT_DIR="$TO_E2E_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+  TO_E2E_RC=$?
+  assert_exit "14f: timed-out after_doing blocks completion (exit 2)" 2 "$TO_E2E_RC"
+  assert_contains "14f: failed-JSON carries the timeout exit_code 124" '"exit_code": 124' "$TO_E2E_OUT"
+  assert_contains "14f: failure names the per-hook timeout budget" "per-hook timeout budget" "$TO_E2E_OUT"
+
+  # 14g: a fast command well under the (overridden) budget still passes cleanly.
+  TO_OK_PROJ="$TMPDIR_TEST/timeout-ok"
+  mkdir -p "$TO_OK_PROJ"
+  cat > "$TO_OK_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo "fast_command_ran"
+```
+STRIDE
+  TO_OK_OUT=$(echo "$TO_COMPLETE_JSON" | \
+    STRIDE_HOOK_TIMEOUT_SECS=5 CLAUDE_PROJECT_DIR="$TO_OK_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+  TO_OK_RC=$?
+  assert_exit "14g: fast command under budget exits 0" 0 "$TO_OK_RC"
+  assert_contains "14g: fast command ran" "fast_command_ran" "$TO_OK_OUT"
+
+  # 14h: degradation — with the resolver stubbed empty, the executor still runs
+  # the section to success via the in-process eval fallback (no enforcement, no
+  # error). Proves AC3 for the executor, independent of host tooling.
+  TO_DEGRADE_PROJ="$TMPDIR_TEST/timeout-degrade"
+  mkdir -p "$TO_DEGRADE_PROJ"
+  cat > "$TO_DEGRADE_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo "degraded_path_ran"
+```
+STRIDE
+  TO_DEGRADE_OUT=$(
+    cd "$TO_DEGRADE_PROJ" || exit 99
+    source "$HOOK_SCRIPT" 2>/dev/null
+    _resolve_timeout_bin() { printf ''; }
+    STRIDE_MD="$TO_DEGRADE_PROJ/.stride.md"
+    PROJECT_DIR="$TO_DEGRADE_PROJ"
+    HAS_JQ=true
+    HOOK_NAME="after_doing"
+    run_stride_section "after_doing" 2>/dev/null
+  )
+  TO_DEGRADE_RC=$?
+  assert_exit "14h: eval fallback (no timeout util) succeeds" 0 "$TO_DEGRADE_RC"
+  assert_contains "14h: eval fallback ran the command" "degraded_path_ran" "$TO_DEGRADE_OUT"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

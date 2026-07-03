@@ -1,4 +1,5 @@
 {
+  "_comment": "The 300s timeout on each Bash hook below is the OUTER host budget (the ceiling Copilot/Claude Code gives the whole stride-hook invocation). It is NOT the per-hook limit. stride-hook.sh / stride-hook.ps1 enforce the documented INNER per-hook budgets on the .stride.md section itself — before_doing/before_review/after_review/after_goal = 60s, after_doing = 120s (see the stride-workflow SKILL Hooks Reference). Every inner limit sits well under this 300s ceiling, so the host budget only backstops the plugin's own bookkeeping (diff capture/upload) around the section. When no timeout utility is available in bash, the inner limits are not enforced and only this 300s ceiling applies.",
   "hooks": {
     "PostToolUse": [
       {

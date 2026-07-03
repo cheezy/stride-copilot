@@ -426,6 +426,25 @@ function Invoke-SelfHealChangedFilesUpload {
     Write-DiffUploadState -TaskId $taskId -HttpCode $httpCode
 }
 
+# Per-hook timeout budget in seconds (W1513), keyed on the section name. Mirror
+# of stride-hook.sh:_hook_timeout_secs: after_doing = 120; before_doing /
+# before_review / after_review / after_goal (and any unrecognized section) = 60.
+# Every inner limit sits well under the 300s outer host budget in hooks.json. A
+# positive-integer $env:STRIDE_HOOK_TIMEOUT_SECS overrides the budget for every
+# section (used by the suites to exercise the timeout path without waiting out
+# the real limits, and as an advanced-tuning knob); unset/non-numeric is ignored.
+function Get-HookTimeoutSecs {
+    param([string]$Section)
+    $override = $env:STRIDE_HOOK_TIMEOUT_SECS
+    if ($override -match '^[0-9]+$' -and [int]$override -gt 0) {
+        return [int]$override
+    }
+    switch ($Section) {
+        'after_doing' { return 120 }
+        default       { return 60 }
+    }
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Mirror of stride-hook.sh:run_stride_section. Takes a section name and:
 #   1. Parses the first `## <section>` ```bash``` block from .stride.md.
@@ -511,6 +530,10 @@ function Invoke-StrideSection {
     # not rendered under a false hook-error label.
     $secCmdOutputs = @()
     $secStartTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    # Per-hook timeout budget (W1513): the whole section shares $secHookLimit
+    # seconds; each command waits only for the time REMAINING so the section
+    # total can never exceed the limit (nor the 300s host ceiling).
+    $secHookLimit = Get-HookTimeoutSecs $Section
     $secCmdIndex = 0
     $secCmdTotal = $secCmdList.Count
 
@@ -539,11 +562,39 @@ function Invoke-StrideSection {
             # can emit that much warning text.
             $secOutTask = $proc.StandardOutput.ReadToEndAsync()
             $secErrTask = $proc.StandardError.ReadToEndAsync()
-            $proc.WaitForExit()
+
+            # Enforce the per-hook budget (W1513). Each command waits only for
+            # the time REMAINING in the section budget. Unlike bash — which needs
+            # an external timeout/gtimeout and degrades to no enforcement when
+            # neither exists — .NET's WaitForExit(ms) is always available, so
+            # PowerShell always enforces. On expiry the child (and its tree) is
+            # killed and the command is treated as a genuine failure with exit
+            # code 124, matching the bash twin and preserving the after_doing
+            # exit-2 block (a timeout is a failure, not a silent pass).
+            $secElapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $secStartTime
+            $secRemainingMs = [int]([math]::Max(1, ($secHookLimit - $secElapsed))) * 1000
+            $secTimedOut = $false
+            if ($proc.WaitForExit($secRemainingMs)) {
+                # Second argless WaitForExit ensures the async stdout/stderr
+                # reads are fully flushed before we read their .Result.
+                $proc.WaitForExit()
+            } else {
+                $secTimedOut = $true
+                try { $proc.Kill($true) } catch { try { $proc.Kill() } catch { } }
+                try { $proc.WaitForExit() } catch { }
+            }
             Set-Content -Path $secStdoutFile -Value $secOutTask.Result -Encoding UTF8 -NoNewline
             Set-Content -Path $secStderrFile -Value $secErrTask.Result -Encoding UTF8 -NoNewline
+            # Make a budget timeout self-describing (mirror of the bash twin's
+            # exit-124 annotation) so the failed-JSON and fd2 message name the
+            # cause; the synthesized exit code stays 124 for the diagnostician.
+            if ($secTimedOut) {
+                Add-Content -Path $secStderrFile -Encoding UTF8 `
+                    -Value "stride-hook: $Section hook command exceeded its ${secHookLimit}s per-hook timeout budget"
+            }
 
-            if ($proc.ExitCode -eq 0) {
+            $secCmdCode = if ($secTimedOut) { 124 } else { $proc.ExitCode }
+            if ($secCmdCode -eq 0) {
                 $secCompletedCmds += $execTrimmed
                 # Do NOT write the passing command's output to stderr (D65):
                 # Claude Code renders any hook stderr under a red error label
@@ -569,7 +620,7 @@ function Invoke-StrideSection {
                     stderr  = $secOkStderr
                 }
             } else {
-                $secCmdExit = $proc.ExitCode
+                $secCmdExit = $secCmdCode
                 $secCmdStdout = ''
                 $secCmdStderr = ''
                 if (Test-Path $secStdoutFile) {

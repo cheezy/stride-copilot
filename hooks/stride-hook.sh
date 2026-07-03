@@ -373,6 +373,46 @@ self_heal_changed_files_upload() {
   return 0
 }
 
+# --- Per-hook timeout budget (W1513) ---
+# Seconds allotted to a whole `.stride.md` hook section, keyed on the section
+# name. Mirrors the documented Hooks Reference table in the stride-workflow
+# SKILL: after_doing = 120s; before_doing / before_review / after_review /
+# after_goal (and any unrecognized section) = 60s. Every inner limit sits well
+# under the 300s outer host budget declared in hooks/hooks.json, so enforcing
+# them can never breach the host ceiling.
+#
+# A positive-integer STRIDE_HOOK_TIMEOUT_SECS overrides the budget for every
+# section. It exists so the test suites can exercise the timeout path without
+# waiting out the real 60/120s limits (and doubles as an advanced-tuning knob);
+# an unset or non-numeric value is ignored and the documented defaults apply.
+_hook_timeout_secs() {
+  case "${STRIDE_HOOK_TIMEOUT_SECS:-}" in
+    '' | *[!0-9]*) : ;;
+    *) if [ "$STRIDE_HOOK_TIMEOUT_SECS" -gt 0 ]; then
+         printf '%s' "$STRIDE_HOOK_TIMEOUT_SECS"
+         return 0
+       fi ;;
+  esac
+  case "$1" in
+    after_doing) printf '120' ;;
+    *)           printf '60' ;;
+  esac
+}
+
+# Resolve a GNU-coreutils timeout utility once. Prefers `timeout`, then
+# `gtimeout` (Homebrew coreutils installs the latter on macOS). Prints the
+# resolved binary name, or nothing when neither exists — in which case the
+# executor degrades to NO per-hook enforcement (only the 300s host budget
+# applies). Stock macOS/BSD ship no timeout utility, so this graceful no-op is
+# the documented fallback there rather than an error.
+_resolve_timeout_bin() {
+  if command -v timeout > /dev/null 2>&1; then
+    printf 'timeout'
+  elif command -v gtimeout > /dev/null 2>&1; then
+    printf 'gtimeout'
+  fi
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Takes a single section name (e.g. "before_doing", "after_goal") and:
 #   1. Parses the first `## <section>` block from .stride.md (first-wins,
@@ -457,18 +497,58 @@ run_stride_section() {
   local _cmd_total=${#_cmd_list[@]}
   local _cmd_stdout_file _cmd_stderr_file _cmd_exit _cmd_stdout _cmd_stderr
   local _remaining_file _completed_json _remaining_json _output_json _end_secs _duration _i
+  # Per-hook timeout budget (W1513): the whole section shares _hook_limit
+  # seconds; each command runs under the time REMAINING so the section total
+  # can never exceed the limit. _timeout_bin is empty when no timeout utility
+  # exists (enforcement disabled, only the 300s host budget applies).
+  local _hook_limit _timeout_bin _elapsed _time_remaining
+  _hook_limit=$(_hook_timeout_secs "$_section")
+  _timeout_bin=$(_resolve_timeout_bin)
 
   for _trimmed in "${_cmd_list[@]}"; do
     _cmd_stdout_file=$(mktemp)
     _cmd_stderr_file=$(mktemp)
 
     # Relax `set -u` and `pipefail` for the user's command so that a reference
-    # to an unset env var doesn't silently abort the eval before the actual
+    # to an unset env var doesn't silently abort execution before the actual
     # command runs; restore the strict flags immediately afterward.
     set +uo pipefail
-    eval "$_trimmed" > "$_cmd_stdout_file" 2> "$_cmd_stderr_file"
-    _cmd_exit=$?
+    if [ -n "$_timeout_bin" ]; then
+      # Enforce the per-hook budget. Each command is capped at the time
+      # REMAINING in the section's budget, so the section as a whole can never
+      # outlast _hook_limit (and thus never the 300s host ceiling). `timeout`
+      # sends SIGTERM on expiry and exits 124 — a genuine failure that flows
+      # through the failed-JSON path below, preserving the after_doing
+      # PreToolUse exit-2 block (a timeout is a failure, not a silent pass).
+      # Running via `bash -c` isolates each command; exported env (TASK_*,
+      # GOAL_*, etc.) is inherited so hook commands see the same variables.
+      # NOTE: per-command shell state does NOT persist across commands when
+      # enforcement is active — a bare `cd subdir` or a non-exported var set on
+      # one line is not visible to the next (each runs in its own subshell). The
+      # no-timeout `eval` branch below preserves such state. Hook sections use
+      # independent commands, so this divergence is benign in practice.
+      _elapsed=$(( $(date +%s) - _start_secs ))
+      _time_remaining=$(( _hook_limit - _elapsed ))
+      [ "$_time_remaining" -lt 1 ] && _time_remaining=1
+      "$_timeout_bin" "$_time_remaining" bash -c "$_trimmed" \
+        > "$_cmd_stdout_file" 2> "$_cmd_stderr_file"
+      _cmd_exit=$?
+    else
+      # No timeout utility available — degrade to no per-hook enforcement (only
+      # the 300s hooks.json host budget applies). In-process eval preserves the
+      # pre-W1513 behavior, including cross-command shell state.
+      eval "$_trimmed" > "$_cmd_stdout_file" 2> "$_cmd_stderr_file"
+      _cmd_exit=$?
+    fi
     set -uo pipefail
+
+    # Make a budget timeout self-describing (W1513). `timeout` exits 124 on
+    # expiry; annotate stderr so the failed-JSON and the fd2 message name the
+    # cause. exit_code stays 124 so the hook-diagnostician still parses it.
+    if [ "$_cmd_exit" -eq 124 ] && [ -n "$_timeout_bin" ]; then
+      printf 'stride-hook: %s hook command exceeded its %ss per-hook timeout budget\n' \
+        "$_section" "$_hook_limit" >> "$_cmd_stderr_file"
+    fi
 
     if [ "$_cmd_exit" -eq 0 ]; then
       echo "$_trimmed" >> "$_completed_file"

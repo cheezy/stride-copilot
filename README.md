@@ -221,7 +221,9 @@ Add `.stride-env-cache`, `.stride-changed-files.json`, and `.stride-diff-upload-
 
 ### The `after_doing` time budget
 
-The two Bash hook entries in `hooks/hooks.json` carry a **300-second timeout**. The timeout is a **ceiling, not a guarantee**: the entire `after_doing` section — every command in your `.stride.md` quality gate (test suite with coverage, credo, sobelow, auto-commit) plus the plugin's own per-file diff snapshot work — shares this one budget.
+The two Bash hook entries in `hooks/hooks.json` carry a **300-second timeout**. This is the **outer host budget** — a ceiling the host gives the whole `stride-hook` invocation (your `.stride.md` section plus the plugin's own per-file diff snapshot work), not the per-hook limit.
+
+Separately, the executor enforces an **inner per-hook budget** on the `.stride.md` section itself (W1513): `after_doing` = 120s, and `before_doing` / `before_review` / `after_review` / `after_goal` = 60s — the same limits documented in the stride-workflow SKILL Hooks Reference. A section command that exceeds its inner budget is terminated and reported through the standard structured failure JSON (`exit_code: 124`), which for `after_doing` blocks completion just like any other gate failure. Every inner limit sits comfortably under the 300s outer ceiling, so the two never collide. Enforcement uses a `timeout`/`gtimeout` utility; on platforms that ship neither (stock macOS/BSD bash) the inner limits are not enforced and only the 300s outer ceiling applies. (PowerShell always enforces via `WaitForExit`.)
 
 When the budget is exceeded, the hook process is killed. To keep the task's diffs from being lost in that case, the per-file diff snapshot is captured and uploaded **before** the `after_doing` section commands run, then refreshed after all commands succeed. The `before_review` hook (which runs on its own fresh timeout budget) verifies the recorded outcome in `.stride-diff-upload-state` and re-captures + re-uploads when that state is missing, stale (a different task), or non-2xx — a healthy upload is never repeated.
 
