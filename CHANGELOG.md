@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.23.0] - 2026-07-03
+
+### Fixed / Added — hook-executor behavioral fixes and `after_goal` diagnostician awareness (G287 / W1512–W1517)
+
+Six fixes to the client-side hook bridge (`hooks/stride-hook.sh` + `hooks/stride-hook.ps1`) and the hook-diagnostician agent. All are backward-compatible; the `.stride.md` wire shape and the four task-lifecycle hooks' documented behavior are unchanged.
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1512)** — The bridge now forwards the server-supplied `after_goal` `hook.env` into the `## after_goal` child process. Before running the section it extracts the `env` object from the `after_goal` hook entry and exports `GOAL_ID`/`GOAL_IDENTIFIER`/`GOAL_TITLE`/`GOAL_DESCRIPTION` (plus `BOARD_*`/`COLUMN_*`/`AGENT_NAME`) **verbatim** — never invented or derived client-side. A missing `env` object is a clean no-op. Previously the `2.11.0` CHANGELOG and the workflow SKILL promised these vars but the scripts never read them, so an `after_goal` command referencing `$GOAL_ID` ran with it empty.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1513)** — The executor now **enforces** the documented per-hook timeouts (`after_doing` 120s; `before_doing`/`before_review`/`after_review`/`after_goal` 60s) on the `.stride.md` section, keyed on the routed hook. Each command runs under the section's remaining budget (bash via `timeout`/`gtimeout`, PowerShell via `WaitForExit`), so the section can never exceed its limit nor the 300s outer host budget. A timed-out command is terminated and reported through the existing structured failed-JSON (`exit_code: 124`), preserving the `after_doing` PreToolUse block. Where no `timeout` utility exists (stock macOS/BSD bash) the inner limits are not enforced and only the 300s host ceiling applies. `hooks.json`, the workflow SKILL, and the README now distinguish the outer host budget from the inner per-hook limits.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1514)** — The hook success JSON now reports an integer millisecond `duration_ms` (portable high-resolution timing — bash `EPOCHREALTIME`/`date +%s%N`/`perl`/whole-second fallback; PowerShell `Stopwatch`) instead of whole-second `duration_seconds`, matching the `duration_ms` convention the hook-diagnostician and `workflow_steps` telemetry already use (a sub-second hook previously reported `0`).
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1515)** — The `.stride.md` parser now joins backslash line-continuations, so a multi-line command (e.g. a long `gh pr create` split with trailing `\`) runs as one command instead of fragmented pieces. Only an unescaped (odd-count) trailing backslash continues; literal `\\` is left intact; comment/blank handling and single-fence/first-wins selection are unchanged.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1516)** — The changed-files snapshot is now guarded against pre-existing working-tree edits. `before_doing` records a claim-time dirty baseline (`<blobsha>` + path content fingerprints, base64 in the env cache — never file contents) so `capture_changed_files` (bash) / the upload filter (PowerShell) omits paths already dirty at claim time whose content is unchanged, while still capturing a pre-existing file the task itself modifies. Truncation, binary-placeholder, and self-artifact exclusion are preserved.
+- **`agents/hook-diagnostician.agent.md` (W1517)** — The diagnostician now recognizes the fifth `after_goal` hook: it is enumerated in the description/opening, added to the Hook Timeout Handling thresholds (60,000 ms), and a new **after_goal Hook Context** section documents the `GOAL_*` env context (vs `TASK_*`) and the `PATCH /api/tasks/:goal_id/after_goal` forward path so a goal-rollup failure is diagnosable. Agent prose only.
+
+### Testing
+
+`hooks/test-stride-hook.sh` (259 assertions) and `hooks/test-stride-hook.ps1` (201 assertions) both pass, with new groups for the `after_goal` env export (8f/8g, 7f/7g), per-hook timeout enforcement (Group 14 / Group 11), millisecond durations (Group 15 / Group 12), line-continuation (Group 16 / Group 13), and the claim-time dirty baseline guard (Group 17 / Group 14).
+
+### Backward compatibility
+
+Backward-compatible. `after_goal` env forwarding and the dirty-baseline guard are additive; timeout enforcement degrades to the prior no-enforcement behavior where no `timeout` utility exists; `duration_seconds` is replaced by `duration_ms` in the success JSON (the field the diagnostician already expects).
+
+### Source
+
+G287 — W1512, W1513, W1514, W1515, W1516, W1517.
+
 ## [2.22.0] - 2026-07-01
 
 ### Added — `API Notes & Limitations` section in the workflow orchestrator skill (G286 / W1420)
