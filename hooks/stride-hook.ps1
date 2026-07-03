@@ -445,6 +445,20 @@ function Get-HookTimeoutSecs {
     }
 }
 
+# True when a line ends with a shell line-continuation backslash (W1515).
+# Mirror of stride-hook.sh:_has_line_continuation: a trailing backslash
+# continues onto the next line only when unescaped — the run of trailing
+# backslashes has ODD length. An even run is a literal backslash and does not
+# continue. Trailing whitespace is significant (a backslash + space does not
+# continue); leading whitespace was already trimmed by the caller.
+function Test-LineContinuation {
+    param([string]$Line)
+    $n = 0
+    $i = $Line.Length - 1
+    while ($i -ge 0 -and $Line[$i] -eq '\') { $n++; $i-- }
+    return (($n % 2) -eq 1)
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Mirror of stride-hook.sh:run_stride_section. Takes a section name and:
 #   1. Parses the first `## <section>` ```bash``` block from .stride.md.
@@ -500,13 +514,32 @@ function Invoke-StrideSection {
         return 0
     }
 
+    # Build the command list, joining backslash line-continuations (W1515) so a
+    # multi-line command runs as ONE command. Blank/comment skipping applies
+    # only when starting a fresh command ($secPending empty); a line pulled in
+    # by a continuation is appended verbatim. Non-continued input reduces to the
+    # pre-W1515 behavior, so single-line commands parse identically.
     $secCmdList = @()
+    $secPending = ''
     foreach ($cmd in ($secCommands -split "`n")) {
         $trimmedCmd = $cmd.TrimStart()
-        if (-not $trimmedCmd) { continue }
-        if ($trimmedCmd.StartsWith('#')) { continue }
+        if ($secPending -ne '') {
+            $trimmedCmd = $secPending + $trimmedCmd
+            $secPending = ''
+        } else {
+            if (-not $trimmedCmd) { continue }
+            if ($trimmedCmd.StartsWith('#')) { continue }
+        }
+        if (Test-LineContinuation $trimmedCmd) {
+            # Drop the single continuation backslash; hold the rest for the next
+            # line (literal backslashes preceding it are preserved).
+            $secPending = $trimmedCmd.Substring(0, $trimmedCmd.Length - 1)
+            continue
+        }
         $secCmdList += $trimmedCmd
     }
+    # Flush a dangling continuation (final fenced line ended with a backslash).
+    if ($secPending -ne '') { $secCmdList += $secPending }
 
     if ($secCmdList.Count -eq 0) {
         Invoke-FinalizeAfterDoing

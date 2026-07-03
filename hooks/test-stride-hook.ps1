@@ -1719,6 +1719,85 @@ Assert-NotContains "12a: duration_ms is numeric (unquoted)" '"duration_ms":"' $r
 Assert-NotContains "12a: no lingering duration_seconds field" 'duration_seconds' $r.Stdout
 
 # ============================================================
+# Test Group 13: backslash line-continuation in the parser (W1515)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 16.
+Write-Host ""
+Write-Host "=== Test Group 13: backslash line-continuation (W1515) ==="
+
+$contCompleteJson = '{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+
+# 13a: a command split across lines with a trailing backslash joins into ONE.
+$contProj = Join-Path $TmpDir 'continuation-join'
+New-Item -ItemType Directory -Path $contProj -Force | Out-Null
+Set-Content -Path (Join-Path $contProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo one \
+two three
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson $contCompleteJson -Phase 'pre' -ProjectDir $contProj
+Assert-Exit "13a: continuation hook exits 0" 0 $r.ExitCode
+$contObj = $null
+try { $contObj = $r.Stdout | ConvertFrom-Json } catch { $contObj = $null }
+if ($contObj -and @($contObj.commands_completed).Count -eq 1 -and
+    @($contObj.commands_completed)[0] -eq 'echo one two three') {
+    Write-Host "  PASS: 13a: continued lines collapse to a single joined command" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 13a: expected single 'echo one two three' command: $($r.Stdout)" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# 13b: a standalone comment after a completed command is skipped, not glued.
+$contCmtProj = Join-Path $TmpDir 'continuation-comment'
+New-Item -ItemType Directory -Path $contCmtProj -Force | Out-Null
+Set-Content -Path (Join-Path $contCmtProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo alpha \
+beta
+# a standalone comment
+echo gamma
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson $contCompleteJson -Phase 'pre' -ProjectDir $contCmtProj
+$contCmtObj = $null
+try { $contCmtObj = $r.Stdout | ConvertFrom-Json } catch { $contCmtObj = $null }
+$contCmtCmds = @($contCmtObj.commands_completed)
+if ($contCmtObj -and $contCmtCmds.Count -eq 2 -and
+    $contCmtCmds[0] -eq 'echo alpha beta' -and $contCmtCmds[1] -eq 'echo gamma') {
+    Write-Host "  PASS: 13b: two commands, comment skipped (not glued)" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 13b: expected [echo alpha beta, echo gamma]: $($r.Stdout)" -ForegroundColor Red
+    $script:FAIL++
+}
+Assert-NotContains "13b: comment text never entered a command" 'standalone comment' ($contCmtCmds -join '|')
+
+# 13c: an even run of trailing backslashes is literal, not a continuation.
+$contLitProj = Join-Path $TmpDir 'continuation-literal'
+New-Item -ItemType Directory -Path $contLitProj -Force | Out-Null
+Set-Content -Path (Join-Path $contLitProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo end\\
+echo separate
+```
+'@ -Encoding UTF8
+$r = Invoke-HookScript -InputJson $contCompleteJson -Phase 'pre' -ProjectDir $contLitProj
+$contLitObj = $null
+try { $contLitObj = $r.Stdout | ConvertFrom-Json } catch { $contLitObj = $null }
+if ($contLitObj -and @($contLitObj.commands_completed).Count -eq 2) {
+    Write-Host "  PASS: 13c: even trailing backslashes do not continue (2 commands)" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 13c: literal backslash wrongly joined: $($r.Stdout)" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

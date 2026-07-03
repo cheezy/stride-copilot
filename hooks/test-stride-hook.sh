@@ -2966,6 +2966,92 @@ else
 fi
 
 # ============================================================
+# Test Group 16: backslash line-continuation in the parser (W1515)
+# ============================================================
+echo ""
+echo "=== Test Group 16: backslash line-continuation (W1515) ==="
+
+CONT_COMPLETE_JSON='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/1/complete"}}'
+
+# 16a: a command split across lines with a trailing backslash is joined and runs
+# as ONE command.
+CONT_PROJ="$TMPDIR_TEST/continuation-join"
+mkdir -p "$CONT_PROJ"
+cat > "$CONT_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo one \
+two three
+```
+STRIDE
+CONT_OUT=$(echo "$CONT_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$CONT_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+CONT_RC=$?
+assert_exit "16a: continuation hook exits 0" 0 "$CONT_RC"
+assert_contains "16a: joined command output is one line" "one two three" "$CONT_OUT"
+if command -v jq > /dev/null 2>&1; then
+  if echo "$CONT_OUT" | jq -e '.commands_completed | length == 1' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16a: continued lines collapse to a single command"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16a: expected 1 joined command: $CONT_OUT"; FAIL=$((FAIL + 1))
+  fi
+  if echo "$CONT_OUT" | jq -e '.commands_completed[0] == "echo one two three"' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16a: joined command text is exactly the continuation"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16a: joined command text wrong: $CONT_OUT"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# 16b: a standalone comment after a completed command is still skipped (not
+# glued to the prior continued command), and blank/comment handling survives.
+CONT_CMT_PROJ="$TMPDIR_TEST/continuation-comment"
+mkdir -p "$CONT_CMT_PROJ"
+cat > "$CONT_CMT_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo alpha \
+beta
+# a standalone comment
+echo gamma
+```
+STRIDE
+CONT_CMT_OUT=$(echo "$CONT_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$CONT_CMT_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+assert_contains "16b: continued command ran" "alpha beta" "$CONT_CMT_OUT"
+assert_contains "16b: following command ran" "gamma" "$CONT_CMT_OUT"
+if command -v jq > /dev/null 2>&1; then
+  if echo "$CONT_CMT_OUT" | jq -e '.commands_completed | length == 2' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16b: two commands (comment skipped, not glued)"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16b: expected 2 commands, comment leaked: $CONT_CMT_OUT"; FAIL=$((FAIL + 1))
+  fi
+  if echo "$CONT_CMT_OUT" | jq -e '.commands_completed | map(contains("standalone comment")) | any | not' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16b: comment text never entered a command"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16b: comment glued into a command: $CONT_CMT_OUT"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# 16c: a line ending in an EVEN run of backslashes is a literal backslash, not a
+# continuation — it is NOT joined with the next line (leaves genuine literal
+# backslashes intact, per the pitfall).
+CONT_LIT_PROJ="$TMPDIR_TEST/continuation-literal"
+mkdir -p "$CONT_LIT_PROJ"
+cat > "$CONT_LIT_PROJ/.stride.md" << 'STRIDE'
+## after_doing
+```bash
+echo end\\
+echo separate
+```
+STRIDE
+CONT_LIT_OUT=$(echo "$CONT_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$CONT_LIT_PROJ" bash "$HOOK_SCRIPT" pre 2>&1)
+if command -v jq > /dev/null 2>&1; then
+  if echo "$CONT_LIT_OUT" | jq -e '.commands_completed | length == 2' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 16c: even trailing backslashes do not continue (2 commands)"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 16c: literal backslash wrongly joined: $CONT_LIT_OUT"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

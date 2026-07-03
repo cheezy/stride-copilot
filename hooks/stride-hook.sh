@@ -449,6 +449,22 @@ _now_ms() {
   printf '%s000' "$(date +%s)"
 }
 
+# True (exit 0) when a line ends with a shell line-continuation backslash
+# (W1515). A trailing backslash continues the command onto the next line ONLY
+# when it is unescaped — i.e. the run of trailing backslashes has ODD length.
+# An even run (`\\`, `\\\\`, ...) is a literal backslash and does NOT continue,
+# so genuine literal backslashes are left intact. Trailing whitespace is
+# significant (a backslash followed by a space does not continue), matching the
+# shell; leading whitespace was already trimmed by the caller.
+_has_line_continuation() {
+  local _s="$1" _n=0
+  while [ "${_s%\\}" != "$_s" ]; do
+    _s="${_s%\\}"
+    _n=$((_n + 1))
+  done
+  [ $(( _n % 2 )) -eq 1 ]
+}
+
 # --- Parse and execute one .stride.md hook section ---
 # Takes a single section name (e.g. "before_doing", "after_goal") and:
 #   1. Parses the first `## <section>` block from .stride.md (first-wins,
@@ -495,15 +511,36 @@ run_stride_section() {
     return 0
   fi
 
-  local _cmd _trimmed
+  # Build the command list, joining backslash line-continuations (W1515) so a
+  # multi-line command (e.g. a long `gh pr create` split with trailing `\`) runs
+  # as ONE command instead of fragmented pieces. Blank/comment skipping applies
+  # only when starting a fresh command (_pending empty); a line pulled in by a
+  # continuation is appended verbatim, exactly as the shell would join it. For
+  # non-continued input every branch reduces to the pre-W1515 behavior, so
+  # single-line commands parse byte-identically.
+  local _cmd _trimmed _pending=""
   local _cmd_list
   _cmd_list=()
   while IFS= read -r _cmd; do
     _trimmed="${_cmd#"${_cmd%%[![:space:]]*}"}"
-    [ -z "$_trimmed" ] && continue
-    case "$_trimmed" in \#*) continue ;; esac
+    if [ -n "$_pending" ]; then
+      _trimmed="${_pending}${_trimmed}"
+      _pending=""
+    else
+      [ -z "$_trimmed" ] && continue
+      case "$_trimmed" in \#*) continue ;; esac
+    fi
+    if _has_line_continuation "$_trimmed"; then
+      # Drop the single continuation backslash and hold the rest for the next
+      # line (any literal backslashes preceding it are preserved).
+      _pending="${_trimmed%\\}"
+      continue
+    fi
     _cmd_list+=("$_trimmed")
   done <<< "$_commands"
+  # Flush a dangling continuation (final fenced line ended with a backslash) so
+  # the command is still run rather than silently dropped.
+  [ -n "$_pending" ] && _cmd_list+=("$_pending")
 
   if [ ${#_cmd_list[@]} -eq 0 ]; then
     finalize_after_doing
