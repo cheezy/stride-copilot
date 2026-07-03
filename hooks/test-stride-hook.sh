@@ -1593,6 +1593,62 @@ STRIDE
   assert_exit "8e: end-to-end after_goal on mark_reviewed exits 0" 0 "$AG_E2E_RC_MR"
   assert_contains "8e: mark_reviewed runs after_review" "after_review_ran" "$AG_E2E_OUT_MR"
   assert_contains "8e: mark_reviewed runs after_goal" "after_goal_ran" "$AG_E2E_OUT_MR"
+
+  # --- W1512: after_goal hook.env forwarding ---
+  # Helper: build a tool_input + tool_response payload whose after_goal hook
+  # entry carries a server-supplied `env` object. Mirrors ag_e2e_input but
+  # attaches env to the after_goal entry so we can assert the bridge exports it.
+  ag_e2e_input_env() {
+    local primary_command="$1"
+    local env_json="$2"
+    local inner_json
+    inner_json=$(jq -nc --argjson env "$env_json" \
+      '{data: {id: 99}, hooks: [{name: "after_review"}, {name: "after_goal", env: $env}]}')
+    jq -nc \
+      --arg cmd "$primary_command" \
+      --arg inner "$inner_json" \
+      '{tool_input: {command: $cmd}, tool_response: {stdout: $inner}}'
+  }
+
+  # Fixture whose after_goal section echoes every forwarded variable so the
+  # assertions can confirm each reached the section process environment.
+  AG_ENV_PROJ="$TMPDIR_TEST/after-goal-env"
+  mkdir -p "$AG_ENV_PROJ"
+  cat > "$AG_ENV_PROJ/.stride.md" << 'STRIDE'
+## after_goal
+```bash
+echo "goal_id=$GOAL_ID id=$GOAL_IDENTIFIER title=$GOAL_TITLE desc=$GOAL_DESCRIPTION board=$BOARD_ID col=$COLUMN_ID agent=$AGENT_NAME"
+```
+STRIDE
+
+  # 8f: a stubbed hook.env with GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME reaches the
+  # after_goal section environment, copied VERBATIM (spaces preserved).
+  AG_ENV_INPUT=$(ag_e2e_input_env \
+    "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
+    '{"GOAL_ID":"4687","GOAL_IDENTIFIER":"G4687","GOAL_TITLE":"Ship the bridge","GOAL_DESCRIPTION":"Wire GOAL_* through","BOARD_ID":"55","COLUMN_ID":"128","AGENT_NAME":"Claude Opus 4.8"}')
+  AG_ENV_OUT=$(echo "$AG_ENV_INPUT" | CLAUDE_PROJECT_DIR="$AG_ENV_PROJ" \
+    bash "$HOOK_SCRIPT" post 2>&1)
+  AG_ENV_RC=$?
+  assert_exit "8f: after_goal env-export exits 0" 0 "$AG_ENV_RC"
+  assert_contains "8f: GOAL_ID exported verbatim" "goal_id=4687" "$AG_ENV_OUT"
+  assert_contains "8f: GOAL_IDENTIFIER exported verbatim" "id=G4687" "$AG_ENV_OUT"
+  assert_contains "8f: GOAL_TITLE with spaces exported verbatim" "title=Ship the bridge" "$AG_ENV_OUT"
+  assert_contains "8f: GOAL_DESCRIPTION exported verbatim" "desc=Wire GOAL_* through" "$AG_ENV_OUT"
+  assert_contains "8f: BOARD_ID exported verbatim" "board=55" "$AG_ENV_OUT"
+  assert_contains "8f: COLUMN_ID exported verbatim" "col=128" "$AG_ENV_OUT"
+  assert_contains "8f: AGENT_NAME with spaces exported verbatim" "agent=Claude Opus 4.8" "$AG_ENV_OUT"
+
+  # 8g: an after_goal entry with NO env object is a clean no-op — the section
+  # still runs (exit 0) with the GOAL_* vars empty, never an error.
+  AG_NOENV_INPUT=$(ag_e2e_input \
+    "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
+    '[{"name":"after_review"},{"name":"after_goal"}]')
+  AG_NOENV_OUT=$(echo "$AG_NOENV_INPUT" | CLAUDE_PROJECT_DIR="$AG_ENV_PROJ" \
+    bash "$HOOK_SCRIPT" post 2>&1)
+  AG_NOENV_RC=$?
+  assert_exit "8g: after_goal missing env is a clean no-op (exit 0)" 0 "$AG_NOENV_RC"
+  assert_contains "8g: section still runs with empty GOAL_* vars" \
+    "goal_id= id= title=" "$AG_NOENV_OUT"
 fi
 
 # ============================================================

@@ -595,10 +595,71 @@ response_has_after_goal() {
         > /dev/null 2>&1
 }
 
+# Export the server-supplied `env` object from the response's after_goal hook
+# entry (W1512). The 2.11.0 CHANGELOG and stride-workflow SKILL promise that
+# GOAL_ID/GOAL_IDENTIFIER/GOAL_TITLE/GOAL_DESCRIPTION (plus BOARD_*/COLUMN_*/
+# AGENT_NAME when present) reach the after_goal child process, but nothing ever
+# extracted them — so a `## after_goal` section that references $GOAL_ID ran
+# with it empty. This function peels the response the same way
+# response_has_after_goal does, selects the FIRST after_goal hook entry's `env`
+# object, and exports each key VERBATIM into the current process environment so
+# the subsequent run_stride_section "after_goal" (which eval's the section's
+# commands) sees them.
+#
+# Contract:
+#   - Values are copied verbatim from the server payload; this NEVER invents,
+#     derives, or looks up any key client-side (in particular it never
+#     synthesizes GOAL_ID from the child task's parent_id).
+#   - A missing env object, an empty env object, or missing keys is a clean
+#     no-op — not an error.
+#   - Gated on $HAS_JQ: without jq the payload cannot be parsed, so the export
+#     degrades to nothing (matching response_has_after_goal's degrade path).
+export_after_goal_env() {
+  local _hook_input="$1"
+  local _response _payload _env
+
+  [ "$HAS_JQ" = "true" ] || return 0
+  [ -n "$_hook_input" ] || return 0
+
+  _response=$(echo "$_hook_input" | jq -r '.tool_response // ""' 2>/dev/null || echo "")
+  [ -n "$_response" ] || return 0
+
+  if echo "$_response" | jq -e 'type == "object" and has("stdout")' > /dev/null 2>&1; then
+    _payload=$(echo "$_response" | jq -r '.stdout // ""' 2>/dev/null)
+  else
+    _payload="$_response"
+  fi
+
+  [ -n "$_payload" ] || return 0
+
+  # The `env` object from the FIRST after_goal hook entry, compacted to one
+  # line. `first(...)` mirrors response_has_after_goal's selection; the `// {}`
+  # collapses "no after_goal entry" and "entry without env" to an empty object.
+  _env=$(echo "$_payload" \
+    | jq -c 'first((.hooks // [])[] | select(.name == "after_goal") | .env) // {}' \
+        2>/dev/null || echo "{}")
+  [ -n "$_env" ] || return 0
+  [ "$_env" = "null" ] && return 0
+
+  # Export each key VERBATIM. Iterate the key names (insertion order
+  # preserved via keys_unsorted) and pull each value back with a targeted
+  # jq lookup, so a value containing spaces stays intact and
+  # `export "$k=$v"` assigns without eval'ing the payload. An empty env
+  # object yields no keys -> no iterations.
+  local _keys _key _val
+  _keys=$(echo "$_env" | jq -r 'keys_unsorted[]' 2>/dev/null || printf '')
+  [ -n "$_keys" ] || return 0
+  while IFS= read -r _key; do
+    [ -n "$_key" ] || continue
+    _val=$(echo "$_env" | jq -r --arg k "$_key" '.[$k] | if . == null then "" else tostring end' 2>/dev/null || printf '')
+    export "$_key=$_val"
+  done <<< "$_keys"
+}
+
 # Exit early if no phase argument or no .stride.md. Placed AFTER the
-# capture_changed_files, finalize_after_doing, run_stride_section, and
-# response_has_after_goal definitions so tests can source this script to use
-# the functions in isolation.
+# capture_changed_files, finalize_after_doing, run_stride_section,
+# response_has_after_goal, and export_after_goal_env definitions so tests can
+# source this script to use the functions in isolation.
 if [ -z "$PHASE" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -806,6 +867,11 @@ if [ "$PHASE" = "post" ]; then
   case "$COMMAND" in
     */api/tasks/*/complete*|*/api/tasks/*/mark_reviewed*)
       if response_has_after_goal "$INPUT"; then
+        # (W1512) Export the server-supplied GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME
+        # env vars from the after_goal hook entry BEFORE the section runs, so a
+        # `## after_goal` command referencing $GOAL_ID/$GOAL_IDENTIFIER/etc.
+        # sees the values the server sent (verbatim; never derived client-side).
+        export_after_goal_env "$INPUT"
         run_stride_section "after_goal" || true
       fi
       ;;

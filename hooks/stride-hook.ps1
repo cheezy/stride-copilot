@@ -688,6 +688,71 @@ function Test-AfterGoalInResponse {
     return $false
 }
 
+# Export the server-supplied `env` object from the response's after_goal hook
+# entry (W1512). Mirror of stride-hook.sh:export_after_goal_env. The
+# stride-workflow SKILL promises GOAL_ID/GOAL_IDENTIFIER/GOAL_TITLE/
+# GOAL_DESCRIPTION (plus BOARD_*/COLUMN_*/AGENT_NAME when present) reach the
+# after_goal child process, but nothing extracted them — so a `## after_goal`
+# section referencing $env:GOAL_ID ran with it empty. This peels the response
+# the same way Test-AfterGoalInResponse does, selects the FIRST after_goal hook
+# entry's `env` object, and sets each key VERBATIM into the process
+# environment so the subsequent Invoke-StrideSection 'after_goal' (which runs
+# the section via `bash -c`, inheriting the process env) sees them.
+#
+# Contract: values are copied verbatim; NEVER invented, derived, or looked up
+# client-side. A missing env object (or missing keys) is a clean no-op.
+function Set-AfterGoalEnv {
+    param([string]$InputJson)
+
+    if (-not $InputJson) { return }
+
+    try {
+        $parsed = $InputJson | ConvertFrom-Json
+    } catch {
+        return
+    }
+
+    if ($parsed.PSObject.Properties.Name -notcontains 'tool_response') { return }
+    $resp = $parsed.tool_response
+    if (-not $resp) { return }
+
+    $payload = $null
+
+    if ($resp -is [PSCustomObject] -and $resp.PSObject.Properties.Name -contains 'stdout') {
+        try { $payload = $resp.stdout | ConvertFrom-Json } catch { $payload = $null }
+    }
+
+    if ($null -eq $payload -and $resp -is [string]) {
+        try { $payload = $resp | ConvertFrom-Json } catch { $payload = $null }
+    }
+
+    if ($null -eq $payload -and $resp -is [PSCustomObject]) {
+        $payload = $resp
+    }
+
+    if ($null -eq $payload) { return }
+    if (-not ($payload.PSObject.Properties.Name -contains 'hooks')) { return }
+    if ($null -eq $payload.hooks) { return }
+
+    $agEntry = $null
+    foreach ($entry in @($payload.hooks)) {
+        if ($entry -and ($entry.PSObject.Properties.Name -contains 'name') -and $entry.name -eq 'after_goal') {
+            $agEntry = $entry
+            break
+        }
+    }
+    if ($null -eq $agEntry) { return }
+    if (-not ($agEntry.PSObject.Properties.Name -contains 'env')) { return }
+    $agEnv = $agEntry.env
+    if ($null -eq $agEnv) { return }
+    if (-not ($agEnv -is [PSCustomObject])) { return }
+
+    foreach ($prop in $agEnv.PSObject.Properties) {
+        $val = if ($null -eq $prop.Value) { '' } else { [string]$prop.Value }
+        [System.Environment]::SetEnvironmentVariable($prop.Name, $val, 'Process')
+    }
+}
+
 # --- (W1094) Changed-files upload self-heal ---
 # Runs only for before_review (gated internally). On a FRESH timeout budget it
 # re-verifies the after_doing upload via .stride-diff-upload-state and re-PUTs
@@ -712,6 +777,11 @@ if ($primaryRc -ne 0) {
 # the agent to forward via PATCH /api/tasks/:goal_id/after_goal.
 if ($Phase -eq 'post' -and ($Command -match '/api/tasks/[^/]+/(complete|mark_reviewed)')) {
     if (Test-AfterGoalInResponse -InputJson $Input) {
+        # (W1512) Export the server-supplied GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME
+        # env vars from the after_goal hook entry BEFORE the section runs, so an
+        # `## after_goal` command referencing $GOAL_ID/$GOAL_IDENTIFIER/etc. sees
+        # the values the server sent (verbatim; never derived client-side).
+        Set-AfterGoalEnv -InputJson $Input
         $null = Invoke-StrideSection -Section 'after_goal'
     }
 }

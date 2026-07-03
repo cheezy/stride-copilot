@@ -750,6 +750,70 @@ Assert-Exit "7e: end-to-end after_goal on mark_reviewed exits 0" 0 $r.ExitCode
 Assert-Contains "7e: mark_reviewed runs after_review" "after_review_ran" $r.Stdout
 Assert-Contains "7e: mark_reviewed runs after_goal" "after_goal_ran" $r.Stdout
 
+# --- W1512: after_goal hook.env forwarding ---
+# Helper: build a payload whose after_goal hook entry carries a server-supplied
+# `env` object. Mirrors Build-AfterGoalInput but attaches env to the after_goal
+# entry so the assertions can confirm the bridge exports it. -Depth 5 keeps the
+# nested env hashtable intact through ConvertTo-Json.
+function Build-AfterGoalInputWithEnv {
+    param(
+        [string]$PrimaryCommand,
+        [hashtable]$Env
+    )
+    $hooksArr = @(
+        @{ name = 'after_review' }
+        @{ name = 'after_goal'; env = $Env }
+    )
+    $inner = (@{ data = @{ id = 99 }; hooks = $hooksArr } | ConvertTo-Json -Depth 5 -Compress)
+    return (@{
+        tool_input    = @{ command = $PrimaryCommand }
+        tool_response = @{ stdout = $inner }
+    } | ConvertTo-Json -Depth 5 -Compress)
+}
+
+# Fixture whose after_goal section echoes every forwarded variable so the
+# assertions can confirm each reached the section process environment.
+$agEnvProj = Join-Path $TmpDir 'after-goal-env'
+New-Item -ItemType Directory -Path $agEnvProj -Force | Out-Null
+Set-Content -Path (Join-Path $agEnvProj '.stride.md') -Value @'
+## after_goal
+```bash
+echo "goal_id=$GOAL_ID id=$GOAL_IDENTIFIER title=$GOAL_TITLE desc=$GOAL_DESCRIPTION board=$BOARD_ID col=$COLUMN_ID agent=$AGENT_NAME"
+```
+'@ -Encoding UTF8
+
+# 7f: a stubbed hook.env with GOAL_*/BOARD_*/COLUMN_*/AGENT_NAME reaches the
+# after_goal section environment, copied VERBATIM (spaces preserved).
+$agEnvInput = Build-AfterGoalInputWithEnv `
+    -PrimaryCommand 'curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete' `
+    -Env @{
+        GOAL_ID          = '4687'
+        GOAL_IDENTIFIER  = 'G4687'
+        GOAL_TITLE       = 'Ship the bridge'
+        GOAL_DESCRIPTION = 'Wire GOAL_* through'
+        BOARD_ID         = '55'
+        COLUMN_ID        = '128'
+        AGENT_NAME       = 'Claude Opus 4.8'
+    }
+$r = Invoke-HookScript -InputJson $agEnvInput -Phase 'post' -ProjectDir $agEnvProj
+Assert-Exit "7f: after_goal env-export exits 0" 0 $r.ExitCode
+Assert-Contains "7f: GOAL_ID exported verbatim" "goal_id=4687" $r.Stdout
+Assert-Contains "7f: GOAL_IDENTIFIER exported verbatim" "id=G4687" $r.Stdout
+Assert-Contains "7f: GOAL_TITLE with spaces exported verbatim" "title=Ship the bridge" $r.Stdout
+Assert-Contains "7f: GOAL_DESCRIPTION exported verbatim" "desc=Wire GOAL_* through" $r.Stdout
+Assert-Contains "7f: BOARD_ID exported verbatim" "board=55" $r.Stdout
+Assert-Contains "7f: COLUMN_ID exported verbatim" "col=128" $r.Stdout
+Assert-Contains "7f: AGENT_NAME with spaces exported verbatim" "agent=Claude Opus 4.8" $r.Stdout
+
+# 7g: an after_goal entry with NO env object is a clean no-op — the section
+# still runs (exit 0) with the GOAL_* vars empty, never an error.
+$agNoEnvInput = Build-AfterGoalInput `
+    -PrimaryCommand 'curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete' `
+    -HookNames @('after_review', 'after_goal')
+$r = Invoke-HookScript -InputJson $agNoEnvInput -Phase 'post' -ProjectDir $agEnvProj
+Assert-Exit "7g: after_goal missing env is a clean no-op (exit 0)" 0 $r.ExitCode
+Assert-Contains "7g: section still runs with empty GOAL_* vars" "goal_id= id= title=" $r.Stdout
+
 # ============================================================
 # Test Group 8: PUT snapshot upload (W839 — G162 port)
 # ============================================================
