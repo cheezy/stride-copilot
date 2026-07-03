@@ -3052,6 +3052,104 @@ if command -v jq > /dev/null 2>&1; then
 fi
 
 # ============================================================
+# Test Group 17: claim-time dirty baseline guard (W1516)
+# ============================================================
+echo ""
+echo "=== Test Group 17: claim-time dirty baseline guard (W1516) ==="
+
+if ! command -v jq > /dev/null 2>&1 || ! command -v git > /dev/null 2>&1; then
+  echo "  SKIP: Group 17 requires jq and git"
+else
+  # End-to-end: claim in a repo that ALREADY has uncommitted/untracked edits,
+  # then let the "task" modify one pre-existing file further and add a new one.
+  # The after_doing snapshot must exclude the pre-existing, task-untouched edits
+  # but keep the pre-existing file the task modified and the new task file.
+  BL_DIR="$TMPDIR_TEST/baseline-guard"
+  mkdir -p "$BL_DIR"
+  (
+    cd "$BL_DIR" || exit 1
+    git init -q
+    git config user.email "test@test.local"
+    git config user.name "Test"
+    cat > .gitignore << 'GITIGNORE'
+.stride.md
+.stride-env-cache
+.stride-changed-files.json
+.stride-diff-upload-state
+GITIGNORE
+    echo "committed" > pre_mod.txt
+    echo "committed" > untouched_committed.txt
+    git add .gitignore pre_mod.txt untouched_committed.txt > /dev/null
+    git commit -q -m "init"
+
+    cat > .stride.md << 'STRIDE'
+## before_doing
+```bash
+echo "before_doing_ran"
+```
+## after_doing
+```bash
+echo "after_doing_ran"
+```
+STRIDE
+
+    # PRE-EXISTING dirty state (before the claim): modify a committed file and
+    # add an untracked file — both UNRELATED to the task about to be claimed.
+    echo "pre-existing unrelated edit" > pre_mod.txt
+    echo "pre-existing untracked junk" > pre_new.txt
+
+    # Claim (before_doing) with a parseable task response so the env cache —
+    # including TASK_BASE_REF and the new TASK_DIRTY_BASELINE — is written.
+    CLAIM_JSON_BL='{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"},"tool_response":"{\"data\":{\"id\":777,\"identifier\":\"W777\",\"title\":\"Baseline Task\",\"status\":\"in_progress\",\"complexity\":\"small\",\"priority\":\"low\"}}"}'
+    echo "$CLAIM_JSON_BL" | CLAUDE_PROJECT_DIR="$PWD" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+
+    # The TASK does its work: modify the pre-existing file FURTHER, add a new
+    # file; leave pre_new.txt untouched.
+    echo "TASK further modification" > pre_mod.txt
+    echo "task output" > task_new.txt
+
+    # Complete (after_doing) writes .stride-changed-files.json.
+    COMPLETE_JSON_BL='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/777/complete"}}'
+    echo "$COMPLETE_JSON_BL" | CLAUDE_PROJECT_DIR="$PWD" bash "$HOOK_SCRIPT" pre > /dev/null 2>&1
+  )
+  BL_ENV=$(cat "$BL_DIR/.stride-env-cache" 2>/dev/null)
+  BL_SNAP=$(cat "$BL_DIR/.stride-changed-files.json" 2>/dev/null)
+
+  # 17a: the env cache records a TASK_DIRTY_BASELINE alongside TASK_BASE_REF.
+  assert_contains "17a: env cache records TASK_DIRTY_BASELINE" "TASK_DIRTY_BASELINE=" "$BL_ENV"
+  assert_contains "17a: env cache still records TASK_BASE_REF" "TASK_BASE_REF=" "$BL_ENV"
+
+  # 17b: a pre-existing, task-untouched edit is excluded from the snapshot.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | index("pre_new.txt") == null' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17b: pre-existing untouched untracked file excluded"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17b: pre-existing untouched file leaked into snapshot: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+
+  # 17c: a pre-existing file the task modified FURTHER is still captured.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | index("pre_mod.txt") != null' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17c: pre-existing file modified by the task is still captured"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17c: task-modified pre-existing file wrongly filtered: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+
+  # 17d: a brand-new task file is captured.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | index("task_new.txt") != null' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17d: new task file captured"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17d: new task file missing from snapshot: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+
+  # 17e: self-artifact exclusion (D67) still holds — the snapshot never lists
+  # its own bookkeeping files.
+  if echo "$BL_SNAP" | jq -e 'map(.path) | (index(".stride-changed-files.json") == null) and (index(".stride-diff-upload-state") == null)' > /dev/null 2>&1; then
+    echo -e "  ${GREEN}PASS${RESET}: 17e: self-artifact exclusion preserved"; PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 17e: self-artifact leaked: $BL_SNAP"; FAIL=$((FAIL + 1))
+  fi
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

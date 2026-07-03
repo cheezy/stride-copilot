@@ -40,6 +40,45 @@ if [ "$_delegate_to_ps1" = "true" ]; then
   exec powershell.exe -ExecutionPolicy Bypass -File "$PS1_SCRIPT" "$PHASE"
 fi
 
+# Portable base64 decode of stdin (W1516). GNU/modern-macOS use -d; stock
+# BSD/older macOS use -D. The input is captured first so the fallback re-feeds
+# it after a failed first attempt (a naive `base64 -d || base64 -D` would send
+# the already-consumed stdin as empty). Empty output when base64 is unavailable.
+_b64_decode() {
+  local _in
+  _in=$(cat)
+  command -v base64 > /dev/null 2>&1 || return 0
+  printf '%s' "$_in" | base64 -d 2>/dev/null \
+    || printf '%s' "$_in" | base64 -D 2>/dev/null \
+    || true
+}
+
+# Compute the claim-time dirty baseline (W1516): one "<blobsha>\t<path>" line per
+# path git currently reports as modified/staged/untracked-not-ignored, where the
+# blob sha is git's content hash of the CURRENT file. A later capture compares a
+# candidate path's current hash to this recorded hash to tell whether the path
+# changed SINCE claim time — so a pre-existing, task-untouched edit is filtered
+# while a pre-existing file the task later modifies still surfaces. Only hashes
+# and paths are emitted — never file contents. Paths git quotes (special
+# characters) are skipped (they fall through to being captured, the safe
+# default). Runs from PROJECT_DIR, which is the repo root in Stride's use — the
+# same assumption capture_changed_files already makes about path relativity.
+_compute_dirty_baseline() {
+  command -v git > /dev/null 2>&1 || return 0
+  (
+    cd "$PROJECT_DIR" 2>/dev/null || exit 0
+    local _line _path _sha
+    git status --porcelain 2>/dev/null | while IFS= read -r _line; do
+      _path="${_line:3}"
+      case "$_path" in *" -> "*) _path="${_path##* -> }" ;; esac
+      case "$_path" in \"*) continue ;; esac
+      [ -f "$_path" ] || continue
+      _sha=$(git hash-object "$_path" 2>/dev/null) || continue
+      [ -n "$_sha" ] && printf '%s\t%s\n' "$_sha" "$_path"
+    done
+  )
+}
+
 # --- Per-file diff capture (G148/W719 contract, Option D semantic) ---
 # Emits a JSON array of `{path, diff}` entries to stdout, one per file that
 # differs between $1 (base ref) and the agent's WORKING TREE at the time the
@@ -109,9 +148,34 @@ capture_changed_files() {
   local jsonl_file
   jsonl_file=$(mktemp)
 
+  # (W1516) Decode the claim-time dirty baseline once. Each line is
+  # "<blobsha>\t<path>"; a candidate path present here whose CURRENT content
+  # hash still matches was already dirty at claim time and untouched by the
+  # task, so it is filtered out of the snapshot below. Empty when no baseline
+  # was recorded (clean claim, older env cache, or base64 unavailable).
+  local _baseline_decoded=""
+  if [ -n "${TASK_DIRTY_BASELINE:-}" ]; then
+    _baseline_decoded=$(printf '%s' "$TASK_DIRTY_BASELINE" | _b64_decode)
+  fi
+
   local file
   while IFS= read -r file; do
     [ -z "$file" ] && continue
+
+    # (W1516) Skip a path that was already dirty at claim time AND whose content
+    # is unchanged since — a pre-existing, task-untouched edit that must not be
+    # misattributed to the agent. A baselined path whose current hash DIFFERS
+    # (the task edited it further) is kept. A path absent from the baseline is a
+    # genuine task change and is kept.
+    if [ -n "$_baseline_decoded" ]; then
+      local _base_sha _cur_sha
+      _base_sha=$(printf '%s\n' "$_baseline_decoded" \
+        | awk -F'\t' -v p="$file" '$2 == p { print $1; exit }')
+      if [ -n "$_base_sha" ]; then
+        _cur_sha=$(git hash-object "$file" 2>/dev/null || printf '')
+        [ "$_cur_sha" = "$_base_sha" ] && continue
+      fi
+    fi
 
     # Determine whether this path is in the untracked list (membership lookup,
     # not just empty check — tracked_files and untracked_files were merged
@@ -939,6 +1003,12 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
     fi
   fi
 
+  # (W1516) Snapshot which paths are ALREADY dirty at claim time, base64-encoded
+  # as a single safe env-cache line (many paths, no special-char breakage, no
+  # file contents — only hashes). capture_changed_files subtracts this baseline
+  # so unrelated pre-existing edits are never misattributed to the agent.
+  _dirty_baseline_b64=$(_compute_dirty_baseline | base64 2>/dev/null | tr -d '\r\n')
+
   if [ -n "$TASK_JSON" ]; then
     # Values are single-quoted to handle spaces in titles/descriptions.
     # TASK_BASE_REF anchors per-file diff capture to the commit HEAD pointed
@@ -953,6 +1023,7 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
       echo "TASK_COMPLEXITY='$(echo "$TASK_JSON" | jq -r '.complexity // empty')'"
       echo "TASK_PRIORITY='$(echo "$TASK_JSON" | jq -r '.priority // empty')'"
       echo "TASK_BASE_REF='$_base_ref'"
+      echo "TASK_DIRTY_BASELINE='$_dirty_baseline_b64'"
     } > "$ENV_CACHE" 2>/dev/null || true
     # Clear any stale per-file diff snapshot and upload-state from a previous
     # task (W1094 — a stale state file would mislead the before_review self-heal
@@ -970,13 +1041,19 @@ if [ "$HOOK_NAME" = "before_doing" ] && [ "$HAS_JQ" = "true" ]; then
     _base_ref=$(cd "$PROJECT_DIR" && git rev-parse HEAD 2>/dev/null || true)
     if [ -n "$_base_ref" ]; then
       if [ -f "$ENV_CACHE" ]; then
-        _preserved=$(grep -v '^TASK_BASE_REF=' "$ENV_CACHE" 2>/dev/null || true)
+        # Drop the previous claim's TASK_BASE_REF AND TASK_DIRTY_BASELINE so a
+        # stale baseline can't survive into this claim, then re-write both fresh.
+        _preserved=$(grep -v -e '^TASK_BASE_REF=' -e '^TASK_DIRTY_BASELINE=' "$ENV_CACHE" 2>/dev/null || true)
         {
           [ -n "$_preserved" ] && printf '%s\n' "$_preserved"
           echo "TASK_BASE_REF='$_base_ref'"
+          echo "TASK_DIRTY_BASELINE='$_dirty_baseline_b64'"
         } > "$ENV_CACHE" 2>/dev/null || true
       else
-        echo "TASK_BASE_REF='$_base_ref'" > "$ENV_CACHE" 2>/dev/null || true
+        {
+          echo "TASK_BASE_REF='$_base_ref'"
+          echo "TASK_DIRTY_BASELINE='$_dirty_baseline_b64'"
+        } > "$ENV_CACHE" 2>/dev/null || true
       fi
       rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
       rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true

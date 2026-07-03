@@ -71,6 +71,53 @@ switch ($Phase) {
 # Not a Stride API call — exit cleanly
 if (-not $HookName) { exit 0 }
 
+# Compute the claim-time dirty baseline (W1516). Mirror of
+# stride-hook.sh:_compute_dirty_baseline: returns base64 of newline-joined
+# "<blobsha>`t<path>" lines for every path git currently reports dirty
+# (modified/staged/untracked-not-ignored), where the sha is git's content hash
+# of the CURRENT file. Only hashes + paths — never file contents. Quoted
+# (special-char) paths are skipped (they fall through to being captured). Empty
+# string on any failure (git absent, not a repo, clean tree).
+function Get-DirtyBaseline {
+    param([string]$Dir)
+    try {
+        $status = & git -C $Dir status --porcelain 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $status) { return '' }
+        $lines = @()
+        foreach ($entry in @($status)) {
+            if ($entry.Length -lt 4) { continue }
+            $p = $entry.Substring(3)
+            if ($p -match ' -> ') { $p = ($p -split ' -> ')[-1] }
+            if ($p.StartsWith('"')) { continue }
+            if (-not (Test-Path -LiteralPath (Join-Path $Dir $p) -PathType Leaf)) { continue }
+            $sha = & git -C $Dir hash-object $p 2>$null
+            if ($LASTEXITCODE -eq 0 -and $sha) { $lines += "$(($sha | Out-String).Trim())`t$p" }
+        }
+        if ($lines.Count -eq 0) { return '' }
+        return [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))
+    } catch {
+        return ''
+    }
+}
+
+# Decode $env:TASK_DIRTY_BASELINE (base64 of "<sha>`t<path>" lines) into a
+# path -> sha hashtable (W1516). Empty hashtable when unset or undecodable.
+function Get-ClaimDirtyBaselineMap {
+    $map = @{}
+    $blB64 = [System.Environment]::GetEnvironmentVariable('TASK_DIRTY_BASELINE', 'Process')
+    if (-not $blB64) { return $map }
+    try {
+        $txt = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($blB64))
+        foreach ($line in ($txt -split "`n")) {
+            $ti = $line.IndexOf("`t")
+            if ($ti -gt 0) { $map[$line.Substring($ti + 1)] = $line.Substring(0, $ti) }
+        }
+    } catch {
+        $map = @{}
+    }
+    return $map
+}
+
 # --- Environment variable caching ---
 # After a successful claim (before_doing), extract task metadata from the API
 # response and cache it. All subsequent hooks load the cache so .stride.md
@@ -178,6 +225,12 @@ if ($HookName -eq 'before_doing') {
                 $baseRef = ''
             }
 
+            # (W1516) Snapshot the already-dirty paths at claim time, base64 in a
+            # single safe env-cache line (many paths, no special-char breakage,
+            # only hashes — never file contents). The upload filter subtracts it
+            # so unrelated pre-existing edits are not misattributed to the agent.
+            $dirtyBaselineB64 = Get-DirtyBaseline -Dir $ProjectDir
+
             if ($taskJson) {
                 $cacheLines = @(
                     "TASK_ID=$($taskJson.id)"
@@ -187,6 +240,7 @@ if ($HookName -eq 'before_doing') {
                     "TASK_COMPLEXITY=$($taskJson.complexity)"
                     "TASK_PRIORITY=$($taskJson.priority)"
                     "TASK_BASE_REF=$baseRef"
+                    "TASK_DIRTY_BASELINE=$dirtyBaselineB64"
                 )
                 $cacheLines | Set-Content -Path $EnvCache -Encoding UTF8
                 # Clear any stale per-file diff snapshot and upload-state from a
@@ -201,11 +255,14 @@ if ($HookName -eq 'before_doing') {
                 # snapshot — otherwise a base ref recorded under a previous claim
                 # survives. Existing TASK_ identity lines are preserved so a later
                 # completion can still recover TASK_ID.
+                # Drop the previous claim's TASK_BASE_REF AND TASK_DIRTY_BASELINE
+                # so a stale baseline cannot survive into this claim, then
+                # re-write both fresh.
                 $preserved = @()
                 if (Test-Path $EnvCache) {
-                    $preserved = @(Get-Content $EnvCache -Encoding UTF8 | Where-Object { $_ -notmatch '^TASK_BASE_REF=' })
+                    $preserved = @(Get-Content $EnvCache -Encoding UTF8 | Where-Object { $_ -notmatch '^TASK_BASE_REF=' -and $_ -notmatch '^TASK_DIRTY_BASELINE=' })
                 }
-                $newLines = $preserved + "TASK_BASE_REF=$baseRef"
+                $newLines = $preserved + "TASK_BASE_REF=$baseRef" + "TASK_DIRTY_BASELINE=$dirtyBaselineB64"
                 $newLines | Set-Content -Path $EnvCache -Encoding UTF8
                 Remove-Item -Force (Join-Path $ProjectDir '.stride-changed-files.json') -ErrorAction SilentlyContinue
                 Remove-Item -Force (Join-Path $ProjectDir '.stride-diff-upload-state') -ErrorAction SilentlyContinue
@@ -293,8 +350,24 @@ function Invoke-ChangedFilesUpload {
         # falls through to the raw bytes unchanged.
         try {
             $entries = @([System.Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
+            # (W1516) Alongside the D67 self-artifact exclusion, drop entries
+            # that were already dirty at claim time AND whose content is
+            # unchanged since — pre-existing, task-untouched edits. A baselined
+            # path whose CURRENT git hash differs (the task edited it further) is
+            # kept, as is any path absent from the baseline.
+            $baselineMap = Get-ClaimDirtyBaselineMap
             $filtered = @($entries | Where-Object {
-                $_.path -ne '.stride-diff-upload-state' -and $_.path -ne '.stride-changed-files.json'
+                $p = $_.path
+                if ($p -eq '.stride-diff-upload-state' -or $p -eq '.stride-changed-files.json') { return $false }
+                if ($baselineMap.ContainsKey($p)) {
+                    $cur = ''
+                    try {
+                        $h = & git -C $ProjectDir hash-object $p 2>$null
+                        if ($LASTEXITCODE -eq 0 -and $h) { $cur = ($h | Out-String).Trim() }
+                    } catch { $cur = '' }
+                    if ($cur -ne '' -and $cur -eq $baselineMap[$p]) { return $false }
+                }
+                return $true
             })
             if ($filtered.Count -ne $entries.Count) {
                 # Pipe (not -InputObject) so an array is not double-wrapped into

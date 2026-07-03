@@ -1798,6 +1798,127 @@ if ($contLitObj -and @($contLitObj.commands_completed).Count -eq 2) {
 }
 
 # ============================================================
+# Test Group 14: claim-time dirty baseline guard (W1516)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 17. 14a asserts the baseline is
+# recorded at before_doing; 14b asserts the upload filter drops a pre-existing,
+# task-untouched entry while keeping a pre-existing file the task modified and a
+# brand-new task file (the PowerShell snapshot-filtering mirror lives in
+# Invoke-ChangedFilesUpload, so it is exercised through a real PUT).
+Write-Host ""
+Write-Host "=== Test Group 14: claim-time dirty baseline guard (W1516) ==="
+
+# 14a: before_doing records TASK_DIRTY_BASELINE (alongside TASK_BASE_REF) when
+# the working tree is already dirty at claim time.
+$blProj = Join-Path $TmpDir 'baseline-record'
+New-Item -ItemType Directory -Path $blProj -Force | Out-Null
+& git -C $blProj init -q 2>$null
+& git -C $blProj config user.email 't@t' 2>$null
+& git -C $blProj config user.name 't' 2>$null
+Set-Content -Path (Join-Path $blProj '.gitignore') -Value ".stride.md`n.stride-env-cache`n.stride-changed-files.json`n.stride-diff-upload-state" -Encoding UTF8
+Set-Content -Path (Join-Path $blProj 'committed.txt') -Value 'committed' -Encoding UTF8
+& git -C $blProj add -A 2>$null
+& git -C $blProj commit -q -m init 2>$null
+# Pre-existing dirty edits before the claim.
+Set-Content -Path (Join-Path $blProj 'committed.txt') -Value 'pre-existing edit' -Encoding UTF8
+Set-Content -Path (Join-Path $blProj 'pre_new.txt') -Value 'pre-existing untracked' -Encoding UTF8
+Set-Content -Path (Join-Path $blProj '.stride.md') -Value @'
+## before_doing
+```bash
+echo "before_doing_ran"
+```
+'@ -Encoding UTF8
+$blClaim = '{"tool_input":{"command":"curl -X POST https://stridelikeaboss.com/api/tasks/claim"},"tool_response":{"stdout":"{\"data\":{\"id\":778,\"identifier\":\"W778\",\"title\":\"BL\",\"status\":\"in_progress\",\"complexity\":\"small\",\"priority\":\"low\"}}"}}'
+$r = Invoke-HookScript -InputJson $blClaim -Phase 'post' -ProjectDir $blProj
+Assert-Exit "14a: baseline claim exits 0" 0 $r.ExitCode
+$blCache = Get-Content -Raw -Path (Join-Path $blProj '.stride-env-cache') -ErrorAction SilentlyContinue
+Assert-Contains "14a: env cache records TASK_DIRTY_BASELINE" 'TASK_DIRTY_BASELINE=' $blCache
+Assert-Contains "14a: env cache still records TASK_BASE_REF" 'TASK_BASE_REF=' $blCache
+
+# 14b: the upload filter drops a pre-existing, unchanged entry but keeps a
+# pre-existing file the task modified and a new task file. Exercised via a real
+# PUT captured by a local HttpListener.
+$blFiltProj = Join-Path $TmpDir 'baseline-filter'
+New-Item -ItemType Directory -Path $blFiltProj -Force | Out-Null
+Set-Content -Path (Join-Path $blFiltProj 'pre_unchanged.txt') -Value 'U1' -Encoding UTF8 -NoNewline
+Set-Content -Path (Join-Path $blFiltProj 'pre_modified.txt') -Value 'M1' -Encoding UTF8 -NoNewline
+Set-Content -Path (Join-Path $blFiltProj 'task_new.txt') -Value 'T1' -Encoding UTF8 -NoNewline
+# Claim-time hashes (pre_modified still holds its claim-time content M1).
+$hashU = (& git -C $blFiltProj hash-object pre_unchanged.txt | Out-String).Trim()
+$hashM = (& git -C $blFiltProj hash-object pre_modified.txt | Out-String).Trim()
+$blText = "$hashU`tpre_unchanged.txt`n$hashM`tpre_modified.txt"
+$blFiltB64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($blText))
+# Task edits pre_modified.txt further (content now differs from the baseline).
+Set-Content -Path (Join-Path $blFiltProj 'pre_modified.txt') -Value 'M2-task-edit' -Encoding UTF8 -NoNewline
+Set-Content -Path (Join-Path $blFiltProj '.stride.md') -Value @'
+## after_doing
+```bash
+echo "ran"
+```
+'@ -Encoding UTF8
+Set-Content -Path (Join-Path $blFiltProj '.stride-changed-files.json') `
+    -Value '[{"path":"pre_unchanged.txt","diff":"d1"},{"path":"pre_modified.txt","diff":"d2"},{"path":"task_new.txt","diff":"d3"}]' -Encoding UTF8
+Set-Content -Path (Join-Path $blFiltProj '.stride-env-cache') `
+    -Value "TASK_ID=99`nTASK_BASE_REF=abc`nTASK_DIRTY_BASELINE=$blFiltB64" -Encoding UTF8
+
+$blPort = 18884
+$blFixture = Join-Path $TmpDir 'baseline-put-fixture.json'
+if (Test-Path $blFixture) { Remove-Item -Force $blFixture }
+$blListenerJob = Start-Job -ArgumentList $blPort, $blFixture -ScriptBlock {
+    param($Port, $Fixture)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start()
+        $ctx = $l.GetContext()
+        $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream)
+        @{ Body = $reader.ReadToEnd() } | ConvertTo-Json -Compress | Set-Content -Path $Fixture -Encoding UTF8
+        $ctx.Response.StatusCode = 200
+        $ctx.Response.OutputStream.Close()
+    } catch { } finally { if ($l.IsListening) { $l.Stop() } }
+}
+try {
+    $null = Wait-ForListener -Port $blPort
+    $blCmd = "curl -X PATCH http://localhost:$blPort/api/tasks/99/complete -H `"Authorization: Bearer tok`""
+    $blJson = @{ tool_input = @{ command = $blCmd } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $blJson -Phase 'pre' -ProjectDir $blFiltProj
+    Assert-Exit "14b: hook exits 0 after filtered PUT" 0 $r.ExitCode
+    Wait-Job $blListenerJob -Timeout 8 | Out-Null
+    Remove-Job $blListenerJob -Force -ErrorAction SilentlyContinue
+    if (Test-Path $blFixture) {
+        $rec = Get-Content -Raw -Path $blFixture | ConvertFrom-Json
+        $env = $rec.Body | ConvertFrom-Json
+        $paths = @()
+        try {
+            $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env.changed_files.data))
+            $paths = @(($decoded | ConvertFrom-Json) | ForEach-Object { $_.path })
+        } catch { $paths = @() }
+        if ($paths -notcontains 'pre_unchanged.txt') {
+            Write-Host "  PASS: 14b: pre-existing unchanged entry filtered from the PUT" -ForegroundColor Green; $script:PASS++
+        } else {
+            Write-Host "  FAIL: 14b: pre-existing unchanged entry leaked: $($paths -join ',')" -ForegroundColor Red; $script:FAIL++
+        }
+        if ($paths -contains 'pre_modified.txt') {
+            Write-Host "  PASS: 14b: task-modified pre-existing entry kept" -ForegroundColor Green; $script:PASS++
+        } else {
+            Write-Host "  FAIL: 14b: task-modified entry wrongly filtered: $($paths -join ',')" -ForegroundColor Red; $script:FAIL++
+        }
+        if ($paths -contains 'task_new.txt') {
+            Write-Host "  PASS: 14b: new task entry kept" -ForegroundColor Green; $script:PASS++
+        } else {
+            Write-Host "  FAIL: 14b: new task entry missing: $($paths -join ',')" -ForegroundColor Red; $script:FAIL++
+        }
+    } else {
+        Write-Host "  FAIL: 14b: PUT did not arrive at listener" -ForegroundColor Red; $script:FAIL++
+    }
+} finally {
+    if ($blListenerJob -and $blListenerJob.State -eq 'Running') {
+        Stop-Job $blListenerJob -ErrorAction SilentlyContinue
+        Remove-Job $blListenerJob -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""
