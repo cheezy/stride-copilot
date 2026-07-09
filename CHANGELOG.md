@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.24.0] - 2026-07-09
+
+### Fixed / Added — `after_goal` reliability against harness truncation (G315 — D118/W1609/D119/W1611/W1612/W1610)
+
+Mirrors the canonical `stride` plugin's after_goal reliability fix into the Copilot bridge. The harness truncates a large `/complete` `tool_response.stdout` mid-JSON (the echoed `reviewer_result` alone can run to tens of KB), so the bridge's `after_goal` detection silently missed the entry on a goal's last child and the goal-completion push never fired. All changes are backward-compatible; the `.stride.md` wire shape and the four task-lifecycle hooks are unchanged.
+
+- **`hooks/stride-hook.sh` (D118 / W1624)** — Added a `RESPONSE_FILE` global (`$PROJECT_DIR/.stride/.last-api-response.json`) and a jq-validated `read_canonical_response` helper, threaded as a fast path into both payload consumers (`response_has_after_goal` and `export_after_goal_env`) so after_goal detection and `GOAL_*` env forwarding prefer the untruncated canonical file, falling back to the `tool_response.stdout` parse.
+- **`hooks/stride-hook.sh` (W1609 / W1625)** — Introduced `extract_response_payload` as the single shared resolver (canonical file → `tool_response.stdout` unwrap → W1086 persisted-output file → best-effort raw) and routed `response_has_after_goal`, `export_after_goal_env`, **and** the `before_doing` claim env-cache/`TASK_BASE_REF` refresh through it, so a truncated claim stdout no longer loses `TASK_ID` or leaves a stale base ref. Added `capture_canonical_response` (persists this call's valid stdout to the canonical file early in the post phase) and hard-excluded the `.stride/` state dir from `changed_files`.
+- **`hooks/stride-hook.sh` (D119 / W1626)** — Added the reliability guarantee: a hook-initiated fresh `GET /api/tasks/:id/after_goal_status` (`detect_after_goal_via_api`), immune to harness truncation and needing zero agent cooperation. `route_after_goal` keeps the D118 fast path and the D119 fresh call mutually exclusive so `## after_goal` runs at most once; unreachable/non-JSON/missing-prereq degrades to a clean no-op (the grace-window worker still completes the goal). The token is never logged.
+- **`hooks/stride-hook.ps1` (W1611 / W1627)** — PowerShell parity: `Read-CanonicalResponse`, `Save-CanonicalResponse`, the unified `Get-ResponsePayload` resolver (with the truncated-`{stdout}`-to-`$null` elseif gate so the fresh call fires), the claim env-cache restructure, the `^\.stride/` exclusion, and `Invoke-AfterGoalDetectionViaApi`/`Invoke-AfterGoalRouting` (fresh GET via `Invoke-WebRequest -SkipHttpErrorCheck -TimeoutSec 10`).
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1612 / W1628)** — Closed two after_goal reliability gaps to reach parity with `stride`: the exported `GOAL_*` are now persisted to the env cache (so the agent's separate follow-up `PATCH /api/tasks/:goal_id/after_goal` process can read them), and a **parent-id fallback** exports `GOAL_ID` from `data.parent_id` when the server omits it from the after_goal env.
+- **`skills/stride-completing-tasks`, `skills/stride-claiming-tasks`, `skills/stride-workflow` (W1610 / W1629)** — Documented the `| tee "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"` response-capture pattern (with a `--output` tee-less fallback) that feeds the canonical file, the canonical-file→fresh-GET detection ordering, and a `git log origin/main..main` push-verification step (noting the grace worker only flips the goal to Done and does **not** push).
+
+### Testing
+
+`hooks/test-stride-hook.sh` (296 assertions) and `hooks/test-stride-hook.ps1` (225 assertions) both pass, with new groups for the canonical-file fast path, the shared resolver + capture + claim-from-file recovery, the D119 hook-initiated fresh call (bash Group 18 / PowerShell Group 15), and the end-to-end after_goal reliability under truncation including the parent-id fallback (bash Group 19 / PowerShell Group 16).
+
+### Backward compatibility
+
+Backward-compatible and additive. Detection falls back to the `tool_response.stdout` parse when no canonical file is present, and the D119 fresh call degrades to a clean no-op (with the grace-window worker as the ultimate backstop) when the endpoint is unreachable. The `GET /api/tasks/:id/after_goal_status` endpoint must be live on the target server for the fresh call to resolve; it degrades cleanly otherwise.
+
+### Source
+
+G315 — W1624 (D118), W1625 (W1609), W1626 (D119), W1627 (W1611), W1628 (W1612), W1629 (W1610).
+
 ## [2.23.0] - 2026-07-03
 
 ### Fixed / Added — hook-executor behavioral fixes and `after_goal` diagnostician awareness (G287 / W1512–W1517)
