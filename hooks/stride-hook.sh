@@ -1013,12 +1013,31 @@ export_after_goal_env() {
   # object yields no keys -> no iterations.
   local _keys _key _val
   _keys=$(echo "$_env" | jq -r 'keys_unsorted[]' 2>/dev/null || printf '')
-  [ -n "$_keys" ] || return 0
-  while IFS= read -r _key; do
-    [ -n "$_key" ] || continue
-    _val=$(echo "$_env" | jq -r --arg k "$_key" '.[$k] | if . == null then "" else tostring end' 2>/dev/null || printf '')
-    export "$_key=$_val"
-  done <<< "$_keys"
+  if [ -n "$_keys" ]; then
+    while IFS= read -r _key; do
+      [ -n "$_key" ] || continue
+      _val=$(echo "$_env" | jq -r --arg k "$_key" '.[$k] | if . == null then "" else tostring end' 2>/dev/null || printf '')
+      export "$_key=$_val"
+      # (W1612) Persist to the env cache as well, so the agent's SEPARATE
+      # follow-up PATCH /api/tasks/:goal_id/after_goal process (which does NOT
+      # inherit this hook's process env) can read GOAL_* too.
+      printf "%s='%s'\n" "$_key" "$_val" >> "$ENV_CACHE" 2>/dev/null || true
+    done <<< "$_keys"
+  fi
+
+  # (W1612) Parent-id fallback: the server may build the after_goal env from the
+  # completed child task and OMIT GOAL_ID (or send it empty). The parent id in
+  # the same response's data object IS the goal id — without it the ## after_goal
+  # section (and the follow-up PATCH /api/tasks/:goal_id/after_goal) has no
+  # target. Mirrors stride-hook's export_after_goal_env parent-id fallback.
+  if [ -z "${GOAL_ID:-}" ]; then
+    local _parent
+    _parent=$(echo "$_payload" | jq -r '.data.parent_id // .parent_id // empty' 2>/dev/null || true)
+    if [ -n "$_parent" ] && [ "$_parent" != "null" ]; then
+      export "GOAL_ID=$_parent"
+      printf "GOAL_ID='%s'\n" "$_parent" >> "$ENV_CACHE" 2>/dev/null || true
+    fi
+  fi
 }
 
 # --- After-goal execution (shared by the D118 fast path and the D119 fresh call) ---

@@ -1023,14 +1023,39 @@ function Set-AfterGoalEnv {
         }
     }
     if ($null -eq $agEntry) { return }
-    if (-not ($agEntry.PSObject.Properties.Name -contains 'env')) { return }
-    $agEnv = $agEntry.env
-    if ($null -eq $agEnv) { return }
-    if (-not ($agEnv -is [PSCustomObject])) { return }
 
-    foreach ($prop in $agEnv.PSObject.Properties) {
-        $val = if ($null -eq $prop.Value) { '' } else { [string]$prop.Value }
-        [System.Environment]::SetEnvironmentVariable($prop.Name, $val, 'Process')
+    $agEnv = $null
+    if ($agEntry.PSObject.Properties.Name -contains 'env') { $agEnv = $agEntry.env }
+
+    if ($null -ne $agEnv -and ($agEnv -is [PSCustomObject])) {
+        foreach ($prop in $agEnv.PSObject.Properties) {
+            $val = if ($null -eq $prop.Value) { '' } else { [string]$prop.Value }
+            [System.Environment]::SetEnvironmentVariable($prop.Name, $val, 'Process')
+            # (W1612) Persist to the env cache so the agent's SEPARATE follow-up
+            # PATCH /api/tasks/:goal_id/after_goal process (which does NOT inherit
+            # this hook's process env) can read GOAL_* too.
+            Add-Content -Path $EnvCache -Value ("{0}={1}" -f $prop.Name, $val) -Encoding UTF8
+        }
+    }
+
+    # (W1612) Parent-id fallback: the server may build the after_goal env from
+    # the completed child task and OMIT GOAL_ID (or send it empty). The parent
+    # id in the same response's data object IS the goal id — without it the
+    # ## after_goal section (and the follow-up PATCH) has no target.
+    $goalId = [System.Environment]::GetEnvironmentVariable('GOAL_ID', 'Process')
+    if (-not $goalId) {
+        $parentId = $null
+        $payloadProps = $Payload.PSObject.Properties.Name
+        if (($payloadProps -contains 'data') -and $Payload.data -and
+            ($Payload.data.PSObject.Properties.Name -contains 'parent_id')) {
+            $parentId = $Payload.data.parent_id
+        } elseif ($payloadProps -contains 'parent_id') {
+            $parentId = $Payload.parent_id
+        }
+        if ($null -ne $parentId -and "$parentId") {
+            [System.Environment]::SetEnvironmentVariable('GOAL_ID', "$parentId", 'Process')
+            Add-Content -Path $EnvCache -Value ("GOAL_ID={0}" -f "$parentId") -Encoding UTF8
+        }
     }
 }
 

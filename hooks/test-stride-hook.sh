@@ -1639,11 +1639,16 @@ STRIDE
   assert_contains "8f: AGENT_NAME with spaces exported verbatim" "agent=Claude Opus 4.8" "$AG_ENV_OUT"
 
   # 8g: an after_goal entry with NO env object is a clean no-op — the section
-  # still runs (exit 0) with the GOAL_* vars empty, never an error.
+  # still runs (exit 0) with the GOAL_* vars empty, never an error. Uses a FRESH
+  # project dir so the (W1612) env-cache GOAL_* persisted by 8f above does not
+  # leak in via the env-cache load — 8g must observe a genuinely empty GOAL_*.
+  AG_NOENV_PROJ="$TMPDIR_TEST/after-goal-noenv"
+  mkdir -p "$AG_NOENV_PROJ"
+  cp "$AG_ENV_PROJ/.stride.md" "$AG_NOENV_PROJ/.stride.md"
   AG_NOENV_INPUT=$(ag_e2e_input \
     "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
     '[{"name":"after_review"},{"name":"after_goal"}]')
-  AG_NOENV_OUT=$(echo "$AG_NOENV_INPUT" | CLAUDE_PROJECT_DIR="$AG_ENV_PROJ" \
+  AG_NOENV_OUT=$(echo "$AG_NOENV_INPUT" | CLAUDE_PROJECT_DIR="$AG_NOENV_PROJ" \
     bash "$HOOK_SCRIPT" post 2>&1)
   AG_NOENV_RC=$?
   assert_exit "8g: after_goal missing env is a clean no-op (exit 0)" 0 "$AG_NOENV_RC"
@@ -3542,6 +3547,111 @@ CURLSTUB
     PASS=$((PASS + 1))
   fi
   rm -rf "$D18D_STUB"
+fi
+
+# ============================================================
+# Test Group 19: after_goal reliability under truncation (W1612)
+# ============================================================
+# End-to-end lock-in of the D118/W1609/D119 fix: under the exact oversized-
+# response condition that broke after_goal (the harness truncates
+# tool_response.stdout), prove the section is detected, GOAL_* is exported, and
+# ## after_goal runs via the canonical response file — plus the parent_id
+# fallback and missing-section edge cases, and a no-file no-false-positive
+# control, all under truncation. (The truncated-stdout + no-file fresh-call path
+# itself is covered by Group 18; Group 8 (8q) covers env-cache-free forwarding.)
+echo ""
+echo "=== Test Group 19: after_goal reliability under truncation (W1612) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: jq missing — Group 19 requires jq"
+else
+  # A /complete input whose stdout is truncated mid-JSON (invalid), so detection
+  # MUST come from the canonical response file, not the handed stdout.
+  W1612_TRUNC='{"tool_input":{"command":"curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete"},"tool_response":{"stdout":"{\"data\":{\"id\":99},\"hoo"}}'
+
+  # 19a: truncated stdout + present canonical file with a full after_goal entry
+  # -> the section runs, GOAL_* reaches the section AND the env cache (the
+  # end-to-end reliability proof for the agent's follow-up PATCH).
+  W19A_PROJ="$TMPDIR_TEST/w1612-fastpath"
+  mkdir -p "$W19A_PROJ/.stride"
+  cat > "$W19A_PROJ/.stride.md" << 'STRIDE'
+## after_goal
+```bash
+echo "goal=[$GOAL_ID] ident=[$GOAL_IDENTIFIER] title=[$GOAL_TITLE]"
+```
+STRIDE
+  printf '%s' '{"data":{"id":99,"parent_id":55},"hooks":[{"name":"before_review"},{"name":"after_goal","env":{"GOAL_ID":"55","GOAL_IDENTIFIER":"G55","GOAL_TITLE":"Goal 55"}}]}' \
+    > "$W19A_PROJ/.stride/.last-api-response.json"
+  W19A_OUT=$(echo "$W1612_TRUNC" | CLAUDE_PROJECT_DIR="$W19A_PROJ" bash "$HOOK_SCRIPT" post 2>&1)
+  W19A_RC=$?
+  assert_exit "19a: truncated /complete with a present file exits 0" 0 "$W19A_RC"
+  assert_contains "19a: ## after_goal ran with GOAL_IDENTIFIER from the file" "ident=[G55]" "$W19A_OUT"
+  assert_contains "19a: GOAL_TITLE exported to the section" "title=[Goal 55]" "$W19A_OUT"
+  W19A_CACHE=$(cat "$W19A_PROJ/.stride-env-cache" 2>/dev/null)
+  assert_contains "19a: env cache carries GOAL_ID for the follow-up PATCH" "GOAL_ID='55'" "$W19A_CACHE"
+
+  # 19b: truncated stdout + present file whose after_goal env OMITS GOAL_ID but
+  # data.parent_id is set -> the parent-id fallback exports GOAL_ID under truncation.
+  W19B_PROJ="$TMPDIR_TEST/w1612-parentid"
+  mkdir -p "$W19B_PROJ/.stride"
+  cat > "$W19B_PROJ/.stride.md" << 'STRIDE'
+## after_goal
+```bash
+echo "goal=[$GOAL_ID] ident=[$GOAL_IDENTIFIER]"
+```
+STRIDE
+  printf '%s' '{"data":{"id":99,"parent_id":77},"hooks":[{"name":"after_goal","env":{"GOAL_IDENTIFIER":"G77"}}]}' \
+    > "$W19B_PROJ/.stride/.last-api-response.json"
+  W19B_OUT=$(echo "$W1612_TRUNC" | CLAUDE_PROJECT_DIR="$W19B_PROJ" bash "$HOOK_SCRIPT" post 2>&1)
+  assert_contains "19b: GOAL_ID falls back to data.parent_id under truncation" "goal=[77]" "$W19B_OUT"
+  assert_contains "19b: GOAL_IDENTIFIER still exported from the file" "ident=[G77]" "$W19B_OUT"
+
+  # 19c: truncated stdout + present file WITH an after_goal entry, but the
+  # ## after_goal section is MISSING from .stride.md -> clean no-op (exit 0, no
+  # structured after_goal JSON emitted).
+  W19C_PROJ="$TMPDIR_TEST/w1612-missing"
+  mkdir -p "$W19C_PROJ/.stride"
+  cat > "$W19C_PROJ/.stride.md" << 'STRIDE'
+## before_review
+```bash
+echo "before_review_ran"
+```
+STRIDE
+  printf '%s' '{"data":{"id":99},"hooks":[{"name":"after_goal","env":{"GOAL_IDENTIFIER":"G88"}}]}' \
+    > "$W19C_PROJ/.stride/.last-api-response.json"
+  W19C_OUT=$(echo "$W1612_TRUNC" | CLAUDE_PROJECT_DIR="$W19C_PROJ" bash "$HOOK_SCRIPT" post 2>&1)
+  W19C_RC=$?
+  assert_exit "19c: missing ## after_goal under truncation exits 0" 0 "$W19C_RC"
+  if echo "$W19C_OUT" | grep -qF '"hook": "after_goal"'; then
+    echo -e "  ${RED}FAIL${RESET}: 19c: emitted after_goal JSON despite a missing section"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 19c: missing ## after_goal is a clean no-op under truncation"
+    PASS=$((PASS + 1))
+  fi
+
+  # 19d: no-file control — truncated stdout, NO canonical file, and no reachable
+  # after_goal_status endpoint -> the section must NOT run (no false positive).
+  W19D_PROJ="$TMPDIR_TEST/w1612-nofile"
+  mkdir -p "$W19D_PROJ"
+  cat > "$W19D_PROJ/.stride.md" << 'STRIDE'
+## after_goal
+```bash
+echo "after_goal_ran"
+```
+STRIDE
+  printf "TASK_ID='99'\n" > "$W19D_PROJ/.stride-env-cache"
+  W19D_INPUT='{"tool_input":{"command":"curl -X PATCH http://localhost:19099/api/tasks/99/complete -H \"Authorization: Bearer tok\""},"tool_response":{"stdout":"{\"data\":{\"id\":99},\"hoo"}}'
+  W19D_OUT=$(echo "$W19D_INPUT" | CLAUDE_PROJECT_DIR="$W19D_PROJ" bash "$HOOK_SCRIPT" post 2>&1)
+  W19D_RC=$?
+  assert_exit "19d: no-file + truncated + unreachable exits 0" 0 "$W19D_RC"
+  if echo "$W19D_OUT" | grep -qF "after_goal_ran"; then
+    echo -e "  ${RED}FAIL${RESET}: 19d: false-positive after_goal run with no file and no endpoint"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 19d: no file + no endpoint does not run ## after_goal (no false positive)"
+    PASS=$((PASS + 1))
+  fi
 fi
 
 # ============================================================
