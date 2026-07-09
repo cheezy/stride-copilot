@@ -1649,6 +1649,139 @@ STRIDE
   assert_exit "8g: after_goal missing env is a clean no-op (exit 0)" 0 "$AG_NOENV_RC"
   assert_contains "8g: section still runs with empty GOAL_* vars" \
     "goal_id= id= title=" "$AG_NOENV_OUT"
+
+  # ----------------------------------------------------------
+  # D118 (W1624): canonical response-file fast path
+  # ----------------------------------------------------------
+  # The harness truncates large /complete tool_response.stdout mid-JSON, so
+  # response_has_after_goal / export_after_goal_env must prefer a canonical
+  # response file ($PROJECT_DIR/.stride/.last-api-response.json) when present
+  # and fall back to tool_response.stdout otherwise. These source the hook to
+  # exercise the functions in isolation, overriding $RESPONSE_FILE (the script
+  # computes it from $PROJECT_DIR at source time; overriding it post-source is
+  # the function-level seam).
+  RF_DIR="$TMPDIR_TEST/d118-respfile"
+  RF_FILE="$RF_DIR/.stride/.last-api-response.json"
+  mkdir -p "$RF_DIR/.stride"
+
+  # Full, valid API response carrying an after_goal entry with an env object
+  # (what a non-truncated response file holds).
+  RF_FULL='{"data":{"id":99},"hooks":[{"name":"after_review"},{"name":"after_goal","env":{"GOAL_ID":"4687","GOAL_IDENTIFIER":"G4687"}}]}'
+  # A tool_response.stdout truncated mid-JSON by the harness — invalid JSON.
+  RF_TRUNC_STDOUT='{"data":{},"hooks":[{"name":"after_go'
+  RF_INPUT_TRUNC=$(jq -nc --arg s "$RF_TRUNC_STDOUT" \
+    '{tool_input:{command:"curl"},tool_response:{stdout:$s}}')
+  # Small, valid CC-wrapped inputs carrying after_goal for the back-compat path.
+  RF_INPUT_VALID=$(ag_e2e_input \
+    "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
+    '[{"name":"after_review"},{"name":"after_goal"}]')
+  RF_INPUT_VALID_ENV=$(ag_e2e_input_env \
+    "curl -X PATCH https://stridelikeaboss.com/api/tasks/99/complete" \
+    '{"GOAL_ID":"555","GOAL_IDENTIFIER":"G555"}')
+
+  # 8h (D118, regression): truncated tool_response.stdout + present response
+  # file with after_goal → response_has_after_goal succeeds via the file.
+  printf '%s' "$RF_FULL" > "$RF_FILE"
+  (
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    response_has_after_goal "$RF_INPUT_TRUNC"
+  )
+  assert_exit "8h: after_goal detected from response file despite truncated stdout" 0 "$?"
+
+  # 8i (D118): no response file + truncated stdout → detection fails (documents
+  # the bug and fallback; D119's fresh call is the reliability guarantee).
+  rm -f "$RF_FILE"
+  (
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    response_has_after_goal "$RF_INPUT_TRUNC"
+  )
+  RF_RC_NOFILE=$?
+  if [ "$RF_RC_NOFILE" -ne 0 ]; then
+    echo -e "  ${GREEN}PASS${RESET}: 8i: no response file + truncated stdout returns non-zero (fallback)"
+    PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 8i: expected non-zero with no file and truncated stdout"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # 8j (D118, back-compat): no response file + valid stdout with after_goal →
+  # detection still succeeds from tool_response.stdout.
+  rm -f "$RF_FILE"
+  (
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    response_has_after_goal "$RF_INPUT_VALID"
+  )
+  assert_exit "8j: after_goal still detected from stdout when no response file (back-compat)" 0 "$?"
+
+  # 8k (D118, edge): empty response file → ignored, falls through to stdout.
+  : > "$RF_FILE"
+  (
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    response_has_after_goal "$RF_INPUT_VALID"
+  )
+  assert_exit "8k: empty response file falls through to stdout parse" 0 "$?"
+
+  # 8l (D118, edge): response file present but not valid JSON → ignored, falls
+  # through to stdout (a truncated/garbage file must not shadow the fallback).
+  printf '%s' "$RF_TRUNC_STDOUT" > "$RF_FILE"
+  (
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    response_has_after_goal "$RF_INPUT_VALID"
+  )
+  assert_exit "8l: invalid-JSON response file falls through to stdout parse" 0 "$?"
+
+  # 8m (D118, pitfall): HAS_JQ=false degrades cleanly even with a present file.
+  printf '%s' "$RF_FULL" > "$RF_FILE"
+  (
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=false
+    RESPONSE_FILE="$RF_FILE"
+    response_has_after_goal "$RF_INPUT_TRUNC"
+  )
+  RF_RC_NOJQ=$?
+  if [ "$RF_RC_NOJQ" -ne 0 ]; then
+    echo -e "  ${GREEN}PASS${RESET}: 8m: HAS_JQ=false returns non-zero even with present response file"
+    PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 8m: expected non-zero with HAS_JQ=false"
+    FAIL=$((FAIL + 1))
+  fi
+
+  # 8n (D118): export_after_goal_env reads GOAL_* env from the response file
+  # when the stdout is truncated.
+  printf '%s' "$RF_FULL" > "$RF_FILE"
+  RF_GOAL_FROM_FILE=$(
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    export_after_goal_env "$RF_INPUT_TRUNC"
+    echo "${GOAL_ID:-}"
+  )
+  assert_eq "8n: export_after_goal_env reads GOAL_ID from response file despite truncated stdout" "4687" "$RF_GOAL_FROM_FILE"
+
+  # 8o (D118, back-compat): export_after_goal_env falls back to the stdout env
+  # when no response file is present.
+  rm -f "$RF_FILE"
+  RF_GOAL_FROM_STDOUT=$(
+    source "$HOOK_SCRIPT" 2>/dev/null
+    HAS_JQ=true
+    RESPONSE_FILE="$RF_FILE"
+    export_after_goal_env "$RF_INPUT_VALID_ENV"
+    echo "${GOAL_ID:-}"
+  )
+  assert_eq "8o: export_after_goal_env falls back to stdout env when no response file" "555" "$RF_GOAL_FROM_STDOUT"
+
+  rm -f "$RF_FILE"
 fi
 
 # ============================================================
