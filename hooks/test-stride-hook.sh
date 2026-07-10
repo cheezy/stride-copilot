@@ -2840,6 +2840,69 @@ STRIDE
   SH_CALLS_J=$(grep -c '^ARGS:' "$SH_FIXTURE_J" 2>/dev/null)
   assert_eq "12j: healthy pre-path upload is not repeated by before_review" 2 "$SH_CALLS_J"
   rm -rf "$SH_DIR_J" "$STUB_DIR"
+
+  # 12k (W1658): before_review self-heal TERMINAL failure. When the LAST retry
+  # PUT returns non-2xx, the hook surfaces a loud UNRESOLVED warning on stderr
+  # (distinct from the per-attempt warning) AND marks the state file
+  # `unresolved=yes` — so a definitively-lost diff is never silently swallowed.
+  # The hook exit code is unchanged (the completion still succeeds).
+  SH_DIR_K=$(mktemp -d)
+  STUB_DIR=$(mktemp -d)
+  make_curl_stub "$STUB_DIR" "$SH_DIR_K/curl-call.txt" 0 500
+  SH_STDERR_K=$(
+    setup_put_repo "$SH_DIR_K" > /dev/null 2>&1 || exit 1
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_DIR:$PATH" bash "$HOOK_SCRIPT" post 2>&1 1>/dev/null
+  )
+  SH_RC_K=$(
+    setup_put_repo "$SH_DIR_K" > /dev/null 2>&1 || exit 1
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_DIR:$PATH" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+    echo $?
+  )
+  SH_STATE_K=$(cat "$SH_DIR_K/.stride-diff-upload-state" 2>/dev/null)
+  assert_eq "12k (W1658): terminal self-heal failure never fails the hook" "0" "$SH_RC_K"
+  if printf '%s' "$SH_STDERR_K" | grep -qF 'CHANGED_FILES UPLOAD UNRESOLVED'; then
+    echo -e "  ${GREEN}PASS${RESET}: 12k (W1658): terminal self-heal failure prints a loud UNRESOLVED warning"
+    PASS=$((PASS + 1))
+  else
+    echo -e "  ${RED}FAIL${RESET}: 12k (W1658): no loud UNRESOLVED warning on stderr: $SH_STDERR_K"
+    FAIL=$((FAIL + 1))
+  fi
+  assert_contains "12k (W1658): state file marked unresolved on terminal failure" "unresolved=yes" "$SH_STATE_K"
+  rm -rf "$SH_DIR_K" "$STUB_DIR"
+
+  # 12l (W1658): a 2xx self-heal never emits the UNRESOLVED message (a
+  # legitimately-empty diff that still PUTs 2xx takes the success path), and the
+  # unresolved mark self-clears on a later success — record_diff_upload_state
+  # truncates the state file, so a subsequent healthy PUT drops the marker.
+  SH_DIR_L=$(mktemp -d)
+  STUB_FAIL_L=$(mktemp -d)
+  STUB_OK_L=$(mktemp -d)
+  make_curl_stub "$STUB_FAIL_L" "$SH_DIR_L/curl-fail.txt" 0 500
+  make_curl_stub "$STUB_OK_L" "$SH_DIR_L/curl-ok.txt" 0 200
+  SH_STDERR_L=$(
+    setup_put_repo "$SH_DIR_L" > /dev/null 2>&1 || exit 1
+    # First before_review retry fails (500) → marks unresolved.
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_FAIL_L:$PATH" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+    # Second before_review retry succeeds (200) → overwrites state, clears mark.
+    echo "$W1094_COMPLETE_JSON" | CLAUDE_PROJECT_DIR="$PWD" PATH="$STUB_OK_L:$PATH" bash "$HOOK_SCRIPT" post 2>&1 1>/dev/null
+  )
+  SH_STATE_L=$(cat "$SH_DIR_L/.stride-diff-upload-state" 2>/dev/null)
+  if printf '%s' "$SH_STATE_L" | grep -qF 'unresolved=yes'; then
+    echo -e "  ${RED}FAIL${RESET}: 12l (W1658): unresolved mark survived a later successful PUT: $SH_STATE_L"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 12l (W1658): a later 2xx PUT overwrites the state file and clears the unresolved mark"
+    PASS=$((PASS + 1))
+  fi
+  if printf '%s' "$SH_STDERR_L" | grep -qF 'CHANGED_FILES UPLOAD UNRESOLVED'; then
+    echo -e "  ${RED}FAIL${RESET}: 12l (W1658): a 2xx self-heal must not emit the UNRESOLVED message: $SH_STDERR_L"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 12l (W1658): a 2xx self-heal does not emit the UNRESOLVED message"
+    PASS=$((PASS + 1))
+  fi
+  assert_contains "12l (W1658): state records the healthy 2xx after self-clear" "http_code=200" "$SH_STATE_L"
+  rm -rf "$SH_DIR_L" "$STUB_FAIL_L" "$STUB_OK_L"
 fi
 
 # ============================================================

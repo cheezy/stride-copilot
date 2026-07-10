@@ -1470,6 +1470,49 @@ if (-not (Test-Path (Join-Path $shProjI '.stride-changed-files.json'))) {
     $script:FAIL++
 }
 
+# 9j (W1658): before_review self-heal TERMINAL failure — when the last retry PUT
+# returns non-2xx, the hook prints a loud UNRESOLVED warning on stderr AND marks
+# the state file `unresolved=yes` (a definitively-lost diff is never silently
+# swallowed). The hook exit code is unchanged (the completion still succeeds).
+$w1658Proj = Join-Path $TmpDir 'sh-w1658-terminal'
+New-Item -ItemType Directory -Path $w1658Proj -Force | Out-Null
+Set-Content -Path (Join-Path $w1658Proj '.stride.md') -Value @'
+## before_review
+```bash
+echo "reviewing"
+```
+'@ -Encoding UTF8
+# Pre-existing snapshot (the ps1 self-heal re-PUTs the on-disk snapshot; it does
+# not re-capture). No state file → the self-heal retries.
+Set-Content -Path (Join-Path $w1658Proj '.stride-changed-files.json') `
+    -Value '[{"path":"foo.txt","diff":"body"}]' -Encoding UTF8
+
+$w1658Port = 18883
+$w1658Job = Start-Job -ArgumentList $w1658Port -ScriptBlock {
+    param($Port)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start(); $ctx = $l.GetContext()
+        $resp = $ctx.Response; $resp.StatusCode = 500; $resp.OutputStream.Close()
+    } catch { } finally { if ($l.IsListening) { $l.Stop() } }
+}
+try {
+    $null = Wait-ForListener -Port $w1658Port
+    $w1658Cmd = "curl -X PATCH http://localhost:$w1658Port/api/tasks/77/complete -H `"Authorization: Bearer tok`""
+    $w1658Json = @{ tool_input = @{ command = $w1658Cmd } } | ConvertTo-Json -Compress
+    $r = Invoke-HookScript -InputJson $w1658Json -Phase 'post' -ProjectDir $w1658Proj
+    Wait-Job $w1658Job -Timeout 8 | Out-Null
+    Remove-Job $w1658Job -Force -ErrorAction SilentlyContinue
+    Assert-Exit "9j (W1658): terminal self-heal failure never fails the hook" 0 $r.ExitCode
+    Assert-Contains "9j (W1658): terminal self-heal failure prints a loud UNRESOLVED warning" "CHANGED_FILES UPLOAD UNRESOLVED" $r.Stderr
+    $w1658StateFile = Join-Path $w1658Proj '.stride-diff-upload-state'
+    $w1658State = if (Test-Path $w1658StateFile) { Get-Content -Raw -Path $w1658StateFile } else { '' }
+    Assert-Contains "9j (W1658): state file marked unresolved on terminal failure" "unresolved=yes" $w1658State
+} finally {
+    Remove-Job $w1658Job -Force -ErrorAction SilentlyContinue
+}
+
 # ============================================================
 # Test Group 10: claim-time TASK_BASE_REF refresh + persisted-output
 # fallback (W1087, mirrors test-stride-hook.sh Test Group 13 test-for-test)
