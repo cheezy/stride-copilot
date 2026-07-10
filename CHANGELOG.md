@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.24.1] - 2026-07-10
+
+### Fixed — `changed_files` upload targeting and terminal-failure visibility (D127 / W1658)
+
+Mirrors the canonical `stride` plugin's `changed_files` upload fix (PORTING section 2–3) into the Copilot bridge. Completed review tasks were arriving with an empty `changed_files` array — the diff was being `PUT` to the wrong task — because the upload targeted the (possibly stale) env-cache `TASK_ID` seeded from the claim response. When that response was hidden from the hook, the cache kept the previous task's id and the current task's diff was lost silently. All changes are backward-compatible; the `.stride.md` wire shape and the four task-lifecycle hooks are unchanged.
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (D127)** — Added a URL→id helper (`task_id_from_command` / `Get-TaskIdFromCommand`) that parses the authoritative task id from the `/complete|/mark_reviewed` URL in the intercepted command, and used it at **both** diff-upload call sites (`finalize_after_doing` / `Invoke-FinalizeAfterDoing` and `self_heal_changed_files_upload` / `Invoke-SelfHealChangedFilesUpload`). The env-cache `TASK_ID` is now the fallback only for the claim path (whose URL carries no id). This removes the dependency on the claim having seeded the env cache correctly and needs no network call — the id is a pure parse of a command already in hand.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (W1658)** — The `before_review` self-heal is the last retry, so a non-2xx PUT there means the diff is definitively lost for the task. It now surfaces a distinct `CHANGED_FILES UPLOAD UNRESOLVED` message on stderr (separate from the per-attempt warning) and appends `unresolved=yes` to `.stride-diff-upload-state` so the failure is queryable, not silent. Non-blocking — the hook exit code is unchanged and the completion still succeeds; a later successful PUT overwrites the truncating state file and self-clears the mark; the id + HTTP code only are ever emitted (never the bearer token).
+
+### Testing
+
+`hooks/test-stride-hook.sh` (304 assertions) and `hooks/test-stride-hook.ps1` (231 assertions) both pass, with a new URL→id unit test (bash 9g) and stale-env targeting integration tests (bash 9h, PowerShell 8g) proving the diff PUT targets the URL id over a stale env id, the existing "missing env `TASK_ID` → no PUT" expectations flipped to "PUTs to the URL id" (bash 9c, PowerShell 8e), and terminal fail-loud tests (bash 12k/12l, PowerShell 9j) asserting the loud `UNRESOLVED` signal + `unresolved=yes` marker + unchanged exit code, with the mark self-clearing on a later 2xx.
+
+### Backward compatibility
+
+Backward-compatible and additive. The URL→id parse only runs on the `/complete|/mark_reviewed` path and falls back to the env-cache `TASK_ID` for the claim path; the fail-loud signal never changes the hook's exit semantics.
+
+### Source
+
+D127 (W1662), W1658 (W1663), version bump (W1664) — goal G-copilot-changed-files-upload-fix.
+
 ## [2.24.0] - 2026-07-09
 
 ### Fixed / Added — `after_goal` reliability against harness truncation (G315 — D118/W1609/D119/W1611/W1612/W1610)
