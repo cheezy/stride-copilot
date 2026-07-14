@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.25.0] - 2026-07-14
+
+### Fixed — post-pull `TASK_BASE_REF` capture and committed-work snapshot completeness (D142)
+
+Mirrors the canonical `stride` plugin's D142 fix (released as `stride` v1.36.0) into the Copilot bridge. Two production incidents silently corrupted the review diff surface, and stride-copilot mirrored the same hook architecture at the older W1516 generation, so any Copilot user on a multi-clone workflow hit both defects verbatim. All changes are backward-compatible; the `.stride.md` wire shape and the five task-lifecycle hooks are unchanged. Copilot's base64 `TASK_DIRTY_BASELINE` env-cache transport is kept as-is — only **when** the baseline is computed moved (post-`before_doing`), not **how** it is stored.
+
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (D132)** — `TASK_BASE_REF` was captured at claim time, **before** the `## before_doing` section's `git pull` moved `HEAD`, so the `after_doing` diff spanned another clone's already-completed task (a reviewer saw another machine's task inside an unrelated defect's Review diff). The claim interception now writes task **identity only** and strips any inherited `TASK_BASE_REF` (and its trust marker) immediately; a new `finalize_before_doing` (bash) / `Invoke-FinalizeBeforeDoing` (PowerShell) rewrites the base and re-records the dirty baseline **after** the section finishes — jq-free, regardless of the section's exit code — stamping a `TASK_BASE_REF_TRUSTED` marker.
+- **`hooks/stride-hook.sh` (D132)** — Added `resolve_snapshot_base`, a trust guard wired into `finalize_after_doing` and the `before_review` self-heal: empty/unresolvable and non-ancestor-of-`HEAD` bases always recompute from the task branch point (merge-base with the origin default branch) with a loud stderr notice; the strict-ancestor-of-branch-point rule applies only to **unmarked inherited** bases, so a workflow that pushes its own task commits before completing stays safe. The judgment resolves **once per task window** (memoized against the after_doing section's own `git push` moving origin refs) and is persisted as a `base=` line in `.stride-diff-upload-state` for the self-heal to reuse.
+- **`hooks/stride-hook.sh`, `hooks/stride-hook.ps1` (D137)** — The claim-time dirty-baseline filter excluded files whose blob hash matched claim time even after the auto-commit committed them as task work (silently dropping tracked edits and an untracked migration). `capture_changed_files` (bash) and the `Invoke-ChangedFilesUpload` filter (PowerShell) now override the baseline exclusion for any path in the `base..HEAD` committed range — committed range = task work, by definition.
+
+### Testing
+
+`hooks/test-stride-hook.sh` (326 assertions) and `hooks/test-stride-hook.ps1` (237 assertions) both pass, with a new **Test Group 20** (bash) / **Test Group 17** (PowerShell) covering the two-clone bare-origin cross-pull scenario, the `resolve_snapshot_base` trust-guard units (recompute for older/unresolvable/non-ancestor bases, passthrough for trusted and no-origin cases), the D137 committed-range override, the push-in-`after_doing` once-per-window memoization with persisted `base=`, the trusted pre-pushed base, and the jq-free `finalize_before_doing` rewrite. Both groups were verified failing against the pre-fix hooks (16 bash / 2 PowerShell failures) and passing after.
+
+### Backward compatibility
+
+Backward-compatible and additive. The `TASK_BASE_REF_TRUSTED` marker and the `base=` state line are new but tolerated when absent (an inherited cache simply gets the full trust guard); the committed-range override only ever **includes** more task work, never excludes; the base64 `TASK_DIRTY_BASELINE` transport is unchanged; `after_goal` detection, the `tee`/`.last-api-response.json` fallback, and the non-fatal upload semantics are untouched.
+
+### Source
+
+D142 — mirrors the canonical `stride` plugin at v1.36.0 (`finalize_before_doing`, `resolve_snapshot_base`, the committed-range override, and the claim identity-only strip).
+
 ## [2.24.1] - 2026-07-10
 
 ### Fixed — `changed_files` upload targeting and terminal-failure visibility (D127 / W1658)
