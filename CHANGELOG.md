@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.26.0] - 2026-07-16
 
 ### Added — every documented create payload carries a top-level `agent_name` (W1688)
 
@@ -20,7 +20,7 @@ Fully backward compatible, and safe to ship ahead of the server. Documentation/s
 
 ### Source
 
-W1688 — mirrors the canonical `stride` plugin's W1684 (`stride` v1.37.0) and the `stride-codex` port W1686 (`stride-codex` v1.25.0). Kanban D137 ships the server half. No release is cut here: W1689 owns the version bump, tag, and the marketplace sync.
+W1688 — mirrors the canonical `stride` plugin's W1684 (`stride` v1.37.0) and the `stride-codex` port W1686 (`stride-codex` v1.25.0). Kanban D137 ships the server half. Released by W1689 as `stride-copilot` v2.26.0, with the vendored `stride-copilot-marketplace` re-synced to match.
 
 ## [2.25.0] - 2026-07-14
 
