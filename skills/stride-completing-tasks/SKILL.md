@@ -590,6 +590,22 @@ Until the server flips `:strict_completion_validation` to true, missing or inval
 
 **Optional:** Include `review_report` when a task-reviewer custom agent produced a structured review. Omit it when no review was performed (e.g., small tasks with 0-1 key_files).
 
+## Recording Manual & Exploratory Testing Findings
+
+When the orchestrator's **Step 5.5 (Manual & Exploratory Testing)** dispatched the `stride-copilot-exploratory-testing` plugin to run a task's `manual_tests` as charters, its structured findings are recorded in **existing completion fields only** — there is **no new server-validated field and no new `workflow_steps` name**. Introducing either would fail the strict-completion-validation contract (`422`). The findings ride entirely on two carriers already in the payload:
+
+1. **`completion_notes`** — the primary carrier. Summarize what the exploratory session(s) covered and found: which manual tests were run as charters, the Explored/Found/Unknown gist, and any bugs or obstacles surfaced (e.g. "the app was not reachable, so charter X was reported blocked"). Keep it a concise prose summary, not a dump.
+2. **`reviewer_result.testing_strategy.note`** — the secondary carrier, populated **only when the `task-reviewer` custom agent ran**. Reflect the manual-testing outcome in that section's `note` alongside the reviewer's own testing-strategy assessment. Do **not** invent a `testing_strategy` verdict when no reviewer ran (the whole-object copy rule from `stride-subagent-workflow` still governs `reviewer_result`).
+
+**These two fields are the sole carriers.** Do not add a top-level `manual_testing`/`exploratory_results` key, a sixth+ `workflow_steps` entry, or any other field — the completion payload shape is unchanged except for these tolerant existing fields.
+
+**Edge cases:**
+
+- **Manual testing performed but the reviewer was skipped** (small task, decision-matrix skip): the findings go into **`completion_notes` only**. There is no `reviewer_result.testing_strategy` note to carry them because no reviewer ran; the `reviewer_result` skip-form is unchanged.
+- **The plugin was not used** — either the `stride-copilot-exploratory-testing` plugin was absent, or the task had no `manual_tests`: **record nothing extra. Completion is byte-for-byte what it would have been without this step.** This is the graceful fallback — it never adds a field, never blocks, and never changes the payload.
+
+**Security:** never record real credentials, tokens, private data, or internal hostnames captured during exploration into `completion_notes` or the `testing_strategy` note — redact and use placeholders, exactly as the `explorer` agent's safety boundary requires.
+
 ## Review vs Auto-Approval Decision
 
 After the complete endpoint succeeds:
