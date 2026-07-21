@@ -2,7 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.27.0] - 2026-07-21
+
+### Added — optional Manual & Exploratory Testing integration with `stride-copilot-exploratory-testing` (G349)
+
+The task lifecycle can now run a task's `manual_tests` as real exploratory sessions when the companion [`stride-copilot-exploratory-testing`](https://github.com/cheezy/stride-copilot-exploratory-testing) plugin is installed — without any server change, new completion field, or new `workflow_steps` name.
+
+- **`stride-workflow` (W1791)** gains a gated **Step 5.5: Manual & Exploratory Testing**, placed between Self-Review (Step 5) and Execute Hooks (Step 6). It is doubly gated — it runs only when the task's `testing_strategy.manual_tests` is non-empty **and** the `stride-copilot-exploratory-testing` plugin is available in the session (detected by its `stride-exploratory-testing-explore` skill / `explorer` agent appearing in the session's available lists; availability only, never blind execution). Each manual test is framed as a charter and driven by the `explorer` under the plugin's absolute safety boundary (no destructive or production-mutating actions; an unreachable app is reported as an obstacle, never a completion failure). Uses a decimal step number so no existing step numbers or cross-references change; the flowchart and quick-reference card are updated.
+- **`stride-subagent-workflow` (W1792)** documents the dispatch as an optional, externally-provided **Phase 3.5** in the decision matrix, mirroring the task-explorer/task-reviewer phase style (trigger, inputs, outputs, graceful skip). The trigger wording is kept identical to Step 5.5.
+- **`stride-completing-tasks` (W1793)** documents recording the findings in existing tolerant fields only — a summary in `completion_notes` and, when a reviewer ran, the `reviewer_result.testing_strategy` note — with an explicit no-op fallback (plugin absent or no `manual_tests` → the completion payload is byte-for-byte unchanged). No new server-validated field and no new `workflow_steps` name, keeping the strict-completion-validation contract intact.
+
+**Graceful degradation:** when the companion plugin is not installed, the entire integration is inert — manual tests remain a human responsibility and nothing about the core lifecycle changes. The integration is purely additive.
+
+### Testing
+
+Documentation/skill-text only; no test suite is exercised. Verified by grep sweep and cross-file consistency check: the Step 5.5 trigger wording matches the Phase 3.5 trigger and the completion-recording guidance; the flowchart and quick-reference cards in both workflow skills include the new step; and no new completion field or `workflow_steps` name was introduced.
+
+### Backward compatibility
+
+Fully backward compatible. Skill-text only — no hook logic, `.stride.md`, env-var, or `.stride_auth.md` change, and no completion-payload schema change. Agents without the companion plugin see identical behavior.
+
+### Source
+
+G349 — "Integrate the stride-copilot-exploratory-testing plugin into the stride-copilot manual-testing workflow" (tasks W1791, W1792, W1793).
 
 ### Fixed — the enrichment surface documented create and update bodies without their `task` root key (D151)
 

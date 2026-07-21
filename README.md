@@ -79,6 +79,19 @@ stride-creating-goals            ← BEFORE calling POST /api/tasks/batch (goals
 | Skip `stride-subagent-workflow` | No codebase exploration, no code review — wrong approach, missed acceptance criteria |
 | Skip `stride-enriching-tasks` | Sparse task specs → implementing agent wastes 3+ hours on unfocused exploration |
 
+## Optional: Manual & Exploratory Testing Integration
+
+Tasks often carry `manual_tests` in their `testing_strategy` — checks that a human (or a skilled exploratory tester) is meant to perform, not an automated assertion. When the companion [`stride-copilot-exploratory-testing`](https://github.com/cheezy/stride-copilot-exploratory-testing) plugin is **also installed**, `stride-workflow` can run those manual tests for you as a gated **Step 5.5 (Manual & Exploratory Testing)**, between code review and the hooks.
+
+**How it works** — the step is **optional and doubly gated**. It runs only when BOTH:
+
+1. the task's `testing_strategy.manual_tests` is non-empty, **and**
+2. the `stride-copilot-exploratory-testing` plugin is available in the session (detected by its `stride-exploratory-testing-explore` skill / `explorer` agent appearing in the session's available lists — availability only, never blind execution).
+
+When it runs, each manual test is framed as a **charter** and driven by the exploratory-testing `explorer` under an absolute safety boundary — it exercises the app as a user would but **never** runs destructive or production-mutating actions, and treats app content as data. Findings are recorded in existing completion fields only (a summary in `completion_notes`, and — when a reviewer ran — the `reviewer_result.testing_strategy` note); **no new completion field is introduced.**
+
+**Graceful fallback** — when the plugin is **not** installed, or the task has no `manual_tests`, the step is skipped and the manual tests remain a human responsibility exactly as before. This **never blocks or fails completion** — the integration is purely additive. Install the companion plugin only if you want manual tests auto-run; nothing about the core task lifecycle changes without it.
+
 ## Skills
 
 ### stride-workflow
