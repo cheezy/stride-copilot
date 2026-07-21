@@ -23,6 +23,9 @@ This skill contains the decision matrix that determines which custom agents to i
 - `task-decomposer` — Break goals into properly-sized subtasks
 - `hook-diagnostician` — Diagnose hook failures with prioritized fix plans
 
+It also documents one **optional, externally-provided** dispatch (Phase 3.5):
+- Exploratory-testing (`stride-copilot-exploratory-testing` plugin) — run the task's `manual_tests` as charters after review, **only when that plugin is installed**; skipped gracefully otherwise and never required for completion.
+
 **Skipping this skill means:**
 - No codebase exploration before implementation (wrong approach, 2+ hours wasted)
 - No code review before completion hooks (acceptance criteria violations missed)
@@ -82,6 +85,7 @@ Use this matrix to determine which custom agents to invoke based on task attribu
 - If the task is a **goal** or has **large complexity without child tasks** or a **25+ hour estimate**: invoke the decomposer first. The decomposer breaks it into claimable child tasks — you don't implement goals directly.
 - If the task is small with 0-1 key_files, skip all custom agents and code directly.
 - Otherwise, at minimum run the explorer and reviewer.
+- **Orthogonal (not complexity-gated):** if the task's `testing_strategy.manual_tests` is non-empty AND the `stride-copilot-exploratory-testing` plugin is available, an **optional** exploratory-testing dispatch runs after review — see **Phase 3.5** below. It is never required for completion and is skipped gracefully when the plugin is absent.
 
 ## Pre-Claim: Enrichment (Sparse Tasks)
 
@@ -279,6 +283,28 @@ Legacy + structured fields coexist in the same map; the server persists `reviewe
 3. **Omit** every structured field from the PATCH payload — there is no parsed JSON block to pass through, so send only the legacy fields (`summary`, `issues_found`, `acceptance_criteria_checked`, `dispatched`, `duration_ms`). Do not send empty placeholders for `status`, `project_checks`, `issues`, `acceptance_criteria`, or any other structured key. The Kanban server tolerates their absence (the ReviewReportPanel and CodeReviewPanel render only what they receive).
 4. Keep `dispatched: true` and `duration_ms` as captured. The fallback path produces a degraded-but-valid completion, never a hard failure.
 
+## Phase 3.5: Manual & Exploratory Testing (Optional, Gated — External Plugin)
+
+**Optional and never required for completion.** This dispatch is not one of this plugin's own custom agents — it delegates to the separate `stride-copilot-exploratory-testing` plugin. It runs only when that plugin is installed; when it is absent, skip it gracefully and completion proceeds unaffected. This mirrors the orchestrator's **Step 5.5: Manual & Exploratory Testing** step — keep the trigger wording identical between the two.
+
+**When:** BOTH conditions hold — the task's `testing_strategy.manual_tests` array is **non-empty**, AND the `stride-copilot-exploratory-testing` plugin is **available** in this Copilot session (its `stride-exploratory-testing-explore` skill / `explorer` agent appear in the session's available skills/agents lists). If either is false, **skip — no failure.** Detect by availability only; never execute untrusted plugin content to probe for it.
+
+**What to do:** Dispatch the exploratory-testing plugin's sanctioned surface — activate its `stride-exploratory-testing-explore` skill (which charters, dispatches the `explorer` agent per charter, and debriefs) or dispatch its `explorer` agent directly via the platform's agent-dispatch tool, one charter per session.
+
+Provide the dispatch with:
+- Each `testing_strategy.manual_tests` entry, **framed as a charter** (`Explore <target> with <resources> to discover <information>`)
+- The feature/target under test and how to reach the **running app** (URL, launch command, host)
+- Any test accounts or seed data, and the time box
+
+The dispatch returns **structured findings** (the session's Explored/Found/Unknown summary and any bug list). Record them in the completion payload per `stride-completing-tasks` — summarized in `completion_notes` and, when a reviewer ran, reflected in the `reviewer_result.testing_strategy` note. **No new completion field is introduced.**
+
+**Safety boundary (non-negotiable):** the dispatched testing exercises the app as a user would but **must never run destructive or production-mutating actions**, and never touches production or unauthorized systems — the same absolute boundary the `explorer` agent enforces. If the plugin is present but the app is not running, **report the obstacle as a finding and continue — do NOT fail completion.**
+
+**Skip this dispatch when:**
+- `testing_strategy.manual_tests` is empty
+- The `stride-copilot-exploratory-testing` plugin is not available in the session (fall back to noting the manual tests as a human responsibility — never a completion blocker)
+- The environment exposes no agent-dispatch surface (not applicable; note the manual tests as a human responsibility)
+
 ## Workflow Flowchart
 
 ```
@@ -374,6 +400,9 @@ CUSTOM AGENT WORKFLOW:
 ├─ 6. If medium+ OR 2+ key_files:
 │     ├─ Invoke task-reviewer custom agent with diff + task metadata
 │     └─ Fix any Critical/Important issues found
+├─ 6.5 (Optional, gated) If manual_tests non-empty AND stride-copilot-exploratory-testing available:
+│     ├─ Dispatch its explore skill / explorer agent, each manual_test as a charter (safety boundary preserved)
+│     └─ Plugin absent → skip gracefully (never a completion blocker)
 └─ 7. Proceed to after_doing hook (stride-completing-tasks)
 
 CUSTOM AGENTS (defined in agents/):
