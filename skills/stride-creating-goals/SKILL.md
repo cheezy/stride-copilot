@@ -261,6 +261,11 @@ When depending on EXISTING tasks already in the system:
 
 These five fields must be filled in on every nested task in the batch — the goal-level `description` does not satisfy any of them.
 
+> **Authoring tip for `manual_tests` (advisory — does not change the required shape).** When the companion `stride-copilot-exploratory-testing` plugin is installed, each `manual_tests` entry is run as an **exploratory charter** during the workflow's Manual & Exploratory Testing step (it runs only when `manual_tests` is non-empty AND that plugin is available). So phrase each entry as a *chartable scenario* — a target plus the information or risk to discover — rather than a bare test fragment, so it drives a useful session. This is guidance only: it adds **no** new required field, does not make entries longer-required, and does not change the `testing_strategy` shape or the review_queue empty-pill gate — existing terse entries still validate, and the tip is inert when the plugin is not installed.
+>
+> - Before: `"Test in multiple browsers"`
+> - After: `"Explore the theme toggle across browsers to discover rendering inconsistencies"`
+
 A nested task MAY also carry an optional free-form `technical_details` object (any keys — see `stride-creating-tasks`); it is **not** one of the five review_queue-scored fields and is never required.
 
 **Minimal nested tasks fail the same way as minimal flat tasks** — causing 3+ hour exploration AND empty review_queue pills at completion.

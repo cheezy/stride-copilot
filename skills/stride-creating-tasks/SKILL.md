@@ -460,6 +460,11 @@ Use these exact values — any other value will be rejected.
 **Valid keys:** `unit_tests`, `integration_tests`, `manual_tests`, `edge_cases`, `coverage_target`
 **All values** must be strings or arrays of strings.
 
+> **Authoring tip for `manual_tests` (advisory — does not change the required shape).** When the companion `stride-copilot-exploratory-testing` plugin is installed, each `manual_tests` entry is run as an **exploratory charter** during the workflow's Manual & Exploratory Testing step (it runs only when `manual_tests` is non-empty AND that plugin is available). So phrase each entry as a *chartable scenario* — a target plus the information or risk to discover — rather than a bare test fragment, so it drives a useful session. This is guidance only: it adds **no** new required field, does not make entries longer-required, and does not change the `testing_strategy` shape or the review_queue empty-pill gate — existing terse entries still validate, and the tip is inert when the plugin is not installed.
+>
+> - Before: `"Test in multiple browsers"`
+> - After: `"Explore the theme toggle across browsers to discover rendering inconsistencies"`
+
 ### security_considerations
 
 ```json
