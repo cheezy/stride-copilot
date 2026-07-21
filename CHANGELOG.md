@@ -11,6 +11,7 @@ The task lifecycle can now run a task's `manual_tests` as real exploratory sessi
 - **`stride-workflow` (W1791)** gains a gated **Step 5.5: Manual & Exploratory Testing**, placed between Self-Review (Step 5) and Execute Hooks (Step 6). It is doubly gated — it runs only when the task's `testing_strategy.manual_tests` is non-empty **and** the `stride-copilot-exploratory-testing` plugin is available in the session (detected by its `stride-exploratory-testing-explore` skill / `explorer` agent appearing in the session's available lists; availability only, never blind execution). Each manual test is framed as a charter and driven by the `explorer` under the plugin's absolute safety boundary (no destructive or production-mutating actions; an unreachable app is reported as an obstacle, never a completion failure). Uses a decimal step number so no existing step numbers or cross-references change; the flowchart and quick-reference card are updated.
 - **`stride-subagent-workflow` (W1792)** documents the dispatch as an optional, externally-provided **Phase 3.5** in the decision matrix, mirroring the task-explorer/task-reviewer phase style (trigger, inputs, outputs, graceful skip). The trigger wording is kept identical to Step 5.5.
 - **`stride-completing-tasks` (W1793)** documents recording the findings in existing tolerant fields only — a summary in `completion_notes` and, when a reviewer ran, the `reviewer_result.testing_strategy` note — with an explicit no-op fallback (plugin absent or no `manual_tests` → the completion payload is byte-for-byte unchanged). No new server-validated field and no new `workflow_steps` name, keeping the strict-completion-validation contract intact.
+- **`stride-creating-tasks` / `stride-creating-goals` (W1794)** gain an advisory authoring note beside their `manual_tests` documentation: when the companion plugin is installed each entry runs as an exploratory charter, so phrase entries as chartable scenarios (a target plus the information/risk to discover), with a before/after example. Advisory only — it adds no required field and does not change the `testing_strategy` shape or the review_queue empty-pill gate, so existing terse entries still validate.
 
 **Graceful degradation:** when the companion plugin is not installed, the entire integration is inert — manual tests remain a human responsibility and nothing about the core lifecycle changes. The integration is purely additive.
 
@@ -24,7 +25,7 @@ Fully backward compatible. Skill-text only — no hook logic, `.stride.md`, env-
 
 ### Source
 
-G349 — "Integrate the stride-copilot-exploratory-testing plugin into the stride-copilot manual-testing workflow" (tasks W1791, W1792, W1793).
+G349 — "Integrate the stride-copilot-exploratory-testing plugin into the stride-copilot manual-testing workflow" (tasks W1791, W1792, W1793, W1794, W1795).
 
 ### Fixed — the enrichment surface documented create and update bodies without their `task` root key (D151)
 
