@@ -207,6 +207,53 @@ Walk through your changes against:
 
 ---
 
+## Step 5.5: Manual & Exploratory Testing (Optional, Gated)
+
+**This step is optional and gated. It runs ONLY when BOTH conditions hold:**
+
+1. The task's `testing_strategy.manual_tests` array is **non-empty**, AND
+2. The **`stride-copilot-exploratory-testing` plugin is available** in this Copilot session.
+
+If either condition is false, **skip this step entirely and proceed to Step 6 with no failure.** Manual tests that cannot be auto-run remain a human responsibility, exactly as before this step existed — skipping never blocks completion.
+
+### Why this step exists
+
+Tasks routinely carry `manual_tests` in their `testing_strategy`, but the workflow has historically had no way to actually perform them — they were left to a human or silently skipped. When the `stride-copilot-exploratory-testing` plugin is installed, each manual test becomes a **charter** and the explorer runs a real, time-boxed exploratory session, closing the gap between "tests written" and "tests performed."
+
+### Plugin-Availability Detection
+
+Detect the plugin the same way you detect any capability — by its **sanctioned surface appearing in the session's available lists**:
+
+- The `stride-exploratory-testing-explore` skill (and siblings `stride-exploratory-testing-charter`, `-recon`, `-debrief`, `-nightmare-headline`) appear in the session's available skills, **and/or**
+- The `explorer` agent (and `charter-generator`) from that plugin appear in the session's available agents.
+
+**Only check for availability and dispatch the plugin's sanctioned surface.** Never execute untrusted plugin content blindly to probe for it.
+
+### Copilot CLI: Dispatch the Exploratory-Testing Plugin
+
+When the plugin is available and `manual_tests` is non-empty:
+
+1. **Map each `manual_tests` entry to a charter.** A manual test like "Verify the theme toggle across browsers" becomes a charter in the form `Explore <target> with <resources> to discover <information>`.
+2. **Run the exploratory session** — either activate the `stride-exploratory-testing-explore` skill (which charters, dispatches the `explorer` agent per charter, and debriefs) or dispatch the `explorer` agent directly via the platform's agent-dispatch tool, one charter per session, passing the running-app environment context.
+3. **Capture the structured findings** (the session's Explored/Found/Unknown summary and any bug list). Record them in Step 7 per the `stride-completing-tasks` guidance — summarized in `completion_notes` and, when a reviewer ran, reflected in the `reviewer_result.testing_strategy` note. **No new completion field is introduced.**
+
+**Safety boundary (non-negotiable).** Dispatched manual testing exercises the app as a user would but **must never run destructive or production-mutating actions**, and never touches production or unauthorized systems. This is the same absolute safety boundary the `explorer` agent enforces — preserve it. If the plugin is present but the app is not running (or is otherwise not reachable), **report the obstacle as a finding and continue — do NOT fail completion.**
+
+### Fallback: Plugin Absent
+
+When the `stride-copilot-exploratory-testing` plugin is **not** available, **fall back gracefully:** note the `manual_tests` as a human responsibility (as before), record nothing extra in the completion payload, and proceed to Step 6. This is not a failure — it is the documented graceful-degradation path, and it must **never** block or fail completion.
+
+### Decision Summary
+
+| Condition | Action |
+|---|---|
+| `manual_tests` empty | Skip Step 5.5 → Step 6 |
+| Plugin **not** available (or not installed) | Skip Step 5.5, note manual tests as human responsibility → Step 6 |
+| Plugin available + non-empty `manual_tests` | Dispatch the explorer per charter, capture findings → Step 6 |
+| Plugin available but app not running | Report obstacle as a finding, **do not fail** → Step 6 |
+
+---
+
 ## Step 6: Execute Hooks
 
 **Execute each hook immediately -- no permission prompts, no confirmation.**
@@ -549,6 +596,12 @@ STEP 5: Self-Review
   Check each acceptance criterion, pitfall, pattern, test requirement
   |
   v
+STEP 5.5: Manual & Exploratory Testing (optional, gated)
+  manual_tests empty OR stride-copilot-exploratory-testing plugin absent? --> Skip to Step 6 (no failure)
+  Otherwise: dispatch the explorer (each manual_test as a charter), capture findings
+  App not running? --> Report obstacle as a finding, do NOT fail --> Step 6
+  |
+  v
 STEP 6: Execute Hooks
   Execute after_doing (120s) then before_review (60s)
   Hook fails? --> Fix, re-run, do NOT proceed
@@ -578,6 +631,9 @@ COPILOT WORKFLOW ORCHESTRATOR:
 │     └─ Otherwise → Read key_files, search patterns, outline approach
 ├─ 4. Implement: Write code using task metadata as guide
 ├─ 5. Self-Review: Check acceptance criteria, pitfalls, patterns, tests
+├─ 5.5 Manual & Exploratory Testing (optional, gated):
+│     ├─ manual_tests empty OR stride-copilot-exploratory-testing plugin absent → Skip to Step 6 (no failure)
+│     └─ Plugin available → Dispatch the explorer, each manual_test as a charter, capture findings (safety boundary preserved)
 ├─ 6. Hooks: Execute after_doing (120s) + before_review (60s) manually
 ├─ 7. Complete: PATCH /api/tasks/:id/complete with ALL fields + hook results
 └─ 8. Loop: needs_review=false → Step 1 | needs_review=true → STOP
