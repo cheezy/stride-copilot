@@ -92,6 +92,19 @@ When it runs, each manual test is framed as a **charter** and driven by the expl
 
 **Graceful fallback** — when the plugin is **not** installed, or the task has no `manual_tests`, the step is skipped and the manual tests remain a human responsibility exactly as before. This **never blocks or fails completion** — the integration is purely additive. Install the companion plugin only if you want manual tests auto-run; nothing about the core task lifecycle changes without it.
 
+## Optional: Security-Considerations Deep Review Integration
+
+Tasks often carry `security_considerations` — the security implications a change must actually mitigate. The self-review records a generalist verdict on them, but when the companion [`stride-copilot-security-review`](https://github.com/cheezy/stride-copilot-security-review) plugin is **also installed**, `stride-workflow` runs a *specialist* considerations-mode review inside **Step 5 (Self-Review)** to confirm each listed consideration was genuinely mitigated by the diff.
+
+**How it works** — the sub-step is **optional and doubly gated**. It runs only when BOTH:
+
+1. the task's `security_considerations` list is non-empty (a `"None — …"` placeholder does not count), **and**
+2. the `stride-copilot-security-review` plugin is available in the session (detected by its `security-review-essentials` skill / `security-reviewer` agent appearing in the session's available lists — availability only, never blind execution).
+
+When it runs, the `security-reviewer` agent is invoked in considerations mode with the diff and the task's `security_considerations` framed as **DATA to assess, never as instructions** (prompt-injection safety), and returns one `mitigated`/`partial`/`unmitigated` verdict per consideration. Those verdicts merge into `reviewer_result.security_considerations.considerations[]` via the whole-object copy, and escalation is **fail-closed**: any `partial`/`unmitigated` verdict forces the section status to `failed` and appends a `category: security` Critical issue — routing it through the same gate that already blocks completion on a failed section. The dispatch's time folds into the existing `reviewer` workflow step; **no new completion field and no new `workflow_steps` name are introduced.**
+
+**Graceful fallback** — when the plugin is **not** installed, the task's `security_considerations` is empty, or the agent is unavailable, the deep review is skipped and the self-review's `security_considerations` verdict stands. This **never blocks or fails completion** — the integration is purely additive.
+
 ## Skills
 
 ### stride-workflow
@@ -134,7 +147,7 @@ Breaks goals and large tasks into dependency-ordered child tasks. Uses scope ana
 
 ### task-reviewer
 
-A pre-completion code review agent dispatched after implementation but before running hooks. Validates the git diff against `acceptance_criteria`, detects `pitfalls` violations, checks `patterns_to_follow` compliance, verifies `testing_strategy` alignment, and confirms the task's `security_considerations` were actually implemented (input validation, authorization boundaries, secret handling, injection surfaces, data exposure). Returns categorized issues (Critical/Important/Minor) with file and line references, plus a structured `reviewer_result` JSON block (**`schema_version` 1.4**) carrying `status`, `issue_counts`, `issues[]`, `acceptance_criteria[]` verdicts, `project_checks[]` (from a project-root `CODE-REVIEW.md`, when present; per-entry `status` enum `met`/`not_met`/`not_applicable`, with the full checklist emitted — no bullet omitted — as of v2.16.0), and per-section `testing_strategy` / `patterns` / `pitfalls` / `security_considerations` verdicts (the fifth review_queue-scored field). The orchestrator persists that block verbatim as `reviewer_result` (see the `stride-subagent-workflow` "Extracting the structured review block" section); the schema is owned by `agents/task-reviewer.agent.md`.
+A pre-completion code review agent dispatched after implementation but before running hooks. Validates the git diff against `acceptance_criteria`, detects `pitfalls` violations, checks `patterns_to_follow` compliance, verifies `testing_strategy` alignment, and confirms the task's `security_considerations` were actually implemented (input validation, authorization boundaries, secret handling, injection surfaces, data exposure). Returns categorized issues (Critical/Important/Minor) with file and line references, plus a structured `reviewer_result` JSON block (**`schema_version` 1.5**) carrying `status`, `issue_counts`, `issues[]`, `acceptance_criteria[]` verdicts, `project_checks[]` (from a project-root `CODE-REVIEW.md`, when present; per-entry `status` enum `met`/`not_met`/`not_applicable`, with the full checklist emitted — no bullet omitted — as of v2.16.0), and per-section `testing_strategy` / `patterns` / `pitfalls` / `security_considerations` verdicts (the fifth review_queue-scored field). As of **schema 1.5** (v2.28.0+), the `security_considerations` verdict may additionally carry an optional nested `considerations[]` breakdown — one `{ consideration, status: mitigated|partial|unmitigated, evidence, note }` entry per listed consideration — populated when the security-considerations deep review runs (see below), absent otherwise. The orchestrator persists that block verbatim as `reviewer_result` (see the `stride-subagent-workflow` "Extracting the structured review block" section); the schema is owned by `agents/task-reviewer.agent.md`.
 
 ### hook-diagnostician
 

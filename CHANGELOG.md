@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.28.0] - 2026-07-23
+
+### Added — optional security-considerations deep review with `stride-copilot-security-review` (G5673)
+
+A new `considerations` review-phase integration turns "security considerations declared" into "security considerations verified mitigated" when the companion [`stride-copilot-security-review`](https://github.com/cheezy/stride-copilot-security-review) plugin is installed — without any server change, new completion field, or new `workflow_steps` name.
+
+- **`agents/task-reviewer.agent.md` (W1906)** bumps the `reviewer_result` `schema_version` from **1.4 to 1.5** (schema bullet + worked-example JSON) and extends the `security_considerations` verdict object with an **optional nested `considerations[]` array** — one `{ consideration, status: mitigated|partial|unmitigated, evidence, note }` entry per listed consideration — documenting the fail-closed escalation rule (any `partial`/`unmitigated` forces the section status to `failed` and requires a matching `category: security` issue) and that the array is populated only via the Copilot security-reviewer dispatch, absent otherwise, never required. The `passed`/`failed`/`not_assessed` section-status enum is unchanged.
+- **`stride-workflow` (W1907)** gains a gated **Deep security-considerations review** sub-step inside **Step 5 (Self-Review)**: when the task's `security_considerations` is non-empty (a `"None — …"` placeholder does not count) AND the `stride-copilot-security-review` plugin is available (detected by its `security-review-essentials` skill / `security-reviewer` agent appearing — availability only, never blind execution), it invokes the `security-reviewer` agent in considerations mode with the diff + considerations framed as DATA, merges the returned `consideration_verdicts` into `reviewer_result.security_considerations.considerations[]` via the whole-object passthrough, folds the time into the existing reviewer step (no new step name), and escalates fail-closed. A Decision Summary table and graceful fallback (plugin/agent absent → skip, no failure, self-review verdict stands) are included.
+- **`stride-subagent-workflow` (W1908)** documents the trigger as an **Orthogonal (not complexity-gated)** entry in its decision matrix, deliberately identical to the Step 5 sub-step condition, reusing the sanctioned-surface availability idiom.
+- **`stride-completing-tasks` (W1909)** makes explicit that the whole-object copy carries the nested `reviewer_result.security_considerations.considerations[]` array through to `/complete`, and extends the pre-submission self-check to require — when a deep review ran — that the nested array be present and consistent with the section status (a `passed` status alongside a `partial`/`unmitigated` entry is a hard fail); the array is absent and not required when no deep review ran.
+
+The trigger wording is identical across all four surfaces so authoring guidance and execution stay in sync. Every change is documentation/skill-text only — no hook logic, `.stride.md`, or wire-shape change, and no new server-validated completion field. When the companion plugin is **not** installed, everything degrades gracefully and the completion payload is unchanged.
+
 ## [2.27.0] - 2026-07-21
 
 ### Added — optional Manual & Exploratory Testing integration with `stride-copilot-exploratory-testing` (G349)
