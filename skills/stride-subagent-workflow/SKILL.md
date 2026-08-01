@@ -24,7 +24,7 @@ This skill contains the decision matrix that determines which custom agents to i
 - `hook-diagnostician` — Diagnose hook failures with prioritized fix plans
 
 It also documents one **optional, externally-provided** dispatch (Phase 3.5):
-- Exploratory-testing (`stride-copilot-exploratory-testing` plugin) — run the task's `manual_tests` as charters after review, **only when that plugin is installed**; skipped gracefully otherwise and never required for completion.
+- Exploratory-testing (`stride-copilot-exploratory-testing` plugin) — run the task's `manual_tests` as charters after review **via its non-interactive surfaces only**, **and only when that plugin is installed**; skipped gracefully otherwise and never required for completion.
 
 **Skipping this skill means:**
 - No codebase exploration before implementation (wrong approach, 2+ hours wasted)

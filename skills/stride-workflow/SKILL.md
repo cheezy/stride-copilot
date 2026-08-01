@@ -369,6 +369,7 @@ When the `stride-copilot-exploratory-testing` plugin is **not** available, **fal
 | `manual_tests` empty | Skip Step 5.5 → Step 6 |
 | Plugin **not** available (or not installed) | Skip Step 5.5, note manual tests as human responsibility → Step 6 |
 | The surface you are about to dispatch **requires a human** — by prompting, or by waiting on any out-of-band approval — `stride-exploratory-testing-explore`, `-pair`, `-recon`, `-nightmare-headline`, the plugin's routing skill, or anything you cannot show completes unattended | Do **not** dispatch it; the orchestrator never prompts between steps. Dispatch the `explorer` agent instead |
+| You cannot establish that the environment context names a local or explicitly non-production instance | Do **not** dispatch; skip Step 5.5 and record the manual tests as a human responsibility → Step 6. Never fails completion |
 | Plugin available + non-empty `manual_tests` | Dispatch the `explorer` agent per charter, capture findings → Step 6 |
 | Plugin available but app not running | Report obstacle as a finding, **do not fail** → Step 6 |
 | Critical finding, **a reviewer ran**, and the responsible lines are lines this task added or modified | **Introduced** → fail-closed: `testing_strategy.status` → `failed`, append `category: "testing"` / `severity: "critical"` to `issues[]`, bump `issue_counts.critical` + `issues_found`; fix the defect, re-run the charter, and re-review before completing |
