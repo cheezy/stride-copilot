@@ -476,7 +476,7 @@ When a review did run, anything written here appears **after** the diff that was
 
 **Redact before you write any of it.** What you record here is derived from findings that originate in observed application output, so Step 5.5's redaction rule binds unchanged: no real credentials, tokens, customer data or internal hostnames reach `completion_notes`, `completion_summary`, the `testing_strategy` note — **or the follow-up defect you file**, whose carried substance includes the repro the check encodes and which is persisted and rendered like any other sink.
 
-**Say what was written, in every carrier that lists the change set.** Name the paths in `completion_notes`; note in one line of `completion_summary` that checks were drafted after review; and **if a check was moved into the test tree, include in `actual_files_changed` every path the move touched** — the check itself, and any factory, fixture or helper you wrote to resolve a `TODO(harden):` wiring marker, which is equally post-review executable code — — that required field is the structured list of what this task changed, and naming a post-review file only in prose is how the divergence stays invisible.
+**Say what was written, in every carrier that lists the change set.** Name the paths in `completion_notes`; note in one line of `completion_summary` that checks were drafted after review; and **if a check was moved into the test tree, include in `actual_files_changed` every path the move touched** — the check itself, and any factory, fixture or helper you wrote to resolve a `TODO(harden):` wiring marker, which is equally post-review executable code — that required field is the structured list of what this task changed, and naming a post-review file only in prose is how the divergence stays invisible.
 
 **Re-run the reviewer whenever a check entered the test tree at all.** Do not weigh whether the edit was substantial: adding a skip tag or wiring a factory is still unreviewed executable code, and a rule that turns on a judgement call resolves toward not re-reviewing, because re-reviewing is the expensive option. If the reviewer cannot be re-run, say so in the record rather than proceeding silently.
 
@@ -492,7 +492,7 @@ When a review did run, anything written here appears **after** the diff that was
 | Bug fixed in this task | Run the check and see it pass **before** keeping it, and update its expected-to-fail header; if you did not run it or it did not pass, defer → Step 6 |
 | Bug still open, check moved into the suite | Only if the file loads clean, **and** the case is marked skipped/pending, **and** a follow-up defect is filed, **and** the check asserts the guard rather than performing the bypass → Step 6. Never left red in the tree |
 | The bug is a **security boundary failure** (Critical: data crossing a tenant, account, role or permission scope, or a secret/credential/token exposed; High: an authorization control demonstrably absent where no boundary was crossed this session) — or the draft reproduces it by exploiting it, however the finding was rated | The draft must assert the boundary **holds**, never encode the sequence that crosses it. A draft that reproduces by exploiting **may not enter the test tree while the bug is open** — leave it staged and file the follow-up defect → Step 6 |
-| The draft carries a literal credential, token, session identifier, customer record or internal hostname where a fixture value belongs | Do **not** move it — the content check at the move is yours, not `-harden`'s. Leave staged and file the defect → Step 6 |
+| The draft carries a literal credential, token, session identifier, customer record or internal hostname where a fixture value belongs — **or a destructive step**: dropping, truncating or deleting data the check did not itself create, mutating schema or shared configuration, or stopping a service the suite did not start | Do **not** move it — the content check at the move is yours, not `-harden`'s. Leave staged and file the defect → Step 6 |
 | The target path already exists in the test tree | **You** must check this. `-harden` suffixes only the paths **it** writes; the copy you perform is yours and nothing protects it — it prints that line for you, unrun. Do not write; defer → Step 6 |
 | The verification run drives a running application | Establish it reaches the same local or explicitly non-production instance Step 5.5 was given **before running it**; if you cannot, do not move the check in → Step 6 |
 | `.exploratory/` turns out **not** to be ignored | The staged drafts are untracked files an `after_doing` staging with `git add -A` will commit — name them in `actual_files_changed` and re-review **on the same terms as a check that entered the tree** → Step 6 |
@@ -874,8 +874,9 @@ STEP 5.6: Harden findings into regression checks (Optional, Gated)
                   open, however the finding was rated
     Into the suite ONLY if the file loads clean AND the case is green or inert --
                   established by RUNNING the gate's own command once, never by expecting
-    Target path exists, or the draft carries a credential? -harden protects neither --
-                  do not write it; defer
+    Target path exists, or the draft carries a credential OR a destructive step
+                  (a destructive check runs green, so the load-and-green gate misses it)?
+                  -harden protects neither -- do not write it; defer
     Anything written here is post-review: name it in completion_notes,
                   completion_summary and actual_files_changed, and re-review whenever
                   a check entered the tree
@@ -926,6 +927,8 @@ COPILOT WORKFLOW ORCHESTRATOR:
 │     │  drafts stay staged in .exploratory/checks/ (the safe default)
 │     ├─ Security finding? Assert the guard, never the bypass. A draft that reproduces
 │     │  by exploiting may NOT enter the tree while the bug is open
+│     ├─ Read the draft before moving it: a literal credential OR a destructive step
+│     │  (which runs green, so the load-and-green gate misses it) → leave it staged
 │     ├─ Into the suite only if the file loads clean AND the case is inert or run-green;
 │     │  verify by running the gate's own command once, else revert and file a follow-up
 │     └─ Surface post-review files; re-review whenever a check entered the tree
