@@ -91,6 +91,10 @@ Whether you arrive here from a creation intent or the build loop, **a claim fail
    - If missing: Ask user to create it
    - Verify sections exist: `## before_doing`, `## after_doing`, `## before_review`, `## after_review`, `## after_goal`
 
+3. **`.gitignore` entries — mention, never edit.** `.stride/` (the orchestrator's runtime-state directory), `.stride_auth.md`, and the hook temp files `.stride-env-cache`, `.stride-changed-files.json` and `.stride-diff-upload-state` belong in the project's `.gitignore` unconditionally. Add **`.exploratory/`** to what you mention **only** when the `stride-copilot-exploratory-testing` plugin is installed: session artifacts land there, they hold transcribed application output, and they arrive **untracked**, so a `## after_doing` section that stages everything (`git add -A`) would sweep them into the commit. Step 0 is the only step that runs once per session and the only point where addressing the operator is sanctioned — Step 5.5 runs only once a session is already under way, so it is structurally too late to be the delivery point.
+
+   **This is a statement, not a question — never wait on an answer, and never edit their `.gitignore` yourself.** Say it once, briefly, and only when something is actually missing; then carry on. Nothing here blocks. And note a line added after the fact is inert for a path git already tracks — an artifact already committed needs `git rm --cached` too, which is why "before the first session" matters.
+
 **This step runs once per session, not once per task.**
 
 ---
@@ -311,9 +315,40 @@ When the plugin is available and `manual_tests` is non-empty:
 
 1. **Map each `manual_tests` entry to a charter.** A manual test like "Verify the theme toggle across browsers" becomes a charter in the form `Explore <target> with <resources> to discover <information>`.
 2. **Run the exploratory session** — dispatch the `explorer` agent via the platform's agent-dispatch tool, one charter per dispatch, passing the running-app environment context. It is the only surface that qualifies **today**; a surface the plugin gains later qualifies by satisfying the principle above, never by being added to a list. **Never `stride-exploratory-testing-explore`, never `-pair`, never the routing skill, and never anything that requires a human.**
-3. **Capture the structured findings** (the session's Explored/Found/Unknown summary and any bug list). Record them in Step 7 per the `stride-completing-tasks` guidance — summarized in `completion_notes` and, when a reviewer ran, reflected in the `reviewer_result.testing_strategy` note. **No new completion field is introduced.**
+   The agent takes exactly **two** arguments — the charter, and one free-text **environment-context block**. Everything below except the charter is packed into that one block; they are contents, not separate named fields. Provide:
 
-**Safety boundary (non-negotiable).** Dispatched manual testing exercises the app as a user would but **must never run destructive or production-mutating actions**, and never touches production or unauthorized systems. This is the same absolute safety boundary the `explorer` agent enforces — preserve it. If the plugin is present but the app is not running (or is otherwise not reachable), **report the obstacle as a finding and continue — do NOT fail completion.**
+   - **The charter** — one per dispatch, from step 1.
+   - **The feature or target under test** — the task's `what` / `where_context`.
+   - **How to reach the running app** — base URL, launch command, or host. If you cannot establish it, you have nothing to dispatch against, so **skip and note it** rather than guessing at a target you are about to drive.
+   - **The authorized, non-production confirmation** — state in the block that this target is one the caller is authorized to test and is **not** production. This is the determination already required before you dispatch (see "Sanctioned dispatch surfaces" above); this bullet records it in the context block, it does not re-open it. **Never supply it on the user's behalf.** If you could not establish it you are not dispatching at all — Step 5.5 is skipped and the manual tests are recorded as a human responsibility.
+   - **Which interaction tools are available** this session — the agent uses what it actually has; the names are a hint.
+   - **Where the source, logs and config are** — optional, and the cheapest sharpening available, since the agent runs inside the very repository the charter targets.
+   - **Where test accounts or seed data live** — **point at them; never inline real credentials, tokens, or customer data.** The dispatch prompt is an artifact like any other; a reference is enough. If there are none to name, say so explicitly, otherwise the session explores only what is reachable unauthenticated and returns *completed* having never reached the feature, with nothing marking the gap.
+   - **The session budget** — see step 2a.
+
+2a. **Set the session budget explicitly — it is yours to choose, not the session's.** **Establish the unit from the `explorer` contract that is actually installed, not from this page** — the two plugins release independently. Today that unit is **probes**: default **12**, usable band **8–20**, with a **tool-call ceiling** at **5× the probe budget** (60 at the default) as a backstop against a session that spins rather than probes; whichever it reaches first ends the session, and the sheet records which in `stop_reason`. Choose from what the task can spare and how much surface the charter covers — the low end for a narrow charter or a task with many `manual_tests`, the high end for a broad one, the default when you have no reason to move off it. **State the budget rather than omitting it:** an unbounded dispatch inside an autonomous workflow is both a runaway risk and a larger blast radius against a live application, and the caller is the only party that knows what the task can afford. **Never hand a wall-clock time box to a probes contract** — it has no clock, and minutes invite it to report a duration it never measured. Should the installed contract declare a different unit, give it the one it asks for. **The budget is a ceiling, not a quota:** the agent will not manufacture probes to spend it.
+
+   **Budget exhaustion is a normal outcome, never a failure — but how a session ended changes what you may honestly claim about coverage.** Read the ending the agent reports and record it:
+
+   - **`charter_quiet`** (or **`risk_acceptable`**) — the area was covered and nothing more was worth probing, leaving budget unspent. This is a *good* session and the only ending that supports "this manual test was performed."
+   - **`probe_budget_exhausted`** — the area was *partly* covered. The findings are valid; the coverage claim is not complete. Say so.
+   - **`tool_call_ceiling`** — the session spent its calls without getting through its probes, so it was spinning rather than probing. Setup and orientation spend tool calls without spending probe budget, so a setup-heavy charter can hit this having run **zero probes**. **Judge it on what the sheet says it actually did, not on the ceiling alone:** at or near zero probes this is not partial coverage but a session that did not happen — **record it as not performed and hand the manual test back as a human responsibility**, exactly as when the plugin is unavailable. After meaningful probes, treat it as partial coverage.
+   - **`blocked`** — the app was unreachable or setup became impossible. Judge it on the sheet too, not on the word: blocking is reachable at any point, so at or near zero probes its coverage is identical to a zero-probe ceiling hit — **nothing** — and it takes the identical disposition. After meaningful probes it is partial coverage. Either way the obstacle itself is recorded **as an obstacle**, never as a severity-bearing finding.
+   - **An older contract reporting only `stopped_early`** — ambiguous between partial coverage and a session that never got going. Resolve it from the sheet's own account of what it covered, and take the conservative reading when that shows little or nothing.
+
+   **In none of these cases does completion fail.** What varies is only what you may honestly claim — and claiming a spun-out or zero-probe session as a performed manual test is worse than not running the plugin at all, because the plugin-absent path at least flags the test as still owed. **If risk is left unexamined, file it:** name the unexamined area in `completion_notes` and file a follow-up defect or task so it has an owner, referencing its ID. A charter is a transient dispatch input with no identifier and no lifetime past the session, so "follow-up charter" is not a disposition.
+
+   **Budget too small to be worth spending?** If what the task can spare will not fund a workable session for even one charter — below the low end of the band, or a charter whose setup alone would consume the ceiling — **do not dispatch at all.** Skip and note the manual tests as a human responsibility. A token session that cannot reach the feature produces a false coverage claim. The band is **per dispatch**, not a pool to divide across charters.
+
+3. **Capture everything the agent returned** — not a hand-picked subset: the Explored/Found/Unknown summary, the bug list, **and the session sheet**. **Do not assume which fields that sheet has — establish it from the contract actually installed**, exactly as you did for the budget unit: the root-level `status` is the coarse ending signal and exists on every contract, while a current sheet adds the fine-grained `stop_reason` and the probe counts and is the only carrier of those. Enumerating fields here rather than passing them through is how a later contract change silently drops one — the same failure this workflow already warns about for `reviewer_result`. **State in `completion_notes` how the session ended and what it covered**, not only what it found: an exhausted session and a complete one otherwise produce identical records. Record them in Step 7 per the `stride-completing-tasks` guidance — summarized in `completion_notes` and, when a reviewer ran, reflected in the `reviewer_result.testing_strategy` note. **No new completion field is introduced.**
+
+4. **Telemetry:** fold this session's wall-clock into the existing **`reviewer`** `workflow_steps` entry, exactly as the deep security-considerations review does. **Never a seventh step name** — the vocabulary is fixed at six. The wall-clock is **your own measurement of the dispatch**, never a field read out of the session sheet: today's contract states outright that it carries no `duration` and no `tbs`. When no reviewer ran, that entry is the skip form (`dispatched: false` with a reason) and carries no duration, so record the dispatch in `completion_notes` rather than inventing one. **That case is not an edge case here** — this step's gate has no review precondition, so the small 0-1 `key_files` path reaches it routinely.
+
+**Gitignore the artifact directory before the first session.** Anything a session writes to disk lands under **`.exploratory/`**. Those files hold transcribed application output — exactly the material the redaction rules keep out of the completion payload — and they arrive **untracked**, so a project's `## after_doing` section that stages everything (`git add -A` or `git add .`, a common shape for a quality gate that commits its own fixes) sweeps them into the commit, which is far harder to walk back than a payload field. Neither behaviour is wrong alone; they interact badly, and one `.gitignore` line prevents it. Note the sweep is the **operator's own** `after_doing`: this plugin's `hooks/stride-hook.sh` stages nothing itself, and `git commit -a` is the safe shape since it stages only tracked files.
+
+**This is operator guidance, not something you do for them.** Tell the operator to add `.exploratory/` alongside `.stride/` — **never edit their `.gitignore` yourself** — and say it at **Step 0**, not here: this step runs only once a session is already under way, so it is structurally too late to be the delivery point. The text here is your reminder of what to say; Step 0 is where you say it. On the sanctioned dispatch path nothing writes there at all, since the `explorer` agent is not asked to write a session file — the entry matters for the sessions an operator runs themselves, and for a redirected `--output` path, which every one of the plugin's seven command-derived skills accepts.
+
+**Safety boundary (non-negotiable).** Dispatched manual testing exercises the app as a user would but **must never run destructive or production-mutating actions**, and never touches production or unauthorized systems. This is the same absolute safety boundary the `explorer` agent enforces — preserve it. If the plugin is present but the app is not running — or it goes away mid-session — the session comes back **blocked**. **Record the obstacle as an obstacle, not as a finding, and continue; do NOT fail completion.** The contract requires a blocked session to set its `status`, record the obstacle in the session's `debrief`, and **not fabricate results** — so the obstacle lives there, carries no exploratory severity, and where the app was unreachable from the start there is nothing in `bugs[]` either. Treating it as a finding hands it to the absent-severity rule, which maps it to `important` — filing an unreachable dev server as an important testing finding whose worst impact you are then asked to name. Restate the obstacle in your own words in `completion_notes` and take the blocked ending's coverage disposition from step 2a. A blocked session that returns bugs is no contradiction — those bugs are real observations recorded on their own terms; it is only the *obstacle* that is never one.
 
 ### Escalation: what happens when a session returns a Critical finding
 
@@ -371,7 +406,13 @@ When the `stride-copilot-exploratory-testing` plugin is **not** available, **fal
 | The surface you are about to dispatch **requires a human** — by prompting, or by waiting on any out-of-band approval — `stride-exploratory-testing-explore`, `-pair`, `-recon`, `-nightmare-headline`, the plugin's routing skill, or anything you cannot show completes unattended | Do **not** dispatch it; the orchestrator never prompts between steps. Dispatch the `explorer` agent instead |
 | You cannot establish that the environment context names a local or explicitly non-production instance | Do **not** dispatch; skip Step 5.5 and record the manual tests as a human responsibility → Step 6. Never fails completion |
 | Plugin available + non-empty `manual_tests` | Dispatch the `explorer` agent per charter, capture findings → Step 6 |
-| Plugin available but app not running | Report obstacle as a finding, **do not fail** → Step 6 |
+| Plugin available but app not running, or it goes away mid-session — the session returns **blocked** | Record the obstacle **as an obstacle**, never as a severity-bearing finding, then judge coverage from the sheet: at or near zero probes it is **not** a performed test — hand the manual test back and file the unexamined risk; after meaningful probes it is partial coverage. **Never fails completion** → Step 6 |
+| Session ended with its charter quiet (or `risk_acceptable`), budget unspent | Coverage claim holds — the manual test was performed. Record findings → Step 6 |
+| Session ended on its **probe budget** | Valid partial findings; record them **and** say coverage was partial; file leftover risk as a follow-up → Step 6 |
+| Session ended on its **tool-call ceiling** having run at or near **zero probes** | Not a performed test — record it as such and hand the manual test back as a human responsibility → Step 6. Never fails completion |
+| Session ended on its **tool-call ceiling** after meaningful probes | Partial coverage — record findings and say coverage was partial, as for the probe-budget row → Step 6 |
+| An older contract reporting only `stopped_early` | Resolve from the session sheet's own account of coverage; when it shows little or nothing, take the conservative reading and hand the test back → Step 6 |
+| Budget too small to fund one workable charter | Do **not** dispatch; note manual tests as a human responsibility → Step 6 |
 | Critical finding, **a reviewer ran**, and the responsible lines are lines this task added or modified | **Introduced** → fail-closed: `testing_strategy.status` → `failed`, append `category: "testing"` / `severity: "critical"` to `issues[]`, bump `issue_counts.critical` + `issues_found`; fix the defect, re-run the charter, and re-review before completing |
 | Critical finding, **a reviewer ran**, and the responsible lines are anywhere else — or moved/reformatted lines shown to predate the change | **Discovered** → record in `completion_notes` + one line of `completion_summary`, advisory in the `testing_strategy` note, file a follow-up defect; append no issue, flip no verdict → Step 6 |
 | Critical finding, **a reviewer ran**, and the change set is undeterminable (no base ref line, one that failed its sanity check, or a baselined path whose per-path attribution you could not resolve) or the fault site unidentified after a bounded attempt | **Discovered**, labelled *provenance undetermined* rather than *pre-existing* → Step 6 (never block on a link you could not draw) |
@@ -726,12 +767,15 @@ STEP 5: Self-Review
 STEP 5.5: Manual & Exploratory Testing (optional, gated)
   manual_tests empty OR stride-copilot-exploratory-testing plugin absent? --> Skip to Step 6 (no failure)
   Otherwise: dispatch the explorer AGENT -- the only sanctioned surface, never an
-             interactive skill -- each manual_test as a charter, capture findings
+             interactive skill -- each manual_test as a charter, with an explicit session
+             budget you set, capture findings AND the session sheet
   Critical whose responsible lines you wrote --> escalate fail-closed (testing_strategy
              failed + category:testing Critical issue), fix, re-run the charter, re-review
   Critical in lines you did not write        --> report + file a follow-up defect, never block
   No structured review block in the payload  --> no escalation; never synthesize one
-  App not running? --> Report obstacle as a finding, do NOT fail --> Step 6
+  Session ended: charter quiet -> coverage holds | budget/ceiling -> partial (or, at
+             ~zero probes, NOT performed -- hand the test back) | never fails completion
+  App not running? --> Record obstacle AS AN OBSTACLE (not a finding), do NOT fail --> Step 6
   |
   v
 STEP 6: Execute Hooks
@@ -766,7 +810,10 @@ COPILOT WORKFLOW ORCHESTRATOR:
 ├─ 5.5 Manual & Exploratory Testing (optional, gated):
 │     ├─ manual_tests empty OR stride-copilot-exploratory-testing plugin absent → Skip to Step 6 (no failure)
 │     ├─ Plugin available → Dispatch the explorer AGENT only (never an interactive skill),
-│     │                     each manual_test as a charter (safety boundary preserved)
+│     │                     each manual_test as a charter, with an explicit session
+│     │                     budget you set (safety boundary preserved)
+│     ├─ Budget exhausted / ceiling hit → normal outcome, never a failure; it changes only
+│     │  what you may claim about coverage (~zero probes → not performed, hand it back)
 │     └─ Critical finding? Lines you wrote → escalate fail-closed | Anything else → report + file
 │        (no structured review block in the payload → no escalation; never synthesize one)
 ├─ 6. Hooks: Execute after_doing (120s) + before_review (60s) manually
