@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed — the failed-verdict `note` rule the server already enforces (D240)
+
+This port's task-reviewer prompt described `note` as optional on every section verdict. The completion API has required it on a `"failed"` verdict since D231, and enforces that **unconditionally** — independently of the `strict_completion_validation` flag — so an agent on this runtime could emit a note-less failed verdict that its own prompt endorsed and be rejected with a `422`. The rejection is self-describing and recoverable, so nothing was broken; every such completion simply paid an avoidable round trip.
+
+The prompt now states that on a `"failed"` section verdict `note` is **REQUIRED** and must name the specific violation or gap in at least **20 non-whitespace characters**, carries the anti-placeholder prohibition (no stub, `TODO`, empty string, or bare restatement of the status), and directs that an empty note means the *verdict* is wrong rather than that the note is unnecessary. `note` stays **optional** on `"passed"` and `"not_assessed"`, so the ordinary empty-section case gains no friction.
+
+Producer-side only: the server-side check in `Kanban.Tasks.CompletionValidation.ReviewContract` is unchanged, and no port was accommodated by weakening it.
+
 ## Release record — tags without a GitHub release
 
 *This is a record-keeping note, not a release. It describes no change to this plugin and carries no version.*
