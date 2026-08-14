@@ -176,7 +176,7 @@ Skip exploration. Proceed directly to Step 4 (Implementation).
 1. **Read each file** listed in `key_files` to understand current state
 2. **Search for patterns** mentioned in `patterns_to_follow`
 3. **Find related test files** for the modules you'll modify
-4. **For medium+ tasks**, outline your implementation approach before coding
+4. **When the `stride-subagent-workflow` decision matrix says `Run` in the Plan (manual) column for this task's row**, outline your implementation approach before coding. **Read the column; do not re-derive the condition here** (D221) — this item previously said "for medium+ tasks", which diverged from the matrix for a medium defect (Plan = Skip unless large)
 
 **Take notes on what you find.** This exploration informs your implementation and prevents wrong approaches that waste 2+ hours.
 
@@ -939,7 +939,7 @@ COPILOT WORKFLOW ORCHESTRATOR:
 EXPLORATION QUICK CHECK:
   small + 0-1 key_files  → Skip explore and review
   small + 2+ key_files   → Read key_files, self-review
-  medium/large           → Full explore + outline + thorough review
+  medium/large           → Full explore + thorough review; outline per the matrix's Plan column
   goal/undecomposed      → Decompose first
 ```
 

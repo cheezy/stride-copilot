@@ -66,7 +66,7 @@ Activate this skill **after claiming a task** (via `stride-claiming-tasks`) and 
 
 ## Decision Matrix
 
-Use this matrix to determine which custom agents to invoke based on task attributes:
+Use this matrix to determine which custom agents to invoke based on task attributes. **This table is the decision point for its columns. It must agree with `stride-workflow` Step 3's branch structure, and no prose in this plugin may state an independent trigger for any column; that was defect D221.**
 
 | Task Attributes | task-decomposer | task-explorer | Plan (manual) | task-reviewer |
 |---|---|---|---|---|
@@ -143,7 +143,7 @@ The decomposer will return an ordered list of child tasks with:
 
 ## Phase 1: Exploration (After Claim, Before Coding)
 
-**When:** Task complexity is medium or large, OR task has 2+ key_files.
+**When:** The decision matrix above says `Run` in the **task-explorer** column for this task's row. **Read the column; do not re-derive the condition here** (D221).
 
 **What to do:** Invoke the `task-explorer` custom agent (`agents/task-explorer.agent.md`), passing the task metadata.
 
@@ -159,7 +159,7 @@ The explorer will return a structured summary of: each key file's current state,
 
 ## Phase 2: Planning (Conditional, Before Coding)
 
-**When:** Task complexity is medium or large, OR task has 3+ key_files, OR task has 3+ acceptance criteria lines.
+**When:** The decision matrix above says `Run` in the **Plan (manual)** column for this task's row. **Read the column; do not re-derive the condition here.** This line previously stated its own trigger ("medium or large, OR 3+ key_files, OR 3+ acceptance criteria lines"), which could fire on a row whose Plan column says `Skip` — the `small, 2+ key_files` row being the collision. That was defect D221.
 
 **What to do:** Create an implementation plan based on:
 - The explorer's output from Phase 1
@@ -170,11 +170,11 @@ The explorer will return a structured summary of: each key file's current state,
 
 Produce an ordered implementation plan that you follow during implementation.
 
-**Skip planning for:** Small tasks, defects (unless large), tasks with simple/obvious implementations.
+**Skip planning when** the matrix's Plan (manual) column says `Skip` for this task's row — never on a separate judgment of the task's simplicity.
 
 ## Phase 3: Code Review (After Implementation, Before Hooks)
 
-**When:** Task complexity is medium or large, OR task has 2+ key_files. Skip only for small tasks with 0-1 key_files.
+**When:** The decision matrix above says `Run` in the **task-reviewer** column for this task's row. **Read the column; do not re-derive the condition here** (D221).
 
 **What to do:** Invoke the `task-reviewer` custom agent (`agents/task-reviewer.agent.md`), passing the git diff of all your changes AND **every review field the task supplies — NO EXCEPTIONS, never a subset:**
 - The task's `acceptance_criteria`
@@ -363,13 +363,13 @@ Is it a goal OR large+undecomposed OR 25+ hours?
                     |
                     +--> Small, 0-1 key_files? --> Skip all custom agents --> Begin implementation
                     |
-                    +--> Medium/Large OR 2+ key_files?
+                    +--> Matrix says Run in the task-explorer column?
                             |
                             v
                         Invoke task-explorer custom agent
                             |
                             v
-                        Medium/Large OR 3+ key_files OR 3+ criteria?
+                        Matrix says Run in the Plan (manual) column?
                             |
                             +--> YES --> Create implementation plan
                             |             |
@@ -416,7 +416,7 @@ Is it a goal OR large+undecomposed OR 25+ hours?
 | "Exploration is slow" | Explorer runs in 10-30 seconds | Skipping costs 1+ hour of undirected reading |
 | "Planning is overkill" | Plans catch wrong approaches early | Coding without a plan doubles rework rate |
 | "I'll catch issues in tests" | Tests miss acceptance criteria gaps | Reviewer catches what tests can't |
-| "This small task has 3 key_files" | 2+ key_files = explore | Missing context causes merge conflicts |
+| "This small task has 3 key_files" | The matrix's `small, 2+ key_files` row says Run for the explorer | Missing context causes merge conflicts |
 
 ## Quick Reference Card
 
@@ -428,14 +428,14 @@ CUSTOM AGENT WORKFLOW:
 │     ├─ Create child tasks via API
 │     └─ Claim first child task (re-enter workflow)
 ├─ 2. Check decision matrix (complexity + key_files count)
-├─ 3. If medium+ OR 2+ key_files:
+├─ 3. If the matrix says Run in the task-explorer column:
 │     ├─ Invoke task-explorer custom agent with task metadata
 │     └─ Read and use the explorer's output
-├─ 4. If medium+ OR 3+ key_files OR 3+ criteria:
+├─ 4. If the matrix says Run in the Plan (manual) column:
 │     ├─ Create implementation plan from explorer output + task metadata
 │     └─ Follow the resulting plan
 ├─ 5. Implement the task
-├─ 6. If medium+ OR 2+ key_files:
+├─ 6. If the matrix says Run in the task-reviewer column:
 │     ├─ Invoke task-reviewer custom agent with diff + task metadata
 │     └─ Fix any Critical/Important issues found
 ├─ 6.5 (Optional, gated) If manual_tests non-empty AND stride-copilot-exploratory-testing available:
@@ -465,7 +465,7 @@ CUSTOM AGENTS (defined in agents/):
 
 PLANNING (no agent — done manually):
   Create implementation plan from explorer output + task metadata
-  Used when: medium+ complexity OR 3+ key_files OR 3+ acceptance criteria lines
+  Used when: the decision matrix says Run in the Plan (manual) column for this task's row
 
 INVOKE DECOMPOSER WHEN:
   Task type is goal, OR large complexity without children, OR 25+ hour estimate

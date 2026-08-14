@@ -12,6 +12,18 @@ The prompt now states that on a `"failed"` section verdict `note` is **REQUIRED*
 
 Producer-side only: the server-side check in `Kanban.Tasks.CompletionValidation.ReviewContract` is unchanged, and no port was accommodated by weakening it.
 
+### Fixed — planner precedence: the decision matrix is the sole decision point (D232, propagating D221)
+
+This port carried the same ambiguity D221 fixed in the canonical plugin, in `stride-subagent-workflow` only: the decision matrix row `small, 2+ key_files` says Plan = Skip, while the Phase 2 "When:" line independently said "Task complexity is medium or large, OR task has 3+ key_files, OR task has 3+ acceptance criteria lines" — two separately-satisfiable planner triggers with no stated precedence. The same conflict pattern existed for the Explore and Review columns (Phases 1 and 3, `stride-completing-tasks`' pre-completion review items), plus drifted narrower restatements in the flowchart, quick-reference card, and Plan-agent usage gloss. This port's `stride-workflow` Step 3 prose branches carried no competing OR-clause for the task's target shape, but its "For medium+ tasks, outline" item diverged from the matrix for a medium defect (Plan = Skip unless large) and now reads the matrix's Plan (manual) column instead. Measured consequence in canonical: two runners on identically-shaped tasks resolved the collision differently and wrote different skip reasons into `workflow_steps` telemetry.
+
+The fix mirrors canonical's D221 resolution: the matrix now states it is the decision point for its columns, and every restatement — the three "When:" lines, the skip-planning line, `stride-completing-tasks`' review items, and the flowchart/quick-reference glosses — reads its matrix column with "**Read the column; do not re-derive the condition here** (D221)" instead of re-deriving a condition. Resolved toward the matrix (Plan = Skip for `small, 2+ key_files`), so no planner work is added to the most common task shape.
+
+Recorded verification grep (should return only row definitions, D221 history, matrix-agreeing glosses, and `stride-workflow`'s own non-conflicting prose branches — never a rule that could fire independently of the matrix):
+
+```
+grep -rniE "if medium|medium\+ OR|medium or large, OR|3\+ (key_files|criteria|acceptance)|2\+ key_files" --include="*.md" skills/ agents/
+```
+
 ## Release record — tags without a GitHub release
 
 *This is a record-keeping note, not a release. It describes no change to this plugin and carries no version.*

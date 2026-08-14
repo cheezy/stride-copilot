@@ -155,7 +155,7 @@ This gate is **not bypassable** by submitting a self-reported skip (`dispatched:
 ### With Copilot Plugin Installed (Automatic Hooks)
 
 1. **Finish your work** - All implementation complete
-2. **Pre-completion code review** - If medium+ complexity OR 2+ key_files, dispatch the `task-reviewer` custom agent. Fix Critical/Important issues. Save output as `review_report`.
+2. **Pre-completion code review** - If the `stride-subagent-workflow` decision matrix says Run in the **task-reviewer** column for this task's row, dispatch the `task-reviewer` custom agent. **Read the column; do not re-derive the condition here** (D221). Fix Critical/Important issues. Save output as `review_report`.
 3. **Call `PATCH /api/tasks/:id/complete` directly** - Include `after_doing_result` and `before_review_result` with `{"exit_code": 0, "output": "Executed by Copilot hooks system", "duration_ms": 0}`. The hooks.json system will:
    - PreToolUse: automatically execute `.stride.md` `## after_doing` BEFORE the curl runs (blocks if it fails)
    - PostToolUse: automatically execute `.stride.md` `## before_review` AFTER the curl succeeds
@@ -167,7 +167,7 @@ This gate is **not bypassable** by submitting a self-reported skip (`dispatched:
 ### Without Plugin (Manual Hooks)
 
 1. **Finish your work** - All implementation complete
-2. **Pre-completion code review** - If medium+ complexity OR 2+ key_files, dispatch the `task-reviewer` custom agent. Fix Critical/Important issues. Save output as `review_report`.
+2. **Pre-completion code review** - If the `stride-subagent-workflow` decision matrix says Run in the **task-reviewer** column for this task's row, dispatch the `task-reviewer` custom agent. **Read the column; do not re-derive the condition here** (D221). Fix Critical/Important issues. Save output as `review_report`.
 3. **Read .stride.md after_doing section** - Get the validation command
 4. **Execute after_doing hook** (blocking, 120s timeout)
    - Execute each line from `.stride.md` `## after_doing` one at a time — NO permission prompts
@@ -190,7 +190,7 @@ Work Complete
     ↓
 Check decision matrix for code review
     ↓
-Medium+ OR 2+ key_files? ─YES→ Dispatch task-reviewer custom agent
+Matrix task-reviewer column says Run? ─YES→ Dispatch task-reviewer custom agent
     ↓ NO (or no custom agent support)       ↓
     ↓                              Issues found? ─YES→ Fix issues
     ↓                                     ↓ NO            ↓
