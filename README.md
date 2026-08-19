@@ -209,7 +209,7 @@ The plugin includes automatic hook execution via `hooks.json`. When installed, S
 
 Hook commands are defined in `.stride.md` using `## heading` + ` ```bash ` code blocks:
 
-```markdown
+````markdown
 ## before_doing
 ```bash
 git pull origin main
@@ -221,7 +221,7 @@ mix deps.get
 mix test
 mix credo --strict
 ```
-```
+````
 
 Each command runs one at a time. If any command fails, execution stops and the hook returns exit code 2 (blocking the API call for PreToolUse hooks).
 
