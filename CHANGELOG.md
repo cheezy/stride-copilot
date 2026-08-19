@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.34.0] - 2026-08-19
 
 ### Fixed — the failed-verdict `note` rule the server already enforces (D240)
 
