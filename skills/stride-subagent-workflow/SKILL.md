@@ -66,6 +66,7 @@ Activate this skill **after claiming a task** (via `stride-claiming-tasks`) and 
 
 ## Decision Matrix
 
+<!-- canon:decision-matrix-authority v1 -->
 Use this matrix to determine which custom agents to invoke based on task attributes. **This table is the decision point for its columns. It must agree with `stride-workflow` Step 3's branch structure, and no prose in this plugin may state an independent trigger for any column; that was defect D221.**
 
 | Task Attributes | task-decomposer | task-explorer | Plan (manual) | task-reviewer |
@@ -78,8 +79,20 @@ Use this matrix to determine which custom agents to invoke based on task attribu
 | Goal type | Run | Skip* | Skip* | Skip* |
 | Large complexity, not yet decomposed | Run | Skip* | Skip* | Skip* |
 | 25+ hour estimate, not yet decomposed | Run | Skip* | Skip* | Skip* |
+| Complexity absent or unrecognised | Skip | Run | Run | Run |
 
 *After decomposition, each resulting child task follows its own row in this matrix when claimed individually.
+
+<!-- canon:row-precedence v1 -->
+**Row precedence — which row wins when several of them describe the same task.** More than one row above can fit a given task, and **the sequence you resolve them in is not the sequence they are printed in.** Work through the authority order below; the first entry that fits is the row you obey, exactly one entry fits every task, and none fits zero.
+
+- **The three decomposition rows — `Goal type`, `Large complexity, not yet decomposed`, `25+ hour estimate, not yet decomposed` — resolve first, even though they sit near the bottom of the table** (rows 6, 7 and 8 of the nine, printed below `medium (any)` and `large (any)` and above the fallback row). A task matching any of them is decomposed and no further row is consulted; the `Skip*` cells and the footnote above cover what happens to the children.
+- **`small, 0-1 key_files` resolves next, and it beats `Defect type`.** That row prices the size of the change and says nothing about what kind of change it is — a single-file edit stays a single-file edit after somebody files it as a defect. A one-file defect therefore takes this row: every column reads `Skip`, no agent is dispatched, and the task proceeds directly to implementation.
+- **`Defect type` resolves next, ahead of `medium (any)` and `large (any)`.** A defect that survived the previous entry takes this row instead of its complexity row, because this is the row written about defects. Its `Skip (unless large)` cell resolves two ways in the `Plan (manual)` column: `Run` where the defect's complexity is `large`, `Skip` at any other complexity.
+- **Then the plain complexity row** — `small, 2+ key_files`, `medium (any)` or `large (any)`, whichever one matches.
+- **`Complexity absent or unrecognised` resolves last, and on that condition alone** — the task arrived with no `complexity`, or with a value that is none of `small` / `medium` / `large`. It exists so such a task matches something rather than nothing. It never arbitrates between two rows that both fit; if you are reaching for it to break a tie, one of the entries above has already answered you.
+
+**Why the `small, 0-1 key_files` entry sits above the `Defect type` entry:** swap them and every small single-file defect picks up `Run` in both the `task-explorer` and `task-reviewer` columns — two agents attached to the cheapest work on the board, and a direct conflict with `stride-workflow` Step 3's "Small Task, 0-1 Key Files" branch, which sends the identical task to Step 4 with no exploration at all. Settling an ambiguity should leave the existing answers standing (D221).
 
 **Quick rules:**
 - If the task is a **goal** or has **large complexity without child tasks** or a **25+ hour estimate**: invoke the decomposer first. The decomposer breaks it into claimable child tasks — you don't implement goals directly.

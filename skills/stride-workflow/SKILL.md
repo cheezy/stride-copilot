@@ -173,6 +173,8 @@ Skip exploration. Proceed directly to Step 4 (Implementation).
 
 ### All Other Tasks (medium+, OR 2+ key_files)
 
+The heading is shorthand for "every row the two branches above do not take", and the matrix is what decides which that is — including `Complexity absent or unrecognised`, whose row routes here. Read the row, not the heading (D221).
+
 1. **Read each file** listed in `key_files` to understand current state
 2. **Search for patterns** mentioned in `patterns_to_follow`
 3. **Find related test files** for the modules you'll modify
@@ -734,6 +736,21 @@ Each element of `workflow_steps` is an object with these keys:
 | `dispatched` | boolean | Always | `true` if the step ran; `false` if intentionally skipped |
 | `duration_ms` | integer | When `dispatched=true` | Wall-clock time the step took, in milliseconds |
 | `reason` | string | When `dispatched=false` | Short explanation of why the step was skipped |
+| `reason_code` | enum | Optional; meaningful only where `dispatched` is `false` | Short machine-readable tag naming *which kind* of skip this was (D239). It travels with `reason` rather than displacing it: aggregation groups on the tag, a human reads the sentence. Six accepted spellings, listed below — anything else fails validation with a `422`, while sending no tag at all always passes |
+
+<!-- canon:reason-code-vocabulary v1 -->
+### The six `reason_code` values
+
+The set is closed. Pick whichever one fits; if none of them fits, that is information about the skip, not a licence to coin a seventh — an unrecognised spelling is refused with a `422`. Omitting `reason_code` is always acceptable, and the prose `reason` stays required on a skipped entry either way (D239).
+
+- **`decision_matrix_skip`** — this task's row in the decision matrix carries `Skip` in this step's column, so leaving it unrun is what the table asked for.
+- **`ran_inline`** — the work got done, but the orchestrator did it directly instead of handing it off, so there was no dispatch to time.
+- **`hook_body_empty`** — the corresponding `.stride.md` section is present and blank, so the hook has no command to execute.
+- **`subsumed_by_task_spec`** — the task as written had already answered the question this step exists to answer.
+- **`folded_into_prior_step`** — an earlier step returned this step's result as well, so running it separately would repeat work.
+- **`matrix_deviation`** — the matrix wanted this step; it did not happen.
+
+Only the last of the six describes a workflow the runner did not follow, and that is precisely why it is in the vocabulary. Reach for it when a step the matrix marked `Run` was skipped anyway, and do not relabel that case as `decision_matrix_skip` — that would make a deviation look like a sanctioned skip, and the telemetry would lose the ability to tell them apart. Explain the circumstances in `reason`.
 
 ### End-of-Workflow Example (full dispatch)
 

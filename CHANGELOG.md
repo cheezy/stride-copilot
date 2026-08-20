@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added — the four port-canon anchors, plus row precedence and `reason_code` (D253, D239)
+
+`check-port-canon.sh` searches each port for a short HTML comment carrying a rule id and a version number, and calls the cell MISSING when there is none. All four cells for this port were MISSING; all four now read ok.
+
+Two of them needed only the comment. The anti-placeholder rule for a `"failed"` section `note` in `agents/task-reviewer.agent.md` was already correct, and so was the D221 sentence declaring the decision matrix the decision point for its columns. That sentence lives in `skills/stride-subagent-workflow/SKILL.md` rather than in `stride-workflow`, because this port keeps its only matrix there and `stride-workflow` Step 3 reads the `Plan (manual)` column instead of restating a trigger — so both markers land beside that one table, which is where a reader looking for the rule would actually be standing.
+
+Two of them needed new text:
+
+- **Row precedence, and a bottom row to fall to.** The matrix can fit a task on more than one row and never said which row governs. It now carries an authority order and says plainly that the order is not the printed order: the three decomposition rows resolve first despite sitting near the bottom of the table, `small, 0-1 key_files` resolves ahead of `Defect type` (a one-file change is priced as a one-file change however it was filed), `Defect type` outranks `medium (any)` and `large (any)`, after which whichever complexity row fits takes over, and last of all the freshly added `Complexity absent or unrecognised` row — `Skip` / `Run` / `Run` / `Run`, fired only by a task that arrived with no `complexity` or with a value outside `small` / `medium` / `large`, and never available for breaking a tie between rows that do fit. Such a task previously matched no row whatsoever. Had the first two entries been ordered the other way, a small single-file defect would have picked up `Run` in both the `task-explorer` and `task-reviewer` columns and contradicted `stride-workflow` Step 3's own "Small Task, 0-1 Key Files" branch. Step 3's "All Other Tasks" branch now says outright that its heading is shorthand and the matrix row decides, so the new bottom row has somewhere to land.
+- **`reason_code` on `workflow_steps`.** An optional six-value enum documented in `stride-workflow`'s Per-Step Schema, sent next to the prose `reason` and never in place of it. A value outside the six is rejected with a `422`; sending nothing is always fine. `matrix_deviation` is the value for a step the matrix asked for and that was skipped regardless — the one code reporting non-compliance rather than a sanctioned skip.
+
+Prompt text only: no plugin behaviour changes and `plugin.json` is not bumped.
+
 ## [2.34.0] - 2026-08-19
 
 ### Fixed — the failed-verdict `note` rule the server already enforces (D240)
