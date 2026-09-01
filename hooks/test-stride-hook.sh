@@ -4152,6 +4152,538 @@ STRIDE
 fi
 
 # ============================================================
+# Test Group 21: W2147 loop state recorded on completion
+# ============================================================
+# The Stop gate cannot refuse an action it has no evidence for. These cover the
+# file that becomes that evidence: written when a completion SUCCEEDS, cleared
+# when the next claim proves it was followed, and never written for a failure.
+# Mirrors the reference plugin's Test Group 33 case-for-case, plus 21w, which
+# asserts the cross-half byte identity AC5 requires.
+echo ""
+echo "=== Test Group 21: W2147 loop state on completion (bash) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: jq not available — Group 21 requires jq"
+else
+  G21_URL="https://www.stridelikeaboss.com"
+  G21_STATE=".stride/.loop-state.json"
+
+  # Build a hook-input envelope. $1=session_id $2=command $3=stdout payload
+  g21_input() {
+    jq -nc --arg s "$1" --arg c "$2" --arg r "$3" \
+      '{session_id:$s,tool_input:{command:$c},tool_response:{stdout:$r}}'
+  }
+
+  # Fresh project dir with only the sections under test, so nothing else runs.
+  g21_proj() {
+    local _d="$TMPDIR_TEST/w2147-$1"
+    rm -rf "$_d"; mkdir -p "$_d/.stride"
+    printf '## before_doing\n```bash\n```\n\n## before_review\n```bash\n```\n' > "$_d/.stride.md"
+    printf '%s' "$_d"
+  }
+
+  G21_OK='{"data":{"id":99,"identifier":"W2147","needs_review":false},"hooks":[{"name":"before_review"}]}'
+  G21_COMPLETE_CMD="curl -sS -X PATCH $G21_URL/api/tasks/99/complete -d @payload.json | tee r.json"
+  G21_CLAIM_CMD="curl -sS -X POST $G21_URL/api/tasks/claim -d @c.json | tee r.json"
+
+  # 21a: a successful completion writes the file with the right identifier.
+  G21_D=$(g21_proj a)
+  g21_input "sess-abc" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21a: a successful completion records the identifier" \
+    "W2147" "$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21a: it records needs_review from the response" \
+    "false" "$(jq -r '.needs_review' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21a: it records the session id" \
+    "sess-abc" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21a: completed_at is an ISO8601 Z timestamp" "ok" \
+    "$(jq -r 'if (.completed_at // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") then "ok" else "no" end' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21b: needs_review=true is recorded VERBATIM, and as a JSON boolean rather
+  # than the string "true" — the gate branches on it.
+  G21_D=$(g21_proj b)
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W555","needs_review":true},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21b: needs_review=true is recorded verbatim" \
+    "true" "$(jq -r '.needs_review' "$G21_D/$G21_STATE" 2>/dev/null)"
+  assert_eq "21b: needs_review is a boolean, not a string" \
+    "boolean" "$(jq -r '.needs_review | type' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21c: the session id falls back to CLAUDE_SESSION_ID when the input omits it.
+  G21_D=$(g21_proj c)
+  jq -nc --arg c "$G21_COMPLETE_CMD" --arg r "$G21_OK" \
+    '{tool_input:{command:$c},tool_response:{stdout:$r}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" CLAUDE_SESSION_ID="env-sess" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21c: the session id falls back to CLAUDE_SESSION_ID" \
+    "env-sess" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21d: with no session id anywhere it degrades to "unknown" rather than
+  # dropping the record — the identifier is the field the gate needs. This is
+  # the ORDINARY case on this runtime: Copilot's documented hook payload has no
+  # session field, so the attempt-then-degrade chain exists to keep the two
+  # halves identical rather than because a session id is expected today.
+  G21_D=$(g21_proj d)
+  jq -nc --arg c "$G21_COMPLETE_CMD" --arg r "$G21_OK" \
+    '{tool_input:{command:$c},tool_response:{stdout:$r}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" CLAUDE_SESSION_ID="" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21d: an absent session id degrades to unknown" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21e: a session id that is not identifier-shaped is refused, not sanitised.
+  G21_D=$(g21_proj e)
+  g21_input 'not a/session id' "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21e: a non-identifier-shaped session id degrades to unknown" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21f: a 422 does NOT write the file. Every non-success body the API emits
+  # lacks .data, which is the discriminator — curl has no -f here, so the error
+  # body lands on stdout exactly like a success body would.
+  G21_D=$(g21_proj f)
+  g21_input "s" "$G21_COMPLETE_CMD" '{"errors":{"completion_summary":["can'"'"'t be blank"]}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21f: a 422 completion must not write the loop state"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21f: a 422 completion does not write the loop state"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21g: THE REGRESSION GUARD for AC4. extract_response_payload is
+  # canonical-file-first (D118) and .stride/.last-api-response.json survives
+  # across calls, so a build on it as the Tier-1 source would resolve the
+  # previous CLAIM payload here — which carries both fields — and record a
+  # completion that never happened. A naive implementation passes 21f and
+  # fails this.
+  G21_D=$(g21_proj g)
+  cat > "$G21_D/.stride/.last-api-response.json" << 'G21STALE'
+{"data":{"id":99,"identifier":"W9999","needs_review":true},"hook":{"name":"before_doing"}}
+G21STALE
+  g21_input "s" "$G21_COMPLETE_CMD" '{"errors":{"base":["unprocessable"]}, TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21g: a truncated 422 must not inherit the previous claim's payload"
+    echo "    wrote: $(cat "$G21_D/$G21_STATE")"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21g: a truncated 422 does not inherit the previous claim's payload"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21h: the other side of 21g — a harness-truncated SUCCESS still records, via
+  # the canonical snapshot, but only because it demonstrably belongs to THIS
+  # completion (hooks is an array, and the task id matches the routed id).
+  G21_D=$(g21_proj h)
+  cat > "$G21_D/.stride/.last-api-response.json" << 'G21FRESH'
+{"data":{"id":99,"identifier":"W777","needs_review":false},"hooks":[{"name":"before_review"}]}
+G21FRESH
+  g21_input "s" "$G21_COMPLETE_CMD" '{"data":{"identifier":"W7 TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21h: a truncated success recovers from the matching snapshot" \
+    "W777" "$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21i: and that recovery refuses a snapshot belonging to a DIFFERENT task.
+  G21_D=$(g21_proj i)
+  cat > "$G21_D/.stride/.last-api-response.json" << 'G21OTHER'
+{"data":{"id":12345,"identifier":"W_OTHER","needs_review":false},"hooks":[{"name":"before_review"}]}
+G21OTHER
+  g21_input "s" "$G21_COMPLETE_CMD" '{"data": TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21i: recovery must refuse a snapshot for another task id"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21i: recovery refuses a snapshot for another task id"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21j: a claim clears a stale record. This is the half that makes the gate
+  # correct — a leftover from the PREVIOUS task would otherwise fire it on work
+  # that is already done.
+  G21_D=$(g21_proj j)
+  echo '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' \
+    > "$G21_D/$G21_STATE"
+  g21_input "s" "$G21_CLAIM_CMD" \
+    '{"data":{"id":99,"identifier":"W1"},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21j: a claim must clear the previous completion's loop state"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21j: a claim clears the previous completion's loop state"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21k: atomicity, from both ends. The writer stages a temp in the destination
+  # directory and renames, so a killed hook can leave no partial file — assert
+  # no temp survives a success, and assert structurally that the writer never
+  # redirects straight at the destination. The `== 1` mktemp assertion doubles
+  # as the anti-vacuity guard: an awk range that matched nothing would make the
+  # `== 0` assertion above pass for the wrong reason.
+  G21_D=$(g21_proj k)
+  g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21k: no temp file survives a successful write" \
+    "0" "$(find "$G21_D/.stride" -name 'loop-state.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "21k: the writer renames into place rather than redirecting at it" \
+    "0" "$(awk '/^write_loop_state\(\)/,/^}/' "$HOOK_SCRIPT" | grep -c '> *"\$LOOP_STATE_FILE"' | tr -d ' ')"
+  assert_eq "21k: the writer stages its temp inside the destination directory" \
+    "1" "$(awk '/^write_loop_state\(\)/,/^}/' "$HOOK_SCRIPT" | grep -c 'mktemp "\$PROJECT_DIR/.stride/loop-state' | tr -d ' ')"
+
+  # 21l: the file carries exactly the four documented keys and nothing else —
+  # never the response body, task free text, or the Bearer token that rides in
+  # the same hook input the session id is read from.
+  G21_D=$(g21_proj l)
+  g21_input "s" \
+    "curl -sS -X PATCH $G21_URL/api/tasks/99/complete -H 'Authorization: Bearer stride_dev_SECRETVALUE' -d @p.json | tee r.json" \
+    "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21l: the file carries exactly the four documented keys" \
+    "completed_at identifier needs_review session_id" \
+    "$(jq -r 'keys_unsorted | sort | join(" ")' "$G21_D/$G21_STATE" 2>/dev/null)"
+  if grep -q 'SECRETVALUE\|Bearer' "$G21_D/$G21_STATE" 2>/dev/null; then
+    echo -e "  ${RED}FAIL${RESET}: 21l: the loop state must never carry the Bearer token"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21l: the loop state never carries the Bearer token"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21m: an unwritable .stride/ is logged and swallowed. The loop state is a
+  # gate input, not a correctness dependency — it must never fail the completion.
+  G21_D=$(g21_proj m)
+  chmod 500 "$G21_D/.stride" 2>/dev/null
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  G21_RC=$?
+  chmod 700 "$G21_D/.stride" 2>/dev/null
+  assert_exit "21m: an unwritable .stride does not fail the completion" 0 "$G21_RC"
+  # The pitfall is "log and continue", so the failure must be announced rather
+  # than swallowed silently — on stderr, never stdout, which carries the one
+  # JSON document the harness parses.
+  assert_contains "21m: an unwritable .stride is announced on stderr" \
+    "loop state" "$G21_ERR"
+
+  # 21n: the full claim -> complete -> claim cycle, which is the lifecycle the
+  # gate actually observes. Asserted as ONE triple rather than three separate
+  # assertions: split up, the middle one could be quietly weakened while the
+  # other two still passed.
+  G21_D=$(g21_proj n)
+  g21_input "s" "$G21_CLAIM_CMD" '{"data":{"id":99,"identifier":"W2147"},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  G21_AFTER_CLAIM=$([ -f "$G21_D/$G21_STATE" ] && echo present || echo absent)
+  g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  G21_AFTER_COMPLETE=$([ -f "$G21_D/$G21_STATE" ] && echo present || echo absent)
+  g21_input "s" "$G21_CLAIM_CMD" '{"data":{"id":100,"identifier":"W2148"},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  G21_AFTER_NEXT=$([ -f "$G21_D/$G21_STATE" ] && echo present || echo absent)
+  assert_eq "21n: claim -> complete -> claim leaves the state absent/present/absent" \
+    "absent present absent" "$G21_AFTER_CLAIM $G21_AFTER_COMPLETE $G21_AFTER_NEXT"
+
+  # 21o: the clear is UNCONDITIONAL, including on a FAILED claim, and this case
+  # is why. The claim that fails most often is the one against an empty ready
+  # queue — how essentially every session ends. Preserving the record there
+  # would make it byte-identical to one left by an agent that completed and
+  # never claimed at all, and a gate must refuse in the second case but not the
+  # first.
+  G21_D=$(g21_proj o)
+  echo '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' \
+    > "$G21_D/$G21_STATE"
+  g21_input "s" "$G21_CLAIM_CMD" '{"errors":{"base":["no task available"]}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21o: an empty-queue claim must still clear (no ambiguous record)"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21o: an empty-queue claim still clears (no ambiguous record)"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21p: and a claim whose payload cannot be PARSED still clears. On this port
+  # that is a real risk rather than a formality: the sibling artefact clears sit
+  # inside the caching block's `try`, whose ConvertFrom-Json throws on exactly
+  # this input, so a loop-state clear placed beside them would be skipped here.
+  G21_D=$(g21_proj p)
+  echo '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' \
+    > "$G21_D/$G21_STATE"
+  g21_input "s" "$G21_CLAIM_CMD" '{"data":{"id":9 TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21p: an unparsable claim must still clear (safe direction)"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21p: an unparsable claim still clears (safe direction)"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21q: a completion carrying NO tool_response at all. Parity with the ps1
+  # half, where Set-StrictMode makes an absent property a terminating error;
+  # the bash half must be equally unbothered.
+  G21_D=$(g21_proj q)
+  G21_RC=0
+  jq -nc --arg c "$G21_COMPLETE_CMD" '{session_id:"s",tool_input:{command:$c}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1 || G21_RC=$?
+  assert_exit "21q: an absent tool_response does not fail the hook" 0 "$G21_RC"
+  # The diagnostic channel must stay QUIET here: there was no body at all, so
+  # announcing a parse failure would claim something that never happened, and a
+  # channel that cries wolf is one an operator learns to ignore.
+  G21_ERR=$(jq -nc --arg c "$G21_COMPLETE_CMD" '{session_id:"s",tool_input:{command:$c}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  if echo "$G21_ERR" | grep -q 'unparsable'; then
+    echo -e "  ${RED}FAIL${RESET}: 21q: an absent body must not be announced as unparsable"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21q: an absent body is not announced as unparsable"
+    PASS=$((PASS + 1))
+  fi
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21q: an absent tool_response must write no loop state"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21q: an absent tool_response writes no loop state"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21r: the charset gate must agree with the PowerShell twin, and the one
+  # input where the two shells can silently disagree is a TRAILING newline:
+  # bash reads both values through `$( )`, which strips them, so the ps1 half
+  # normalises before validating rather than refusing. An INTERIOR newline is
+  # refused by both.
+  #
+  # $'...' (ANSI-C quoting), NOT "$(printf 'abc\n')": command substitution
+  # strips the trailing newline before it reaches the fixture, so the latter
+  # spelling would assert the stripping behaviour against an input that never
+  # contained a newline — the same `$( )` stripping this contract is about,
+  # turned back on the test.
+  G21_D=$(g21_proj r)
+  G21_NL=$'abc\n'
+  g21_input "$G21_NL" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21r: a trailing newline in the session id is stripped, not refused" \
+    "abc" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  # CRLF must ALSO agree: bash's `$( )` strips the LF and leaves the CR, which
+  # the charset gate then refuses, so the ps1 half strips LF only for the same
+  # result.
+  G21_D=$(g21_proj r3)
+  G21_CRLF=$'abc\r\n'
+  g21_input "$G21_CRLF" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21r: a trailing CRLF in the session id is refused" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  G21_D=$(g21_proj r2)
+  g21_input "$(printf 'a\nb')" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21r: an interior newline in the session id is refused" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+
+  # 21s: testing_strategy names concurrent sessions in one checkout as an edge
+  # case. The design answer is that each writer stages a uniquely named temp
+  # and renames, so the loser of the race is overwritten rather than
+  # interleaved — assert the observable consequence: exactly one well-formed
+  # file, one of the two identifiers, and no temp left behind by either.
+  G21_D=$(g21_proj s)
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W_AAA","needs_review":false},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1 &
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W_BBB","needs_review":false},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1 &
+  wait
+  G21_CONC=$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)
+  case "$G21_CONC" in
+    W_AAA|W_BBB)
+      echo -e "  ${GREEN}PASS${RESET}: 21s: concurrent completions leave one well-formed record"
+      PASS=$((PASS + 1)) ;;
+    *)
+      echo -e "  ${RED}FAIL${RESET}: 21s: concurrent completions must leave one well-formed record"
+      echo "    actual: $G21_CONC"
+      FAIL=$((FAIL + 1)) ;;
+  esac
+  assert_eq "21s: neither concurrent writer leaves a temp behind" \
+    "0" "$(find "$G21_D/.stride" -name 'loop-state.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+
+  # 21t: a clear that FAILS must be announced. The write path reports all three
+  # of its failure modes, so an operator would otherwise be told when a record
+  # could not be WRITTEN but never when one could not be CLEARED — the
+  # direction the design itself calls dangerous, because the leftover record is
+  # exactly what makes a gate fire on work that is already done.
+  G21_D=$(g21_proj t)
+  g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  chmod 555 "$G21_D/.stride" 2>/dev/null
+  G21_ERR=$(g21_input "s" "$G21_CLAIM_CMD" \
+    '{"data":{"id":902,"identifier":"W2902","needs_review":false},"hook":{"name":"before_doing"}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  G21_RC=$?
+  chmod 755 "$G21_D/.stride" 2>/dev/null
+  assert_exit "21t: an unclearable loop state does not fail the claim" 0 "$G21_RC"
+  assert_contains "21t: an unclearable loop state is announced on stderr" \
+    "could not clear the loop state" "$G21_ERR"
+
+  # 21u: a destination that is not a regular file is refused outright. `mv` onto
+  # a DIRECTORY succeeds by relocating the temp INSIDE it, so the writer's own
+  # failure branch never runs: the record lands where no reader looks and the
+  # temp survives indefinitely. The guard exists because mv's success is the
+  # wrong signal here.
+  G21_D=$(g21_proj u)
+  mkdir -p "$G21_D/$G21_STATE"
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  G21_RC=$?
+  assert_exit "21u: a non-regular-file destination does not fail the completion" 0 "$G21_RC"
+  assert_contains "21u: a non-regular-file destination is announced on stderr" \
+    "not a regular file" "$G21_ERR"
+  assert_eq "21u: and no temp is relocated inside it" \
+    "0" "$(find "$G21_D/$G21_STATE" -name 'loop-state.*' -type f 2>/dev/null | wc -l | tr -d ' ')"
+
+  # 21v: an UNPARSABLE completion body is announced, because the completion may
+  # have succeeded server-side with only the harness's copy cut — evidence lost,
+  # indistinguishable from "nothing to record" unless said. A plain 422 stays
+  # QUIET: it legitimately records nothing, and announcing every failed
+  # completion would be noise that trains an operator to ignore the channel.
+  G21_D=$(g21_proj v)
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" '{"data":{"id":99,"ident TRUNCA' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  assert_contains "21v: an unparsable completion body is announced" \
+    "unparsable" "$G21_ERR"
+  # A bare `false` is well-formed JSON, so it must NOT be announced as a parse
+  # failure — the reason the test is `jq empty` and not `jq -e .`, whose exit
+  # status comes from the VALUE rather than from whether it parsed.
+  G21_D=$(g21_proj v3)
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" 'false' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  if echo "$G21_ERR" | grep -q 'unparsable'; then
+    echo -e "  ${RED}FAIL${RESET}: 21v: a well-formed scalar body must not be announced as unparsable"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21v: a well-formed scalar body is not announced as unparsable"
+    PASS=$((PASS + 1))
+  fi
+  G21_D=$(g21_proj v2)
+  G21_ERR=$(g21_input "s" "$G21_COMPLETE_CMD" '{"errors":{"base":["bad"]}}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post 2>&1 >/dev/null)
+  if echo "$G21_ERR" | grep -q 'unparsable'; then
+    echo -e "  ${RED}FAIL${RESET}: 21v: a plain 422 must not be announced as unparsable"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21v: a plain 422 records nothing and stays quiet"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21w: AC5 — "both halves produce a byte-identical record" — asserted
+  # MECHANICALLY rather than by matching per-field expectations in two suites
+  # that never meet. The same input goes through both halves into two fresh
+  # project dirs; completed_at's VALUE is normalised away (it is a wall clock,
+  # so the two runs legitimately differ) but only after both raw files have been
+  # regex-checked for the format, so the normalisation cannot mask a culture or
+  # precision divergence. Everything else — key order, the boolean literal,
+  # compact separators, the single trailing LF, the encoding — is inside the
+  # compared bytes and needs no separate assertion.
+  #
+  # SKIP, never PASS, when pwsh is absent: a missing runtime must not be
+  # mistaken for a passing parity check.
+  if ! command -v pwsh > /dev/null 2>&1; then
+    echo "  SKIP: 21w: pwsh not available — cross-half byte parity unverified"
+  else
+    G21_PS1="$SCRIPT_DIR/stride-hook.ps1"
+    G21_DB=$(g21_proj w-bash)
+    G21_DP=$(g21_proj w-ps1)
+    G21_PARITY_IN=$(g21_input "sess-parity" "$G21_COMPLETE_CMD" "$G21_OK")
+    printf '%s' "$G21_PARITY_IN" \
+      | CLAUDE_PROJECT_DIR="$G21_DB" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+    printf '%s' "$G21_PARITY_IN" \
+      | CLAUDE_PROJECT_DIR="$G21_DP" pwsh -NoProfile -File "$G21_PS1" post > /dev/null 2>&1
+    G21_TS_RE='"completed_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"'
+    G21_FMT_BASH=$(grep -Ec "$G21_TS_RE" "$G21_DB/$G21_STATE" 2>/dev/null || echo 0)
+    G21_FMT_PS1=$(grep -Ec "$G21_TS_RE" "$G21_DP/$G21_STATE" 2>/dev/null || echo 0)
+    assert_eq "21w: both halves emit the same completed_at format" \
+      "1 1" "$G21_FMT_BASH $G21_FMT_PS1"
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_DB/$G21_STATE" \
+      > "$G21_DB/norm.json" 2>/dev/null
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_DP/$G21_STATE" \
+      > "$G21_DP/norm.json" 2>/dev/null
+    if cmp -s "$G21_DB/norm.json" "$G21_DP/norm.json"; then
+      echo -e "  ${GREEN}PASS${RESET}: 21w: both halves produce a byte-identical record"
+      PASS=$((PASS + 1))
+    else
+      echo -e "  ${RED}FAIL${RESET}: 21w: the two halves produced different bytes"
+      echo "    bash: $(od -c "$G21_DB/norm.json" 2>/dev/null | head -6)"
+      echo "    ps1:  $(od -c "$G21_DP/norm.json" 2>/dev/null | head -6)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+
+  # 21x: the charset gate must be BYTE-exact, not collation-based. A bracket
+  # RANGE inside a `case` glob (`[!A-Za-z0-9_.:-]`) is collation-based and
+  # accepts a non-ASCII letter on both bash 3.2/macOS and glibc, while the ps1
+  # twin's `-cmatch '\A[A-Za-z0-9_.:-]+\z'` uses .NET ranges, which are
+  # strictly code-point based and refuse it. That is an AC5 divergence in the
+  # one gate whose entire job is to be identical — and it also falsifies the
+  # premise that lets the halves ignore their encoding difference (jq emits raw
+  # UTF-8 where ConvertTo-Json escapes non-ASCII, which can only be irrelevant
+  # if no non-ASCII byte survives this gate). The bash half therefore ENUMERATES
+  # its character set rather than using ranges.
+  G21_D=$(g21_proj x)
+  g21_input 'abcé' "$G21_COMPLETE_CMD" "$G21_OK" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21x: a non-ASCII session id is refused, not collated in" \
+    "unknown" "$(jq -r '.session_id' "$G21_D/$G21_STATE" 2>/dev/null)"
+  # The identifier runs through the same gate, and there the asymmetry is
+  # larger: a half that accepted it would write a record where the other half
+  # wrote none at all.
+  G21_D=$(g21_proj x2)
+  g21_input "s" "$G21_COMPLETE_CMD" \
+    '{"data":{"id":99,"identifier":"W2147é","needs_review":false},"hooks":[{"name":"before_review"}]}' \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  if [ -f "$G21_D/$G21_STATE" ]; then
+    echo -e "  ${RED}FAIL${RESET}: 21x: a non-ASCII identifier must be refused outright"
+    echo "    wrote: $(cat "$G21_D/$G21_STATE")"
+    FAIL=$((FAIL + 1))
+  else
+    echo -e "  ${GREEN}PASS${RESET}: 21x: a non-ASCII identifier is refused outright"
+    PASS=$((PASS + 1))
+  fi
+
+  # 21y: `tool_response.stdout` carrying a JSON OBJECT rather than a string.
+  # bash resolves that field with `jq -r`, which re-serialises the object, so it
+  # parses and records. A ps1 half that piped the PSCustomObject straight into
+  # ConvertFrom-Json would stringify it to PowerShell's "@{...}" form, fail to
+  # parse, record nothing, and announce an unparsable body — the second AC5
+  # divergence, at exactly the parse boundary the task's pitfall names.
+  # Unreachable with today's harness, which always sends stdout as a string.
+  G21_D=$(g21_proj y)
+  G21_OBJ_IN=$(jq -nc --arg c "$G21_COMPLETE_CMD" --argjson r "$G21_OK" \
+    '{session_id:"sess-obj",tool_input:{command:$c},tool_response:{stdout:$r}}')
+  printf '%s' "$G21_OBJ_IN" \
+    | CLAUDE_PROJECT_DIR="$G21_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "21y: an object-shaped tool_response.stdout still records" \
+    "W2147" "$(jq -r '.identifier' "$G21_D/$G21_STATE" 2>/dev/null)"
+  if ! command -v pwsh > /dev/null 2>&1; then
+    echo "  SKIP: 21y: pwsh not available — object-shaped parity unverified"
+  else
+    G21_DPY=$(g21_proj y-ps1)
+    printf '%s' "$G21_OBJ_IN" \
+      | CLAUDE_PROJECT_DIR="$G21_DPY" pwsh -NoProfile -File "$SCRIPT_DIR/stride-hook.ps1" post > /dev/null 2>&1
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_D/$G21_STATE" \
+      > "$G21_D/objnorm.json" 2>/dev/null
+    sed -E 's/"completed_at":"[^"]*"/"completed_at":"X"/' "$G21_DPY/$G21_STATE" \
+      > "$G21_DPY/objnorm.json" 2>/dev/null
+    if [ -s "$G21_D/objnorm.json" ] && cmp -s "$G21_D/objnorm.json" "$G21_DPY/objnorm.json"; then
+      echo -e "  ${GREEN}PASS${RESET}: 21y: both halves record an object-shaped stdout identically"
+      PASS=$((PASS + 1))
+    else
+      echo -e "  ${RED}FAIL${RESET}: 21y: the halves diverge on an object-shaped stdout"
+      echo "    bash: $(cat "$G21_D/objnorm.json" 2>/dev/null)"
+      echo "    ps1:  $(cat "$G21_DPY/objnorm.json" 2>/dev/null)"
+      FAIL=$((FAIL + 1))
+    fi
+  fi
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

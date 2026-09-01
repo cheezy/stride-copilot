@@ -22,6 +22,12 @@ ENV_CACHE="$PROJECT_DIR/.stride-env-cache"
 # Best-effort fast path only — the reliability guarantee is D119's fresh call.
 RESPONSE_FILE="$PROJECT_DIR/.stride/.last-api-response.json"
 
+# (W2147) Loop state. The Stop gate cannot refuse an action it has no evidence
+# for, so a successful completion records that it happened and the next claim
+# clears it. Written by the hook rather than the agent on purpose: an
+# agent-written marker is exactly as skippable as the instruction it replaces.
+LOOP_STATE_FILE="$PROJECT_DIR/.stride/.loop-state.json"
+
 # --- Platform detection: delegate to PowerShell on native Windows ---
 # Git Bash (OSTYPE=msys*) and WSL have full bash — run directly.
 # Native Windows without bash (COMSPEC set, no OSTYPE) → delegate to .ps1
@@ -1144,6 +1150,188 @@ extract_response_payload() {
   printf '%s' "$_payload"
 }
 
+# (W2147) Loop-state helpers.
+#
+# Keep response bodies, task free text and multi-line content out of the file:
+# every string that reaches it must first match a conservative charset. A value
+# that fails this is refused rather than sanitised — the file records two
+# identifiers, and anything that is not identifier-shaped does not belong in it.
+#
+# BE PRECISE ABOUT WHAT THIS GATE DOES AND DOES NOT GUARANTEE. It is NOT what
+# keeps the Bearer token out: `[A-Za-z0-9_.:-]` capped at 64 is a strict
+# SUPERSET of the token charset, so a token would pass it unchanged. What keeps
+# the token out is the narrowness of the two reads — the session id comes from
+# the top-level `.session_id` scalar and the identifier from `.data.identifier`,
+# neither of which carries the token that rides in `.tool_input.command`. That
+# is why "never widen this read" is stated at the session-id read below and is
+# load-bearing there rather than here: widening it would not be caught by this
+# gate.
+# The character set is ENUMERATED rather than written as the ranges
+# `A-Za-z0-9`. A bracket range inside a `case` glob is COLLATION-based, not
+# byte-based, so `[!A-Za-z0-9_.:-]` accepts a non-ASCII letter such as "é" on
+# both bash 3.2/macOS and glibc — while the PowerShell twin's
+# `-cmatch '\A[A-Za-z0-9_.:-]+\z'` uses .NET ranges, which are strictly
+# code-point based and refuse it. That asymmetry is a real AC5 divergence: for
+# a session id the halves would record "é..." versus "unknown", and for an
+# identifier one half would write a record and the other none. It also
+# falsifies the premise that makes the encoding difference safe to ignore (jq
+# emits raw UTF-8 where ConvertTo-Json escapes non-ASCII, which only cannot
+# matter if no non-ASCII byte can pass this gate). The explicit list has no
+# ranges and therefore no collation to depend on.
+loop_state_safe() {
+  [ -n "${1:-}" ] || return 1
+  [ "${#1}" -le 64 ] || return 1
+  case "$1" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# A payload describes a SUCCESSFUL completion only when it carries the two
+# fields the state file is built from. Every non-success body the API emits
+# (validation errors, 404s, 422s) lacks `.data` entirely, so this is the
+# discriminator — curl has no `-f` here, so a 422 body lands on stdout exactly
+# like a success body and would otherwise be indistinguishable from one. That
+# holds under both response-preserving shapes this port documents in
+# skills/stride-completing-tasks: the `| tee` pattern, where the error body
+# reaches this call's own stdout, and the `--output <canonical file>` fallback,
+# where it reaches the canonical snapshot that Tier 2 reads.
+loop_state_payload_ok() {
+  printf '%s' "${1:-}" | jq -e '
+    try (
+      (.data.identifier | type == "string" and length > 0)
+      and (.data.needs_review | type == "boolean")
+    ) catch false
+  ' > /dev/null 2>&1
+}
+
+# Atomic and never fatal: the temp file is created in the DESTINATION directory
+# so the rename is same-fs, a failure at any point leaves no temp behind, and
+# the function still returns 0. This is a gate input, not a correctness
+# dependency — a completion must never fail because the loop state could not be
+# recorded.
+write_loop_state() {
+  local _json="$1" _tmp
+  # `mv` into a DIRECTORY succeeds by relocating the temp inside it, so the
+  # failure branch below never runs: the record lands where no reader looks and
+  # the temp survives indefinitely. Refuse any destination that exists and is
+  # not a regular file, rather than assuming mv fails when it is unusable.
+  if [ -e "$LOOP_STATE_FILE" ] && [ ! -f "$LOOP_STATE_FILE" ]; then
+    printf 'stride-hook: loop-state path is not a regular file; not recording\n' >&2
+    return 0
+  fi
+  mkdir -p "$PROJECT_DIR/.stride" 2>/dev/null || {
+    printf 'stride-hook: could not create .stride/ for the loop state; continuing\n' >&2
+    return 0
+  }
+  _tmp=$(mktemp "$PROJECT_DIR/.stride/loop-state.XXXXXX" 2>/dev/null) || {
+    printf 'stride-hook: could not stage the loop state; continuing\n' >&2
+    return 0
+  }
+  if printf '%s\n' "$_json" > "$_tmp" 2>/dev/null; then
+    mv -f "$_tmp" "$LOOP_STATE_FILE" 2>/dev/null || {
+      printf 'stride-hook: could not move the loop state into place; continuing\n' >&2
+      rm -f "$_tmp" 2>/dev/null
+    }
+  else
+    printf 'stride-hook: could not write the loop state; continuing\n' >&2
+    rm -f "$_tmp" 2>/dev/null
+  fi
+  return 0
+}
+
+# Self-gates on before_review — the hook that fires AFTER a /complete succeeds.
+# Never writes to stdout: this script emits exactly one JSON document, so every
+# diagnostic here goes to stderr.
+#
+# (W2147) The record is byte-identical to the PowerShell half's for the same
+# input. The type rules that make that true are fixed and shared: key order is
+# positional (identifier, needs_review, completed_at, session_id), needs_review
+# is a real JSON boolean (`--argjson`, never `--arg`), completed_at is
+# second-precision UTC `%Y-%m-%dT%H:%M:%SZ`, the two string fields pass the same
+# charset gate above, and the file is compact JSON with exactly one trailing LF.
+# The charset gate is what makes byte-identity reachable at all: jq emits raw
+# UTF-8 where ConvertTo-Json escapes non-ASCII, and no character that could
+# differ survives the gate.
+record_loop_state_for_completion() {
+  local _payload _canon _route_id _src="" _ident _needs _sid _json
+
+  [ "${HOOK_NAME:-}" = "before_review" ] || return 0
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
+
+  # Tier 1 — THIS call's payload, and deliberately NOT extract_response_payload.
+  # That helper is canonical-file-first (D118) and
+  # .stride/.last-api-response.json survives across calls, so on a truncated
+  # 422 it resolves the previous CLAIM payload — which carries both fields —
+  # and would record a completion that never happened.
+  _payload=$(unwrap_tool_response "$INPUT")
+  if loop_state_payload_ok "$_payload"; then
+    _src="$_payload"
+  else
+    # Tier 2 — the harness truncated a large SUCCESS, so this call's own stdout
+    # will not parse. Fall back to the canonical snapshot, but only when it
+    # demonstrably belongs to THIS completion: `.hooks` is an array (a claim
+    # carries singular `.hook`) and its task id equals the id this command
+    # routed on. Both guards must hold, or the staleness Tier 1 avoids walks
+    # back in through the fallback. task_id_from_command is this port's
+    # equivalent of the reference's $STRIDE_ROUTE_TASK_ID; the canonical
+    # payload is resolved lazily HERE so the file read never happens on the
+    # Tier-1 hit path.
+    _route_id=$(task_id_from_command "${COMMAND:-}")
+    if [ -n "$_route_id" ]; then
+      _canon=$(extract_response_payload "$INPUT")
+      if loop_state_payload_ok "$_canon" \
+        && printf '%s' "$_canon" | jq -e --arg tid "$_route_id" '
+             try ((.hooks | type == "array") and ((.data.id | tostring) == $tid)) catch false
+           ' > /dev/null 2>&1; then
+        _src="$_canon"
+      fi
+    fi
+  fi
+
+  if [ -z "$_src" ]; then
+    # A 422 legitimately records nothing, and announcing every failed
+    # completion would be noise. An UNPARSABLE body is the different case: the
+    # completion may well have succeeded server-side and the evidence is simply
+    # lost, which is indistinguishable from "nothing to record" unless said.
+    # `jq empty`, not `jq -e .`: -e sets its exit status from the VALUE, so a
+    # body of `false` or `null` — both perfectly well-formed — would be
+    # announced as unparsable, and an ABSENT body would exit 4 on no input and
+    # be announced as a parse failure that never happened.
+    if [ -n "$_payload" ] && ! printf '%s' "$_payload" | jq empty > /dev/null 2>&1; then
+      printf 'stride-hook: completion response was unparsable; no loop state recorded\n' >&2
+    fi
+    return 0
+  fi
+
+  _ident=$(printf '%s' "$_src" | jq -r '.data.identifier' 2>/dev/null || echo "")
+  _needs=$(printf '%s' "$_src" | jq -r '.data.needs_review' 2>/dev/null || echo "")
+  loop_state_safe "$_ident" || return 0
+  case "$_needs" in true|false) ;; *) return 0 ;; esac
+
+  # The session id is the ONLY field read out of $INPUT, which also carries the
+  # Bearer token in .tool_input.command — never widen this read. Copilot does
+  # not supply a session id today (its documented hook payload has no such
+  # field), so this ordinarily degrades to "unknown"; the attempt-then-degrade
+  # chain is implemented identically on both halves so the two stay
+  # byte-identical for the same input if it ever starts supplying one.
+  _sid=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
+  [ -n "$_sid" ] || _sid="${CLAUDE_SESSION_ID:-}"
+  loop_state_safe "$_sid" || _sid="unknown"
+
+  _json=$(jq -nc \
+    --arg ident "$_ident" \
+    --argjson needs "$_needs" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg sid "$_sid" \
+    '{identifier: $ident, needs_review: $needs, completed_at: $ts, session_id: $sid}' \
+    2>/dev/null) || return 0
+  [ -n "$_json" ] || return 0
+
+  write_loop_state "$_json"
+  return 0
+}
+
 # Detect an `after_goal` entry in the response's `hooks` array. Handles both
 # the host's wrapped form (`tool_response.stdout` is a JSON string whose
 # body contains the response) and raw-API-JSON form. Returns 0 when an entry
@@ -1472,6 +1660,33 @@ if [ "$HOOK_NAME" = "before_doing" ]; then
   # self-heal retry) unconditionally.
   rm -f "$PROJECT_DIR/.stride-changed-files.json" 2>/dev/null || true
   rm -f "$PROJECT_DIR/.stride-diff-upload-state" 2>/dev/null || true
+
+  # (W2147) The loop state belongs to the task window too, and it is the one
+  # file whose staleness has teeth: it exists so a Stop gate can refuse to end
+  # a session on an un-followed completion, so a record left over from the
+  # PREVIOUS task would fire that gate on work that is already done. A claim is
+  # exactly the event that proves the completion was followed.
+  #
+  # The clear is UNCONDITIONAL, and that is a decision rather than an oversight.
+  # Preserving the record on a FAILED claim was implemented and then reverted
+  # upstream: the claim that fails most often is the one against an empty ready
+  # queue, which is how essentially every session ends. A record preserved there
+  # is byte-identical to one left by an agent that completed and never claimed
+  # at all — yet a gate must refuse in the second case and must not in the
+  # first, and none of the four keys can tell them apart. An over-eager clear
+  # costs only a missed gate, and missed is the safe side.
+  #
+  # The removal is best-effort but NOT silent: a clear that fails leaves a
+  # stale record, the one direction this design calls dangerous, so it is
+  # announced. The sibling artefacts above are cleared silently because their
+  # staleness is benign; this one's staleness is the whole point of the task.
+  if [ -e "$LOOP_STATE_FILE" ]; then
+    rm -f "$LOOP_STATE_FILE" 2>/dev/null || true
+    if [ -e "$LOOP_STATE_FILE" ]; then
+      printf 'stride-hook: could not clear the loop state at %s; a stale completion record remains\n' \
+        "$LOOP_STATE_FILE" >&2
+    fi
+  fi
 fi
 
 # Load cached env vars if available (all hooks benefit from this)
@@ -1488,6 +1703,18 @@ fi
 # successful after_doing upload short-circuits (no duplicate PUT). Best-effort:
 # never blocks the primary hook.
 self_heal_changed_files_upload || true
+
+# (W2147) Record the loop state for a successful completion. Self-gates on
+# HOOK_NAME=before_review — the hook that fires after /complete succeeds — and
+# is best-effort: a failure to record is logged to stderr and swallowed, never
+# fatal to the completion.
+#
+# Placed BEFORE run_stride_section, and that ordering is load-bearing rather
+# than cosmetic: a failing `.stride.md` section body exits below with its own
+# return code, which would otherwise suppress the record of a completion the
+# SERVER ALREADY ACCEPTED. The record is evidence of the API completion, not of
+# the local hook body.
+record_loop_state_for_completion || true
 
 # --- Execute the primary hook ---
 # run_stride_section emits the structured JSON itself (success or failed

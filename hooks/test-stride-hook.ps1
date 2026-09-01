@@ -2458,6 +2458,488 @@ echo "ran"
 }
 
 # ============================================================
+# Test Group 18: W2147 loop state recorded on completion
+# ============================================================
+# PowerShell parity of test-stride-hook.sh Group 21, case for case. The Stop
+# gate cannot refuse an action it has no evidence for; these cover the file
+# that becomes that evidence. Every completed_at assertion reads the RAW file
+# text rather than a ConvertFrom-Json result, because PowerShell's parser
+# coerces an ISO-8601 string to [DateTime] — a parsed assertion would test the
+# parser instead of the writer.
+Write-Host ""
+Write-Host "=== Test Group 18: W2147 loop state on completion (ps1) ==="
+
+$G18Url = 'https://www.stridelikeaboss.com'
+$G18State = '.stride/.loop-state.json'
+$G18CompleteCmd = "curl -sS -X PATCH $G18Url/api/tasks/99/complete -d @payload.json | tee r.json"
+$G18ClaimCmd = "curl -sS -X POST $G18Url/api/tasks/claim -d @c.json | tee r.json"
+$G18Ok = '{"data":{"id":99,"identifier":"W2147","needs_review":false},"hooks":[{"name":"before_review"}]}'
+
+# session_id is added ONLY when non-empty, so the "no session id" case
+# genuinely omits the key rather than carrying an empty one.
+function New-G18Input {
+    param([string]$SessionId, [string]$Command, [string]$Stdout)
+    $o = [ordered]@{}
+    if ($SessionId) { $o['session_id'] = $SessionId }
+    $o['tool_input'] = @{ command = $Command }
+    $o['tool_response'] = @{ stdout = $Stdout }
+    return ($o | ConvertTo-Json -Compress -Depth 6)
+}
+
+function New-G18Project {
+    param([string]$Name)
+    $d = Join-Path $TmpDir "w2147-$Name"
+    if (Test-Path $d) { Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path (Join-Path $d '.stride') -Force | Out-Null
+    Set-Content -Path (Join-Path $d '.stride.md') -Value @'
+## before_doing
+```bash
+```
+
+## before_review
+```bash
+```
+'@ -Encoding UTF8
+    return $d
+}
+
+function Get-G18Raw {
+    param([string]$Dir)
+    $f = Join-Path $Dir $G18State
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return '' }
+    return (Get-Content -LiteralPath $f -Raw)
+}
+
+function Get-G18Field {
+    param([string]$Dir, [string]$Name)
+    $raw = Get-G18Raw -Dir $Dir
+    if (-not $raw) { return '' }
+    try { $o = $raw | ConvertFrom-Json } catch { return '' }
+    if ($null -eq $o -or $o.PSObject.Properties.Name -notcontains $Name) { return '' }
+    return [string]$o.$Name
+}
+
+function Test-G18StateExists {
+    param([string]$Dir)
+    return (Test-Path -LiteralPath (Join-Path $Dir $G18State) -PathType Leaf)
+}
+
+# 18a: a successful completion writes the file with the right identifier.
+$g18a = New-G18Project 'a'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 'sess-abc' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18a
+Assert-Eq "18a: a successful completion records the identifier" "W2147" (Get-G18Field -Dir $g18a -Name 'identifier')
+Assert-Eq "18a: it records needs_review from the response" "False" (Get-G18Field -Dir $g18a -Name 'needs_review')
+Assert-Eq "18a: it records the session id" "sess-abc" (Get-G18Field -Dir $g18a -Name 'session_id')
+$g18aRaw = Get-G18Raw -Dir $g18a
+if ($g18aRaw -cmatch '"completed_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"') {
+    Write-Host "  PASS: 18a: completed_at is an ISO8601 Z timestamp in the raw file" -ForegroundColor Green
+    $script:PASS++
+} else {
+    Write-Host "  FAIL: 18a: completed_at is not an ISO8601 Z timestamp, raw: $g18aRaw" -ForegroundColor Red
+    $script:FAIL++
+}
+
+# 18b: needs_review=true is recorded VERBATIM, and as a JSON boolean literal
+# rather than the string "True" that an uncast ConvertTo-Json would emit. The
+# raw-text assertion is what pins both the boolean type and the compact
+# separators the bash half's `jq -nc` produces.
+$g18b = New-G18Project 'b'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W555","needs_review":true},"hooks":[{"name":"before_review"}]}') `
+    -Phase 'post' -ProjectDir $g18b
+Assert-Contains "18b: needs_review is the boolean literal true, compactly separated" '"needs_review":true' (Get-G18Raw -Dir $g18b)
+Assert-NotContains "18b: needs_review is never the string True" '"needs_review":"True"' (Get-G18Raw -Dir $g18b)
+
+# 18c: the session id falls back to CLAUDE_SESSION_ID when the input omits it.
+$g18c = New-G18Project 'c'
+$g18SavedSid = $env:CLAUDE_SESSION_ID
+try {
+    $env:CLAUDE_SESSION_ID = 'env-sess'
+    $null = Invoke-HookScript -InputJson (New-G18Input -SessionId '' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18c
+    Assert-Eq "18c: the session id falls back to CLAUDE_SESSION_ID" "env-sess" (Get-G18Field -Dir $g18c -Name 'session_id')
+
+    # 18d: with no session id anywhere it degrades to "unknown" rather than
+    # dropping the record. This is the ORDINARY case on this runtime: Copilot's
+    # documented hook payload carries no session field, so the
+    # attempt-then-degrade chain exists to keep the halves identical rather
+    # than because a session id is expected today.
+    $g18d = New-G18Project 'd'
+    $env:CLAUDE_SESSION_ID = ''
+    $null = Invoke-HookScript -InputJson (New-G18Input -SessionId '' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18d
+    Assert-Eq "18d: an absent session id degrades to unknown" "unknown" (Get-G18Field -Dir $g18d -Name 'session_id')
+} finally {
+    if ($g18SavedSid) { $env:CLAUDE_SESSION_ID = $g18SavedSid } else { $env:CLAUDE_SESSION_ID = '' }
+}
+
+# 18e: a session id that is not identifier-shaped is refused, not sanitised.
+$g18e = New-G18Project 'e'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 'not a/session id' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18e
+Assert-Eq "18e: a non-identifier-shaped session id degrades to unknown" "unknown" (Get-G18Field -Dir $g18e -Name 'session_id')
+
+# 18f: a 422 does NOT write the file. Every non-success body the API emits
+# lacks `data`, which is the discriminator. Under Set-StrictMode -Version
+# Latest the naive property read this replaces would be a TERMINATING error,
+# turning "record nothing" into "fail the completion".
+$g18f = New-G18Project 'f'
+$g18fRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"errors":{"completion_summary":["can''t be blank"]}}') -Phase 'post' -ProjectDir $g18f
+Assert-Exit "18f: a 422 completion does not fail the hook" 0 $g18fRes.ExitCode
+if (Test-G18StateExists -Dir $g18f) {
+    Write-Host "  FAIL: 18f: a 422 completion must not write the loop state" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18f: a 422 completion does not write the loop state" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18g: THE REGRESSION GUARD. Get-ResponsePayload is canonical-file-first (D118)
+# and .stride/.last-api-response.json survives across calls, so a build on it as
+# the Tier-1 source would resolve the previous CLAIM payload here — which
+# carries both fields — and record a completion that never happened. A naive
+# implementation passes 18f and fails this.
+$g18g = New-G18Project 'g'
+Set-Content -Path (Join-Path $g18g '.stride/.last-api-response.json') `
+    -Value '{"data":{"id":99,"identifier":"W9999","needs_review":true},"hook":{"name":"before_doing"}}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"errors":{"base":["unprocessable"]}, TRUNCA') -Phase 'post' -ProjectDir $g18g
+if (Test-G18StateExists -Dir $g18g) {
+    Write-Host "  FAIL: 18g: a truncated 422 must not inherit the previous claim's payload, wrote: $(Get-G18Raw -Dir $g18g)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18g: a truncated 422 does not inherit the previous claim's payload" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18h: the other side of 18g — a harness-truncated SUCCESS still records, via
+# the canonical snapshot, but only because it demonstrably belongs to THIS
+# completion (hooks is an array, and the task id matches the routed id).
+$g18h = New-G18Project 'h'
+Set-Content -Path (Join-Path $g18h '.stride/.last-api-response.json') `
+    -Value '{"data":{"id":99,"identifier":"W777","needs_review":false},"hooks":[{"name":"before_review"}]}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"identifier":"W7 TRUNCA') -Phase 'post' -ProjectDir $g18h
+Assert-Eq "18h: a truncated success recovers from the matching snapshot" "W777" (Get-G18Field -Dir $g18h -Name 'identifier')
+
+# 18i: and that recovery refuses a snapshot belonging to a DIFFERENT task.
+$g18i = New-G18Project 'i'
+Set-Content -Path (Join-Path $g18i '.stride/.last-api-response.json') `
+    -Value '{"data":{"id":12345,"identifier":"W_OTHER","needs_review":false},"hooks":[{"name":"before_review"}]}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data": TRUNCA') -Phase 'post' -ProjectDir $g18i
+if (Test-G18StateExists -Dir $g18i) {
+    Write-Host "  FAIL: 18i: recovery must refuse a snapshot for another task id" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18i: recovery refuses a snapshot for another task id" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18j: a claim clears a stale record.
+$g18j = New-G18Project 'j'
+Set-Content -Path (Join-Path $g18j $G18State) `
+    -Value '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W1"},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18j
+if (Test-G18StateExists -Dir $g18j) {
+    Write-Host "  FAIL: 18j: a claim must clear the previous completion's loop state" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18j: a claim clears the previous completion's loop state" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18k: atomicity, from both ends. No temp survives a success, and structurally
+# the writer stages+renames rather than writing straight at the destination.
+# The bash half asserts this with awk/grep over its own function body; the ps1
+# equivalent asserts the three constructs that make the write atomic and
+# encoding-correct, and the absence of the one that would not be.
+$g18k = New-G18Project 'k'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18k
+$g18kTemps = @(Get-ChildItem -Path (Join-Path $g18k '.stride') -Filter 'loop-state.*' -File -ErrorAction SilentlyContinue)
+Assert-Eq "18k: no temp file survives a successful write" "0" ([string]$g18kTemps.Count)
+$g18kSrc = Get-Content -LiteralPath $HookScript -Raw
+$g18kBody = ''
+if ($g18kSrc -cmatch '(?s)function Write-LoopState \{.*?\n\}') { $g18kBody = $Matches[0] }
+Assert-Contains "18k: the writer renames a staged temp into place" 'Move-Item' $g18kBody
+Assert-Contains "18k: the writer emits UTF-8 without BOM via WriteAllText" 'WriteAllText' $g18kBody
+Assert-NotContains "18k: the writer never uses Set-Content (ANSI + CRLF on 5.1)" 'Set-Content' $g18kBody
+
+# 18l: the file carries exactly the four documented keys and nothing else —
+# never the response body, task free text, or the Bearer token that rides in
+# the same hook input the session id is read from.
+$g18l = New-G18Project 'l'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' `
+    -Command "curl -sS -X PATCH $G18Url/api/tasks/99/complete -H 'Authorization: Bearer stride_dev_SECRETVALUE' -d @p.json | tee r.json" `
+    -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18l
+$g18lKeys = ''
+try { $g18lKeys = (((Get-G18Raw -Dir $g18l) | ConvertFrom-Json).PSObject.Properties.Name | Sort-Object) -join ' ' } catch { $g18lKeys = '' }
+Assert-Eq "18l: the file carries exactly the four documented keys" "completed_at identifier needs_review session_id" $g18lKeys
+Assert-NotContains "18l: the loop state never carries the Bearer token value" 'SECRETVALUE' (Get-G18Raw -Dir $g18l)
+Assert-NotContains "18l: the loop state never carries the Authorization header" 'Bearer' (Get-G18Raw -Dir $g18l)
+
+# 18m: the full claim -> complete -> claim cycle, asserted as ONE triple rather
+# than three separate assertions: split up, the middle one could be quietly
+# weakened while the other two still passed.
+$g18m = New-G18Project 'm'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W2147"},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18m
+$g18mAfterClaim = if (Test-G18StateExists -Dir $g18m) { 'present' } else { 'absent' }
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18m
+$g18mAfterComplete = if (Test-G18StateExists -Dir $g18m) { 'present' } else { 'absent' }
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":100,"identifier":"W2148"},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18m
+$g18mAfterNext = if (Test-G18StateExists -Dir $g18m) { 'present' } else { 'absent' }
+Assert-Eq "18m: claim -> complete -> claim leaves the state absent/present/absent" `
+    "absent present absent" "$g18mAfterClaim $g18mAfterComplete $g18mAfterNext"
+
+# 18n: the clear is UNCONDITIONAL, including on a FAILED claim. The claim that
+# fails most often is the one against an empty ready queue — how essentially
+# every session ends — and a record preserved there is byte-identical to one
+# left by an agent that completed and never claimed at all.
+$g18n = New-G18Project 'n'
+Set-Content -Path (Join-Path $g18n $G18State) `
+    -Value '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"errors":{"base":["no task available"]}}') -Phase 'post' -ProjectDir $g18n
+if (Test-G18StateExists -Dir $g18n) {
+    Write-Host "  FAIL: 18n: an empty-queue claim must still clear (no ambiguous record)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18n: an empty-queue claim still clears (no ambiguous record)" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18o: and a claim whose payload cannot be PARSED still clears. THIS is the
+# case that pins the clear's placement on this port: the sibling
+# .stride-changed-files.json / .stride-diff-upload-state clears look
+# unconditional but sit inside the caching block's `try`, whose
+# `$Input | ConvertFrom-Json` throws on exactly this input — so a loop-state
+# clear placed beside them would be skipped here and diverge from the bash half.
+$g18o = New-G18Project 'o'
+Set-Content -Path (Join-Path $g18o $G18State) `
+    -Value '{"identifier":"W_OLD","needs_review":false,"completed_at":"2020-01-01T00:00:00Z","session_id":"old"}' -Encoding UTF8 -NoNewline
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+    -Stdout '{"data":{"id":9 TRUNCA') -Phase 'post' -ProjectDir $g18o
+if (Test-G18StateExists -Dir $g18o) {
+    Write-Host "  FAIL: 18o: an unparsable claim must still clear (safe direction)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18o: an unparsable claim still clears (safe direction)" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18p: a completion carrying NO tool_response at all. Under Set-StrictMode
+# -Version Latest an absent property read is a terminating error, so this is
+# the case that proves every level is guarded.
+$g18p = New-G18Project 'p'
+$g18pInput = [ordered]@{ session_id = 's'; tool_input = @{ command = $G18CompleteCmd } } | ConvertTo-Json -Compress -Depth 6
+$g18pRes = Invoke-HookScript -InputJson $g18pInput -Phase 'post' -ProjectDir $g18p
+Assert-Exit "18p: an absent tool_response does not fail the hook" 0 $g18pRes.ExitCode
+# The diagnostic channel must stay QUIET here: there was no body at all, so
+# announcing a parse failure would claim something that never happened.
+Assert-NotContains "18p: an absent body is not announced as unparsable" 'unparsable' $g18pRes.Stderr
+if (Test-G18StateExists -Dir $g18p) {
+    Write-Host "  FAIL: 18p: an absent tool_response must write no loop state" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18p: an absent tool_response writes no loop state" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18q: the charset gate must agree with the bash twin, and the one input where
+# the two shells can silently disagree is a TRAILING newline. bash reads both
+# values through `$( )`, which strips linefeeds and leaves a carriage return
+# behind; this half therefore strips LF ONLY before validating. Stripping CRLF
+# here would record "abc" where bash records "unknown" — closing the LF
+# divergence by opening a CR one.
+$g18q1 = New-G18Project 'q1'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId "abc`n" -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18q1
+Assert-Eq "18q: a trailing newline in the session id is stripped, not refused" "abc" (Get-G18Field -Dir $g18q1 -Name 'session_id')
+$g18q2 = New-G18Project 'q2'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId "abc`r`n" -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18q2
+Assert-Eq "18q: a trailing CRLF in the session id is refused" "unknown" (Get-G18Field -Dir $g18q2 -Name 'session_id')
+$g18q3 = New-G18Project 'q3'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId "a`nb" -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18q3
+Assert-Eq "18q: an interior newline in the session id is refused" "unknown" (Get-G18Field -Dir $g18q3 -Name 'session_id')
+
+# 18r: an UNPARSABLE completion body is announced, because the completion may
+# have succeeded server-side with only the harness's copy cut. A plain 422 and
+# a well-formed scalar body stay QUIET — the reason the decision is made by an
+# actual parse rather than by "did the payload resolve to $null", which is true
+# for four distinct reasons of which only one is a parse failure.
+$g18r1 = New-G18Project 'r1'
+$g18r1Res = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"id":99,"ident TRUNCA') -Phase 'post' -ProjectDir $g18r1
+Assert-Contains "18r: an unparsable completion body is announced" 'unparsable' $g18r1Res.Stderr
+$g18r2 = New-G18Project 'r2'
+$g18r2Res = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout 'false') -Phase 'post' -ProjectDir $g18r2
+Assert-NotContains "18r: a well-formed scalar body is not announced as unparsable" 'unparsable' $g18r2Res.Stderr
+$g18r3 = New-G18Project 'r3'
+$g18r3Res = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"errors":{"base":["bad"]}}') -Phase 'post' -ProjectDir $g18r3
+Assert-NotContains "18r: a plain 422 records nothing and stays quiet" 'unparsable' $g18r3Res.Stderr
+
+# 18s: the two never-fatal failure paths that need POSIX permissions, plus the
+# non-regular-file guard that does not. `Move-Item` onto a DIRECTORY relocates
+# the temp INSIDE it instead of failing, so the writer's own catch never runs:
+# the record would land where no reader looks and the temp would survive
+# indefinitely. The guard exists because the move's success is the wrong signal.
+$g18s = New-G18Project 's'
+New-Item -ItemType Directory -Path (Join-Path $g18s $G18State) -Force | Out-Null
+$g18sRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18s
+Assert-Exit "18s: a non-regular-file destination does not fail the completion" 0 $g18sRes.ExitCode
+Assert-Contains "18s: a non-regular-file destination is announced on stderr" 'not a regular file' $g18sRes.Stderr
+$g18sStray = @(Get-ChildItem -Path (Join-Path $g18s $G18State) -Filter 'loop-state.*' -File -ErrorAction SilentlyContinue)
+Assert-Eq "18s: and no temp is relocated inside it" "0" ([string]$g18sStray.Count)
+
+if ($IsWindows) {
+    Write-Host "  SKIP: 18s: POSIX-permission cases (unwritable/unclearable .stride) — bash 21m/21t cover them"
+} else {
+    # An unwritable .stride/ is announced and swallowed: the loop state is a
+    # gate input, not a correctness dependency, so it must never fail the
+    # completion.
+    $g18sw = New-G18Project 'sw'
+    & chmod 500 (Join-Path $g18sw '.stride') 2>$null
+    $g18swRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18sw
+    & chmod 700 (Join-Path $g18sw '.stride') 2>$null
+    Assert-Exit "18s: an unwritable .stride does not fail the completion" 0 $g18swRes.ExitCode
+    Assert-Contains "18s: an unwritable .stride is announced on stderr" 'loop state' $g18swRes.Stderr
+
+    # A clear that FAILS must be announced too. Before this, an operator was
+    # told when a record could not be WRITTEN but never when one could not be
+    # CLEARED — the direction the design itself calls dangerous.
+    $g18sc = New-G18Project 'sc'
+    $null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18sc
+    & chmod 555 (Join-Path $g18sc '.stride') 2>$null
+    $g18scRes = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18ClaimCmd `
+        -Stdout '{"data":{"id":902,"identifier":"W2902","needs_review":false},"hook":{"name":"before_doing"}}') -Phase 'post' -ProjectDir $g18sc
+    & chmod 755 (Join-Path $g18sc '.stride') 2>$null
+    Assert-Exit "18s: an unclearable loop state does not fail the claim" 0 $g18scRes.ExitCode
+    Assert-Contains "18s: an unclearable loop state is announced on stderr" 'could not clear the loop state' $g18scRes.Stderr
+}
+
+# 18t: AC5 — "both halves produce a byte-identical record" — asserted
+# MECHANICALLY, and deliberately redundant with bash 21w so the parity claim is
+# checked whichever suite a reviewer runs. The same input goes through both
+# halves; completed_at's VALUE is normalised away (it is a wall clock, so the
+# two runs legitimately differ) but only AFTER both raw files have been
+# format-checked, so the normalisation cannot mask a culture or precision
+# divergence. Everything else — key order, the boolean literal, compact
+# separators, the single trailing LF, the encoding — is inside the compared
+# bytes.
+#
+# SKIP, never PASS, when bash is absent: a missing runtime must not be mistaken
+# for a passing parity check.
+$g18Bash = Get-Command bash -ErrorAction SilentlyContinue
+if (-not $g18Bash) {
+    Write-Host "  SKIP: 18t: bash not available — cross-half byte parity unverified"
+} else {
+    $g18tP = New-G18Project 't-ps1'
+    $g18tB = New-G18Project 't-bash'
+    $g18tIn = New-G18Input -SessionId 'sess-parity' -Command $G18CompleteCmd -Stdout $G18Ok
+    $null = Invoke-HookScript -InputJson $g18tIn -Phase 'post' -ProjectDir $g18tP
+    $g18tShScript = Join-Path $ScriptDir 'stride-hook.sh'
+    $g18tInFile = Join-Path $TmpDir 'g18t-input.json'
+    [System.IO.File]::WriteAllText($g18tInFile, $g18tIn)
+    $g18tPsi = [System.Diagnostics.ProcessStartInfo]::new()
+    $g18tPsi.FileName = 'bash'
+    $g18tPsi.Arguments = "`"$g18tShScript`" post"
+    $g18tPsi.RedirectStandardInput = $true
+    $g18tPsi.RedirectStandardOutput = $true
+    $g18tPsi.RedirectStandardError = $true
+    $g18tPsi.UseShellExecute = $false
+    $g18tPsi.Environment['CLAUDE_PROJECT_DIR'] = $g18tB
+    $g18tProc = [System.Diagnostics.Process]::Start($g18tPsi)
+    $g18tProc.StandardInput.Write($g18tIn)
+    $g18tProc.StandardInput.Close()
+    $null = $g18tProc.StandardOutput.ReadToEnd()
+    $null = $g18tProc.StandardError.ReadToEnd()
+    $g18tProc.WaitForExit()
+
+    $g18tRawP = Get-G18Raw -Dir $g18tP
+    $g18tRawB = Get-G18Raw -Dir $g18tB
+    $g18tRe = '"completed_at":"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"'
+    $g18tFmtP = if ($g18tRawP -cmatch $g18tRe) { 'ok' } else { 'no' }
+    $g18tFmtB = if ($g18tRawB -cmatch $g18tRe) { 'ok' } else { 'no' }
+    Assert-Eq "18t: both halves emit the same completed_at format" "ok ok" "$g18tFmtP $g18tFmtB"
+    $g18tNormP = $g18tRawP -creplace '"completed_at":"[^"]*"', '"completed_at":"X"'
+    $g18tNormB = $g18tRawB -creplace '"completed_at":"[^"]*"', '"completed_at":"X"'
+    if ($g18tNormP -ceq $g18tNormB -and $g18tNormP) {
+        Write-Host "  PASS: 18t: both halves produce a byte-identical record" -ForegroundColor Green
+        $script:PASS++
+    } else {
+        Write-Host "  FAIL: 18t: the two halves produced different bytes" -ForegroundColor Red
+        Write-Host "    ps1:  $g18tNormP"
+        Write-Host "    bash: $g18tNormB"
+        $script:FAIL++
+    }
+}
+
+# 18u: the charset gate must agree with the bash twin on NON-ASCII input. .NET's
+# `A-Za-z0-9` ranges are strictly code-point based and refuse "é"; a bracket
+# RANGE in bash's `case` glob is collation-based and would accept it, so the
+# bash half enumerates its character set instead. Both halves must refuse here
+# — for a session id that is "unknown" on both sides, and for an identifier it
+# is no record at all on both sides.
+$g18u1 = New-G18Project 'u1'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 'abcé' -Command $G18CompleteCmd -Stdout $G18Ok) -Phase 'post' -ProjectDir $g18u1
+Assert-Eq "18u: a non-ASCII session id is refused, not collated in" "unknown" (Get-G18Field -Dir $g18u1 -Name 'session_id')
+$g18u2 = New-G18Project 'u2'
+$null = Invoke-HookScript -InputJson (New-G18Input -SessionId 's' -Command $G18CompleteCmd `
+    -Stdout '{"data":{"id":99,"identifier":"W2147é","needs_review":false},"hooks":[{"name":"before_review"}]}') `
+    -Phase 'post' -ProjectDir $g18u2
+if (Test-G18StateExists -Dir $g18u2) {
+    Write-Host "  FAIL: 18u: a non-ASCII identifier must be refused outright, wrote: $(Get-G18Raw -Dir $g18u2)" -ForegroundColor Red
+    $script:FAIL++
+} else {
+    Write-Host "  PASS: 18u: a non-ASCII identifier is refused outright" -ForegroundColor Green
+    $script:PASS++
+}
+
+# 18v: `tool_response.stdout` carrying a JSON OBJECT rather than a string. The
+# bash twin resolves that field with `jq -r`, which re-serialises the object, so
+# it parses and records. Reading it here as [string] would render PowerShell's
+# "@{...}" form, fail to parse, record nothing, and announce an unparsable body
+# — the divergence ConvertTo-OwnCallText exists to close. Unreachable with
+# today's harness, which always sends stdout as a string, but this is the parse
+# boundary the task's pitfall names.
+$g18v = New-G18Project 'v'
+$g18vIn = [ordered]@{
+    session_id    = 'sess-obj'
+    tool_input    = @{ command = $G18CompleteCmd }
+    tool_response = @{ stdout = ($G18Ok | ConvertFrom-Json) }
+} | ConvertTo-Json -Compress -Depth 10
+$g18vRes = Invoke-HookScript -InputJson $g18vIn -Phase 'post' -ProjectDir $g18v
+Assert-Eq "18v: an object-shaped tool_response.stdout still records" "W2147" (Get-G18Field -Dir $g18v -Name 'identifier')
+Assert-Eq "18v: and its session id survives the same path" "sess-obj" (Get-G18Field -Dir $g18v -Name 'session_id')
+Assert-NotContains "18v: an object-shaped stdout is not announced as unparsable" 'unparsable' $g18vRes.Stderr
+
+# 18w: STREAM DISCIPLINE on the same branch 18v exercises. ConvertTo-Json emits
+# "Resulting JSON is truncated..." on the WARNING stream once a value nests
+# deeper than its -Depth, and pwsh writes WARNING to STDOUT — which would
+# corrupt the single JSON document this hook is contracted to emit, and diverge
+# from the bash twin, whose `jq` has no depth limit and writes nothing. The
+# fixture nests 120 deep, past ConvertTo-Json's maximum -Depth of 100, so the
+# guard is -WarningAction SilentlyContinue rather than the depth alone; 18v's
+# shallow fixture cannot reach this.
+#
+# The input is built as a STRING rather than via ConvertTo-Json, because the
+# test would otherwise hit the same 100 limit constructing its own fixture.
+$g18wDeep = ('{"n":' * 120) + '"leaf"' + ('}' * 120)
+$g18wStdout = '{"data":{"id":99,"identifier":"W2147","needs_review":false},' +
+              '"hooks":[{"name":"before_review"}],"deep":' + $g18wDeep + '}'
+$g18wIn = '{"session_id":"sess-deep","tool_input":{"command":"' + $G18CompleteCmd +
+          '"},"tool_response":{"stdout":' + $g18wStdout + '}}'
+$g18w = New-G18Project 'w'
+$g18wRes = Invoke-HookScript -InputJson $g18wIn -Phase 'post' -ProjectDir $g18w
+Assert-NotContains "18w: a deeply nested stdout emits no WARNING on stdout" 'WARNING' $g18wRes.Stdout
+Assert-NotContains "18w: nor any truncation notice on stdout" 'truncated' $g18wRes.Stdout
+Assert-Exit "18w: a deeply nested stdout does not fail the hook" 0 $g18wRes.ExitCode
+# The four fields all sit at depth 2, so they survive any truncation below them.
+Assert-Eq "18w: and the record is still correct" "W2147" (Get-G18Field -Dir $g18w -Name 'identifier')
+Assert-Eq "18w: including the session id" "sess-deep" (Get-G18Field -Dir $g18w -Name 'session_id')
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""
