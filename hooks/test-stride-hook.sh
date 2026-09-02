@@ -4733,7 +4733,18 @@ else
     cat > "$d/curl" << 'G22STUB'
 #!/usr/bin/env bash
 _d="$(cd "$(dirname "$0")" && pwd)"
-printf 'ARGS: %s\n' "$*" >> "$_d/curl.log"
+# Redact the bearer value before recording. The group only ever needs the URL
+# (g22_calls greps for the path), never the header, and an un-redacted recorder
+# is one hand-run away from capturing a live token from a real .stride_auth.md.
+# Pure parameter expansion, so the stub gains no dependency a restricted PATH
+# farm would have to carry.
+_log="$*"
+case "$_log" in
+  *"Bearer "*)
+    _pre="${_log%%Bearer *}"; _post="${_log#*Bearer }"; _post="${_post#* }"
+    _log="${_pre}Bearer [REDACTED] ${_post}" ;;
+esac
+printf 'ARGS: %s\n' "$_log" >> "$_d/curl.log"
 _ex=$(cat "$_d/exit.txt" 2>/dev/null || printf 0)
 [ "$_ex" -eq 0 ] || exit "$_ex"
 printf '%s' "$(cat "$_d/body.txt" 2>/dev/null)"
@@ -5014,6 +5025,24 @@ G22STUB
   assert_exit "22t: no jq exits 0" 0 "$G22_RC"
   assert_eq "22t: no jq writes nothing to stdout" "" "$G22_OUT"
   assert_eq "22t: no jq is silent (an environment fact, not a decision)" "" "$G22_ERR"
+  # POSITIVE CONTROL. Without one, "exit 0, empty stdout, silent stderr" is
+  # indistinguishable from a farm so restricted the gate never started at all —
+  # the whole group's jq precondition is no substitute, because it says nothing
+  # about THIS fixture. The same farm WITH jq must block.
+  #
+  # dirname is required because the stub curl resolves its own directory with
+  # it, and the stub's DATA FILES must be copied alongside it for the same
+  # reason: it reads body/code relative to wherever it sits, so copying the
+  # script alone orphans them, the stub returns nothing, and the gate reaches
+  # the TRANSPORT permit — this control would then fail for a reason having
+  # nothing to do with jq. (That is exactly how it failed on first writing.)
+  D=$(g22_proj); F="$D/farm"; S="$D/stub"; g22_stub "$S" "$G22_OK" 200
+  g22_state "$D" "W2147" false
+  g22_farm "$F" bash cat head grep sed printf mktemp rm mkdir tr jq dirname
+  cp "$S/curl" "$S/body.txt" "$S/code.txt" "$S/exit.txt" "$F/"
+  G22_OUT=$(printf '{"cwd":"%s"}' "$D" | PATH="$F" "$G22_BASH" "$STOP_GATE" 2>/dev/null)
+  assert_eq "22t: positive control — the same farm WITH jq blocks" "block" \
+    "$(g22_decision "$G22_OUT")"
   D=$(g22_proj); F="$D/farm"; g22_state "$D" "W2147" false
   g22_farm "$F" bash cat head grep sed printf mktemp rm mkdir jq tr
   G22_OUT=$(printf '{"cwd":"%s"}' "$D" | PATH="$F" "$G22_BASH" "$STOP_GATE" 2> "$TMPDIR_TEST/g22.err")
@@ -5080,8 +5109,11 @@ G22STUB
   mkdir -p "$D/.stride/.stop-gate-blocks"
   g22_run "$D" "$S"
   assert_eq "22ac: a directory counter permits rather than blocking uncounted" "" "$G22_OUT"
-  assert_contains "22ac: and says the block could not be bounded" \
-    "could not be bounded" "$G22_ERR"
+  # The PRECISE wording: "could not be bounded" also matches the symlink
+  # refusal one branch above, so the loose needle would stay green if that
+  # fired instead.
+  assert_contains "22ac: and names the not-a-regular-file branch specifically" \
+    "the block counter is not a regular file" "$G22_ERR"
   rmdir "$D/.stride/.stop-gate-blocks"
 
   # 22af: a counter that is a SYMLINK is refused. `[ -f ]` FOLLOWS a link, so
@@ -5123,12 +5155,94 @@ G22STUB
   assert_eq "22h4: positive control — the fixture blocks while writable" "block" \
     "$(g22_decision "$G22_OUT")"
   rm -f "$D/.stride/.stop-gate-blocks"
-  chmod 555 "$D/.stride" 2>/dev/null
+  # Mode bits do not restrain root, so as root the write SUCCEEDS and the gate
+  # blocks — which is also what the positive control above produces, so no
+  # assertion here could tell the difference. Skip rather than pass vacuously.
+  if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP: 22h4 (running as root — mode bits are ignored, so the permit under test is unreachable)"
+  else
+    chmod 555 "$D/.stride" 2>/dev/null
+    g22_run "$D" "$S"
+    chmod 755 "$D/.stride" 2>/dev/null
+    assert_eq "22h4: an unwritable .stride permits" "" "$G22_OUT"
+    # The PRECISE branch wording, not the shared "cannot be bounded" tail,
+    # which appears in TWO branches' reasons (the write failure and the
+    # read-back mismatch) — asserting it would stay green if the wrong one
+    # fired. .stride already exists here, so `mkdir -p` succeeds and it is the
+    # counter WRITE that fails; the two negatives pin that discrimination.
+    assert_contains "22h4: and names the counter-write branch specifically" \
+      "the block count could not be recorded" "$G22_ERR"
+    assert_eq "22h4: and not the read-back branch's wording" "0" \
+      "$(printf '%s' "$G22_ERR" | grep -c 'did not persist' || true)"
+    assert_eq "22h4: and not the directory-creation branch's wording" "0" \
+      "$(printf '%s' "$G22_ERR" | grep -c 'could not be created' || true)"
+  fi
+
+  # B31 — "the .stride directory could not be created" (stride-stop-gate.sh:526)
+  # — has NO case, and deliberately: it is STRUCTURALLY UNREACHABLE, not merely
+  # untested. The gate reads $LOOP_STATE_FILE and returns when it is absent;
+  # that file lives INSIDE .stride, so any run reaching the later `mkdir -p`
+  # has already proved the directory exists, and `mkdir -p` on an existing
+  # directory succeeds. Only a TOCTOU race — .stride removed between the two —
+  # could fire it, and no deterministic fixture can stage that. Recorded rather
+  # than faked; the ps1 twin is identical.
+  #
+  # The counter READ-BACK branch ("the block count did not persist") is
+  # likewise uncovered: it needs a write that reports success yet does not
+  # persist, which cannot be staged without mocking the filesystem. Both are
+  # asserted NEGATIVELY above — 22h4 proves neither wording appears when the
+  # write branch fires — but neither is pinned positively, AND that negative
+  # evidence lives inside 22h4's root skip, so on a root run it is absent too.
+
+  # 22ad2: a non-http(s) scheme. Previously covered on the ps1 half (19ad2)
+  # and NOWHERE on this one — a bare cross-half asymmetry, the exact pitfall
+  # this task names. The case asserts what ACTUALLY happens rather than what
+  # the branch name suggests: the resolver's own extraction regex is
+  # `https?://`, so a non-http(s) URL yields no URL at all and the gate reaches
+  # the earlier no-URL-or-token permit. The gate's own "no recognised scheme"
+  # arm is therefore unreachable — see the note on it in stride-stop-gate.sh.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  printf '# auth\n\n- **API URL:** `ftp://api.example.invalid`\n- **API Token:** `%s`\n' \
+    "$G22_TOKEN" > "$D/.stride_auth.md"
   g22_run "$D" "$S"
-  chmod 755 "$D/.stride" 2>/dev/null
-  assert_eq "22h4: an unwritable .stride permits" "" "$G22_OUT"
-  assert_contains "22h4: and says the block could not be bounded" \
-    "cannot be bounded" "$G22_ERR"
+  assert_eq "22ad2: a non-http(s) scheme permits" "" "$G22_OUT"
+  assert_contains "22ad2: and stops at the resolver, before the scheme branch" \
+    "no API URL or token could be resolved" "$G22_ERR"
+  assert_eq "22ad2: and never reaches the network" "0" "$(g22_calls "$S")"
+
+  # 22d5: the literal HTTP code "000" from a SUCCESSFUL curl. Both other 000
+  # fixtures drive it through a NON-ZERO curl exit, which the earlier
+  # empty-response branch catches — so the `000)` arm of the code case was dead
+  # to the suite. Here curl exits 0 and reports 000, the only way to reach that
+  # arm. It bites: deleting the arm sends the code to the `*)` arm, whose
+  # wording is "the API answered 000" instead.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "" "000" 0; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  assert_contains "22d5: a 000 code from a successful curl reports unreachable" \
+    "the API could not be reached" "$G22_ERR"
+  assert_eq "22d5: and NOT the generic answered-with-a-code reason" "0" \
+    "$(printf '%s' "$G22_ERR" | grep -c 'the API answered 000' || true)"
+  assert_eq "22d5: curl really was invoked (this is not the transport branch)" "1" \
+    "$(g22_calls "$S")"
+
+  # 22ai: the stub recorder REDACTS the bearer value. The recorder exists only
+  # so g22_calls can count requests by URL; it never needs the header. An
+  # un-redacted recorder is one hand-run away from capturing a live token from
+  # a real .stride_auth.md into a file, and .gitignore now asserts this
+  # property in a comment — so it needs a case, or the comment rots into a
+  # claim the code does not support.
+  D=$(g22_proj); S="$D/stub"; g22_stub "$S" "$G22_OK" 200; g22_state "$D" "W2147" false
+  g22_run "$D" "$S"
+  # `grep -c` prints "0" AND exits 1 when nothing matches, so a trailing
+  # `|| printf 0` appends a SECOND zero and the value becomes "00" — the same
+  # trap g22_calls documents. Normalise through a guard instead.
+  G22_TOKHITS=$(grep -c "$G22_TOKEN" "$S/curl.log" 2>/dev/null)
+  case "$G22_TOKHITS" in ''|*[!0-9]*) G22_TOKHITS=0 ;; esac
+  G22_REDHITS=$(grep -c 'Bearer \[REDACTED\]' "$S/curl.log" 2>/dev/null)
+  case "$G22_REDHITS" in ''|*[!0-9]*) G22_REDHITS=0 ;; esac
+  assert_eq "22ai: the recorder never captures the bearer value" "0" "$G22_TOKHITS"
+  assert_eq "22ai: it records the redaction marker instead" "1" "$G22_REDHITS"
+  assert_eq "22ai: and still records the URL g22_calls counts" "1" "$(g22_calls "$S")"
 
   # --- Security ----------------------------------------------------------
   # 22i: the token never reaches stdout OR stderr, on any response shape.

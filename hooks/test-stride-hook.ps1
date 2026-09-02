@@ -150,6 +150,13 @@ function Wait-ForListener {
 # ============================================================
 $TmpDir = Join-Path ([System.IO.Path]::GetTempPath()) "stride-ps-test-$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
 New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
+# Match the bash half's fixture-root permissions. mktemp -d gives that half
+# 0700, but New-Item takes the default 0755 in a shared temp directory on
+# POSIX, leaving every fixture's .stride_auth.md world-readable for the life of
+# the run. They hold only sentinels today; this closes the asymmetry before
+# anyone points a fixture at a non-sentinel value. Inert on Windows, whose temp
+# path is already per-user.
+if (-not $IsWindows) { & chmod 700 $TmpDir 2>$null }
 
 try {
 
@@ -2955,7 +2962,13 @@ Assert-Eq "18w: including the session id" "sess-deep" (Get-G18Field -Dir $g18w -
 #     stdout-discipline equivalent.
 #   * 22z's runtime simulator and 22n's registration assertions — both are
 #     runtime- and file-level rather than per-half, so bash asserts them once
-#     for the pair rather than each half asserting the same JSON twice.
+#     for the pair rather than each half asserting the same JSON twice. 22o
+#     (the gate ships executable) and 22n2 (the live-registration SKIP) are
+#     file-level for the same reason.
+#   * 22d5 (an HTTP code of literally "000" from a successful call). This half
+#     calls Invoke-WebRequest, which either yields a StatusCode or throws, so
+#     there is no literal 000 to reach — the equivalent condition arrives as
+#     the catch's httpCode 0 and is covered by 19d.
 #   * The /dev/null counter divergence: bash refuses the character device at
 #     the pre-check, this half permits via the read-back. Both permit, both for
 #     bounding-related reasons, which is the invariant.
@@ -3366,8 +3379,13 @@ try {
 
         # 19h4: an unwritable .stride permits rather than blocking uncounted.
         # POSIX-only; bash 22h4 covers the same branch everywhere.
-        if ($IsWindows) {
-            Write-Host "  SKIP: 19h4 (POSIX permissions - bash 22h4 covers this branch)"
+        # Also skipped as root: mode bits do not restrain root, so the write
+        # succeeds and the gate blocks — indistinguishable from the positive
+        # control, so no assertion here could detect it.
+        $g19IsRoot = $false
+        if (-not $IsWindows) { try { $g19IsRoot = ((& id -u) -eq '0') } catch { $g19IsRoot = $false } }
+        if ($IsWindows -or $g19IsRoot) {
+            Write-Host "  SKIP: 19h4 (POSIX permissions, or running as root - bash 22h4 covers this branch)"
         } else {
             $d3 = New-G19Project 'h4' -Url $G19Url; Set-G19State -Dir $d3 -Ident 'W2147' -NeedsReview $false
             Assert-Eq "19h4: positive control - the fixture blocks while writable" "block" `
@@ -3377,7 +3395,63 @@ try {
             $r = Invoke-G19Gate -Cwd $d3
             & chmod 755 (Join-Path $d3 '.stride') 2>$null
             Assert-Eq "19h4: an unwritable .stride permits" "" $r.Stdout.Trim()
-            Assert-Contains "19h4: and says the block could not be bounded" 'cannot be bounded' $r.Stderr
+            # The PRECISE branch wording, matching the bash twin. "cannot be
+            # bounded" appears in TWO branches (the write failure and the
+            # read-back mismatch), so the loose needle would stay green if the
+            # wrong one fired — the defect fixed on the bash half, which must
+            # not be left standing here.
+            Assert-Contains "19h4: and names the counter-write branch specifically" `
+                'the block count could not be recorded' $r.Stderr
+            Assert-NotContains "19h4: and not the read-back branch's wording" 'did not persist' $r.Stderr
+            Assert-NotContains "19h4: and not the directory-creation branch's wording" 'could not be created' $r.Stderr
+        }
+
+
+        # 19h1: the default budget is 2, and 2 is below Copilot's own 8-block
+        # cap, so the runtime override can never fire in normal operation.
+        # Previously asserted only on the bash half (22h1) — the reverse of the
+        # asymmetry 19ad2 had, and the same pitfall.
+        # ANCHORED, not Contains: String.Contains('$StopGateMaxBlocks = 2') also
+        # matches a gate whose default was changed to 20 or 25, so the naive
+        # form is strictly weaker than the bash twin's anchored grep and would
+        # not go red under the very mutation it exists to catch.
+        $g19GateLines = @(Get-Content -LiteralPath $G19Gate)
+        Assert-Eq "19h1: the gate's default budget is exactly 2" "1" `
+            ([string](@($g19GateLines | Where-Object { $_ -cmatch '\A\$StopGateMaxBlocks = 2\z' })).Count)
+
+        # UNCOVERED, recorded rather than faked — matching the bash half:
+        #   * "the .stride directory could not be created" is STRUCTURALLY
+        #     UNREACHABLE. The gate returns when the loop-state file is absent,
+        #     and that file lives inside .stride, so any run reaching the later
+        #     directory creation has already proved it exists. Only a TOCTOU
+        #     race could fire it.
+        #   * "the block count did not persist" needs a write that reports
+        #     success yet does not persist, which cannot be staged without
+        #     mocking the filesystem.
+        #   * The top-level `trap` permit ("unexpected error; permitting the
+        #     turn end") is a ps1-only backstop for an unanticipated
+        #     terminating error. Every error path the gate anticipates is
+        #     guarded before it, so reaching the trap requires a fault no
+        #     fixture can inject without editing the gate.
+        # Only the FIRST TWO are asserted negatively, by 19h4's two
+        # Assert-NotContains ('could not be created' and 'did not persist').
+        # The trap's own wording is asserted by neither, so it is recorded but
+        # not pinned in either direction. Those negatives also live inside
+        # 19h4's Windows/root skip, so on either of those runs they are absent
+        # as well.
+
+        # 19ag2: the fixture root is 0700 on POSIX, matching what `mktemp -d`
+        # gives the bash half. Without this the fixtures' .stride_auth.md files
+        # are world-readable for the life of the run — harmless with sentinel
+        # tokens, but a local-disclosure path the moment one is not. Pinned
+        # with a case because the hardening otherwise sits in the harness with
+        # nothing to stop a future edit dropping it silently.
+        if ($IsWindows) {
+            Write-Host "  SKIP: 19ag2 (POSIX permissions - the Windows temp path is already per-user)"
+        } else {
+            $g19Mode = (& stat -f '%Lp' $TmpDir 2>$null)
+            if (-not $g19Mode) { $g19Mode = (& stat -c '%a' $TmpDir 2>$null) }
+            Assert-Eq "19ag2: the fixture root is 0700, matching the bash half" "700" ([string]$g19Mode)
         }
 
         # 19aa: stdout discipline, structurally — PowerShell's IMPLICIT PIPELINE

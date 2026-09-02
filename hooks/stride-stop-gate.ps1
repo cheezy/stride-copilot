@@ -344,6 +344,10 @@ if ($apiBase -cmatch '\Ahttps://') {
         Invoke-Permit "the API base URL uses cleartext http to the non-loopback host $apiHost"
     }
 } else {
+    # UNREACHABLE, kept as a belt — see the bash twin. The resolver's own
+    # extraction regex is https?://, so a value that resolves always carries
+    # one of those two schemes; any other yields no URL and lands on the
+    # earlier no-URL-or-token permit.
     Invoke-Permit 'the API base URL has no recognised scheme'
 }
 
@@ -488,6 +492,9 @@ if ((Test-Path -LiteralPath $BlockCounterFile) -and
     -not (Test-Path -LiteralPath $BlockCounterFile -PathType Leaf)) {
     Invoke-Permit 'the block counter is not a regular file, so a block could not be bounded'
 }
+# UNREACHABLE except under a TOCTOU race, kept as a belt — see the bash twin.
+# The loop-state file read earlier lives inside this directory, so by here it
+# demonstrably exists.
 try {
     if (-not (Test-Path -LiteralPath $StrideDir)) {
         New-Item -ItemType Directory -Path $StrideDir -Force -ErrorAction Stop | Out-Null

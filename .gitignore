@@ -20,3 +20,10 @@ Thumbs.db
 .stride-changed-files.json
 .stride-diff-upload-state
 .stride_auth.md
+
+# Test-fixture curl recorders. The Group 22 stub records the curl argv, which
+# carries an Authorization header; the value is redacted at the recorder, but
+# an un-ignored log would still be swept up by an after_doing that runs
+# `git add -A`.
+curl.log
+curl-call.txt

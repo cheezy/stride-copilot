@@ -418,6 +418,12 @@ case "$_api_base" in
       *) permit "the API base URL uses cleartext http to the non-loopback host $_host" ;;
     esac
     ;;
+  # UNREACHABLE, and kept as a belt rather than removed. $_api_base has exactly
+  # one assignment, from a `grep -oE 'https?://...'` extraction with no env-var
+  # or command-line fallback, so a resolved value always begins with http:// or
+  # https:// and this arm cannot fire. A URL with any other scheme yields no
+  # match at all and lands on the earlier no-URL-or-token permit — which is
+  # what case 22ad2 asserts, rather than asserting this arm's wording.
   *) permit "the API base URL has no recognised scheme" ;;
 esac
 
@@ -523,6 +529,12 @@ fi
 if [ -e "$BLOCK_COUNTER_FILE" ] && [ ! -f "$BLOCK_COUNTER_FILE" ]; then
   permit "the block counter is not a regular file, so a block could not be bounded"
 fi
+# UNREACHABLE except under a TOCTOU race, and kept as a belt. The gate has
+# already read $LOOP_STATE_FILE, which lives INSIDE this directory, so by here
+# it demonstrably exists and `mkdir -p` on an existing directory succeeds. Only
+# .stride being removed between those two points could fire this, which no
+# deterministic fixture can stage — recorded in Test Group 22 rather than
+# covered by a case that would have to fake it.
 if ! mkdir -p "$PROJECT_DIR/.stride" 2>/dev/null; then
   permit "the .stride directory could not be created"
 fi
