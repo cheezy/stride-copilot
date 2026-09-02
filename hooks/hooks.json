@@ -1,5 +1,5 @@
 {
-  "_comment": "The 300s timeout on each Bash hook below is the OUTER host budget (the ceiling Copilot/Claude Code gives the whole stride-hook invocation). It is NOT the per-hook limit. stride-hook.sh / stride-hook.ps1 enforce the documented INNER per-hook budgets on the .stride.md section itself — before_doing/before_review/after_review/after_goal = 60s, after_doing = 120s (see the stride-workflow SKILL Hooks Reference). Every inner limit sits well under this 300s ceiling, so the host budget only backstops the plugin's own bookkeeping (diff capture/upload) around the section. When no timeout utility is available in bash, the inner limits are not enforced and only this 300s ceiling applies.",
+  "_comment": "The 300s timeout on each Bash hook below is the OUTER host budget (the ceiling Copilot/Claude Code gives the whole stride-hook invocation). It is NOT the per-hook limit. stride-hook.sh / stride-hook.ps1 enforce the documented INNER per-hook budgets on the .stride.md section itself \u2014 before_doing/before_review/after_review/after_goal = 60s, after_doing = 120s (see the stride-workflow SKILL Hooks Reference). Every inner limit sits well under this 300s ceiling, so the host budget only backstops the plugin's own bookkeeping (diff capture/upload) around the section. When no timeout utility is available in bash, the inner limits are not enforced and only this 300s ceiling applies. The Stop entry below carries timeout 10, not 300, and deliberately: it sits in the TURN-END path rather than around an API call, and a timeout there fails OPEN (no stdout, so the stop is allowed), costing latency rather than correctness. REGISTRATION SHAPE, UNVERIFIED (W2148): Stop uses the same nested matcher-plus-hooks form as the two entries above, with no matcher key because Stop is not tool-scoped. GitHub documents \"Stop\" as the PascalCase alias of \"agentStop\", but the PUBLISHED Copilot hooks-file schema is a different, FLAT one ({\"version\":1,\"hooks\":{\"agentStop\":[{\"type\":\"command\",\"bash\":...,\"timeoutSec\":10}]}}) that governs .github/hooks/ and ~/.copilot/hooks/ \u2014 NOT this file, which is read by the plugin loader via plugin.json's \"hooks\" pointer and whose schema GitHub does not publish. The nested form is UNCORROBORATED rather than merely unverified: the v1.0.36 preToolUse.matcher release note names the FLAT schema camelCase spelling, and the two entries above are evidence only if they are known to fire, which nothing here establishes. If the gate never fires, try that flat form or rename \"Stop\" to \"agentStop\". Only \"Stop\" is registered, never both spellings: a loader honouring both would double-fire the gate and double-spend its block budget. The .ps1 twin is likewise NOT registered \u2014 the .sh execs it on native Windows.",
   "hooks": {
     "PostToolUse": [
       {
@@ -21,6 +21,17 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stride-hook.sh pre",
             "timeout": 300
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stride-stop-gate.sh",
+            "timeout": 10
           }
         ]
       }

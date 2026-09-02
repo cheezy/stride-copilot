@@ -127,3 +127,121 @@ should explicitly state that Layer 1 (the runtime gate) is not available on
 Copilot CLI today, and that enforcement relies on Layers 2 and 3. If Copilot
 CLI later adds either a skill-activation event or a documented "Skill" tool
 name, this decision should be revisited.
+
+---
+
+# Addendum (W2148): the `agentStop` contract and the registration shape
+
+Scope note: everything above this line is the **skill-gate** research, and its
+conclusions about `preToolUse` stand unchanged. This addendum answers a
+different question — how a **turn-end** gate refuses on Copilot — and exists
+because the two questions have different answers that were being read as one
+contradiction.
+
+Sources fetched **2026-09-01**:
+
+- <https://docs.github.com/en/copilot/reference/hooks-reference>
+- <https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks>
+
+## 1. The two stdout contracts are both correct, for different events
+
+The finding above that "Copilot CLI uses stdout `permissionDecision` JSON for
+denial, not Claude Code's exit-2 convention" is **scoped to `preToolUse` /
+permission requests**, and remains accurate there.
+
+`agentStop` is a different event with a different contract:
+
+```
+{ decision: "block" | "allow", reason: string }
+```
+
+with `"block"` forcing another agent turn using `reason` as the prompt. So
+`decision`/`reason` and `permissionDecision`/`permissionDecisionReason` are not
+a contradiction and neither source is stale — they describe different events.
+`stride-stop-gate.sh` emits **exactly two keys**, `decision` and `reason`, and
+deliberately does not hedge by also emitting the permission pair: a foreign key
+invites a strict-parser rejection whose failure mode is silently *allowing* the
+stop, and `permissionDecision` has no defined meaning on `agentStop`.
+
+## 2. Exit 2 does not refuse on `agentStop` — the whole reason W2148 was scoped separately
+
+On `agentStop`, a non-zero exit is **logged and skipped**; exit 2 is a warning.
+Exit 2 denies only for `preToolUse` / permission requests. A gate ported
+unchanged from Claude Code — where exit 2 *does* block — would therefore log its
+refusal on every turn end and let the session finish anyway, with no error and
+nothing to distinguish it from a gate that correctly found no work. No code path
+in `stride-stop-gate.sh` or `.ps1` exits 2.
+
+## 3. Runaway guard and `stop_hook_active`
+
+Verbatim: *"After 8 consecutive `block` continuations, the CLI overrides the
+hook and ends the turn anyway, to prevent an unbounded loop."* The `agentStop`
+input payload carries `stop_hook_active` — true when the turn was already forced
+to continue by a prior `block` from this hook — and the docs advise using it to
+self-limit before hitting the cap.
+
+The gate's own default budget is **2**, so it always yields three turn-ends
+before the runtime override could fire. The cap is a backstop that is never
+reached in normal operation; the gate's persisted counter is the guarantee, and
+`stop_hook_active` is honoured as a cheap short-circuit rather than depended on.
+
+## 4. Event names
+
+`agentStop` (camelCase) with `Stop` as the documented PascalCase, VS Code
+compatible alias. Both name the same event. `hooks.json` registers **`Stop`
+only** — a loader honouring both spellings would double-fire the gate and
+double-spend its block budget.
+
+## 5. The registration shape — VERIFIED IN PART, and the gap is real
+
+This is acceptance criterion 6 of W2148, and it is honestly only partly met.
+
+**Verified (structural).** `hooks.json` is well-formed JSON; the `Stop` key
+exists exactly once; its single entry carries no `matcher` (Stop is not
+tool-scoped); its command resolves to `stride-stop-gate.sh`, which exists and is
+executable; the `.ps1` is not separately registered; and the pre-existing
+`PreToolUse` / `PostToolUse` entries still parse. Asserted by test 22n.
+
+**Verified (documentary).** `Stop` is a documented event alias, and the
+`decision`/`reason` contract, the exit-2 semantics, the 8-block cap and
+`stop_hook_active` are all quoted above from the live reference.
+
+**NOT verified (runtime).** That a live Copilot **parses this nested shape** for
+`Stop`. The published hooks-file schema is a different, **flat** one:
+
+```json
+{"version":1,"hooks":{"agentStop":[{"type":"command","bash":"...","powershell":"...","timeoutSec":10}]}}
+```
+
+— no `matcher`, no inner `hooks` array, `bash`/`powershell` rather than
+`command`, `timeoutSec` rather than `timeout`, and a required `"version": 1`.
+But that schema governs `.github/hooks/NAME.json` and `~/.copilot/hooks/`,
+whereas `hooks/hooks.json` is reached through **`plugin.json`'s `"hooks"`
+pointer** — the plugin loader, whose schema GitHub does not publish. The two are
+different files read by different loaders, which is why the flat schema does not
+by itself refute the nested one.
+
+**Two corroborations were considered and BOTH are weaker than they first look.
+Neither is offered as evidence; they are recorded here so nobody re-derives
+them and mistakes them for support.**
+
+- *The Copilot CLI v1.0.36 release note* — "Fixed an issue where
+  `preToolUse.matcher` was ignored" — quoted at line 41 of this document, in
+  the pre-addendum skill-gate research. It presupposes that a matcher-bearing
+  entry is parsed, but it names **`preToolUse` in camelCase**, which is the
+  *published flat schema's* event spelling. It therefore says nothing about the
+  nested **PascalCase** form used here.
+- *This port's own `PreToolUse` / `PostToolUse` entries.* These corroborate
+  only if they are themselves known to fire, and **nothing in this repository
+  establishes that.** Treating them as evidence is circular.
+
+So the honest position is that the nested form is **uncorroborated**, not
+merely unverified at runtime. It is shipped because it is the shape the rest of
+this plugin already uses and changing it would be an equally unverified guess,
+not because evidence favours it.
+
+**A registration that fails to parse is indistinguishable from a gate with
+nothing to do.** If the gate never fires, the fix is one of: replace the `Stop`
+entry with the flat form above, or rename the key to `agentStop`. Settling it
+requires a live Copilot restart; the test suite invokes the gate script
+directly and structurally cannot.
