@@ -165,6 +165,16 @@ stop, and `permissionDecision` has no defined meaning on `agentStop`.
 
 ## 2. Exit 2 does not refuse on `agentStop` — the whole reason W2148 was scoped separately
 
+<!-- canon:stop-hook-capability v1 -->
+
+**Canon-governed — entry `stop-hook-capability` in `stride/docs/port-canon.md`.**
+This section is this port's own statement of how its runtime ends a session and
+how a stop is refused here: `agentStop` (PascalCase alias `Stop`), refused with
+`{"decision":"block","reason":...}` on stdout at exit 0, with the runtime
+capping at eight consecutive blocks. A change to the substance of that rule owes
+a version bump in two places before the next release: that entry in the canon,
+and this file's own anchor above.
+
 On `agentStop`, a non-zero exit is **logged and skipped**; exit 2 is a warning.
 Exit 2 denies only for `preToolUse` / permission requests. A gate ported
 unchanged from Claude Code — where exit 2 *does* block — would therefore log its

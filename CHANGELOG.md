@@ -2,6 +2,108 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.36.0] - 2026-09-02
+
+### Added — the loop gate: a completion record, an `agentStop` gate, and the coverage that proves it (G423)
+
+Copilot has a real blocking stop hook, and it is the one runtime where a
+copy-paste of the Claude Code gate would **silently do nothing**. On
+`agentStop` a non-zero exit is logged and skipped — exit 2 is a *warning*, not
+a deny, which it is only for `preToolUse`. A gate ported unchanged would log
+its refusal on every turn end, let the session finish anyway, and look healthy
+doing it. That single fact is why this shipped as three deliberate tasks rather
+than one port.
+
+**The record (W2147).** A successful completion now writes
+`.stride/.loop-state.json` — `identifier`, `needs_review` verbatim from the API
+response, a second-precision UTC `completed_at`, and the session id — and any
+claim clears it. The **hook** writes it, never the agent: an agent-written
+marker is exactly as skippable as the instruction it replaces, which is the
+whole point of gating on it. The clear is unconditional, including on a failed
+claim, because the claim that fails most often is the one against an empty
+ready queue and a record preserved there is indistinguishable from one left by
+an agent that never claimed at all.
+
+The two halves produce a **byte-identical** record, and the type rules are
+fixed once rather than discovered twice: positional key order, `needs_review`
+as a real JSON boolean, one shared charset gate, LF-only trailing-newline
+normalisation, UTF-8 without BOM, exactly one trailing LF. Two cross-half
+divergences were found and closed during review — the bash gate's `case` glob
+used collation-based ranges that accept a non-ASCII letter .NET's code-point
+ranges refuse (it now enumerates its character set), and an object-shaped
+`tool_response.stdout` rendered as PowerShell's `@{...}` where `jq -r`
+re-serialises it (a `ConvertTo-OwnCallText` helper now mirrors `jq -r` and
+`//` across every value shape). Cases `21w` / `18t` assert the byte identity
+with `cmp`, not by inspection.
+
+**The gate (W2148).** `stride-stop-gate.sh` and its PowerShell twin, registered
+as `Stop` in `hooks.json`. It blocks on exactly one condition — the record
+exists, `needs_review` is the JSON boolean `false`, and `GET /api/tasks/next`
+returns a claimable task — and permits on everything else, always at exit 0,
+emitting `{"decision":"block","reason":...}` on stdout. No code path in either
+half exits 2. It self-limits with a counter keyed on the *completed*
+identifier, default budget 2, written before blocking and read back; every
+failure to count permits, because a block that cannot be counted cannot be
+bounded and wedging a session is worse than missing a gate. `stop_hook_active`
+is honoured as a cheap short-circuit but never depended on, and the budget of 2
+sits below Copilot's own 8-continuation cap so the runtime override never fires
+in normal operation.
+
+**Registration is disclosed, not asserted.** The `Stop` key uses the nested
+matcher-plus-hooks shape the rest of this file already uses. What is verified:
+the file is well-formed, the entry resolves to the gate, and `Stop` is
+GitHub's documented PascalCase alias for `agentStop`. What is **not**: that a
+live Copilot parses that shape. The published hooks-file schema is a different,
+*flat* one — but it governs `.github/hooks/` and `~/.copilot/hooks/`, not the
+plugin loader this file is reached through, whose schema GitHub does not
+publish. The shape is **uncorroborated rather than merely unverified**: the
+v1.0.36 `preToolUse.matcher` release note names the flat schema's camelCase
+spelling, and this port's own working entries are evidence only if they are
+known to fire. It ships because it is what the rest of the plugin uses and
+changing it would be an equally unverified guess. Both gate headers,
+`hooks.json`, `docs/HOOK_RESEARCH.md` and a SKIP-never-PASS test case all say
+so; a live restart is what would settle it.
+
+**The coverage (W2149).** Test Group 22 (bash) and Group 19 (PowerShell), with
+the permits vastly outnumbering the block and every permit asserting **its own**
+reason string — exit 0 plus empty stdout is true of every permit alike and
+therefore pins nothing. Every silent permit carries a positive control. Case
+`22z` proves the exit-2 distinction rather than commenting on it, by running
+both the real gate's output and an inline naive-port stub through a model of
+the documented contract. A **13-mutation campaign** in disposable worktrees,
+nine against the bash gate and four against the PowerShell one, each disabling
+exactly one pinned behaviour, killed every mutant.
+
+Three branches are recorded as **structurally unreachable** rather than covered:
+`.stride` directory-creation failure (the loop-state file lives inside it and is
+read first, so any run reaching the `mkdir` has already proved it exists), the
+"no recognised scheme" arm (the resolver's own `https?://` extraction means any
+value that resolves already carries one of those schemes), and — on the
+PowerShell half — the top-level `trap`. The counter read-back branch is
+likewise unpinnable without mocking the filesystem. Recorded rather than faked.
+
+### Fixed — a symlink write-through in the counter, and a recorder that captured its own bearer header
+
+The block-counter guard refused a directory or a character device but **not a
+symlink**, because `[ -f ]` dereferences: a planted
+`.stride/.stop-gate-blocks -> <victim>` would have been followed and the target
+**truncated**, anywhere the agent user can write, unattended on every turn end
+and repeatable by rotating the completed identifier. A dangling link would have
+been created outright. Both halves now refuse a symlink before the
+regular-file test — `[ -L ]` in bash, the `ReparsePoint` attribute via
+`Get-Item -Force` in PowerShell, since `Test-Path` resolves a dangling link and
+reports false. Proven with a live exploit reproduction, and pinned by cases
+`22af` / `19af` whose block-path control is what makes them non-vacuous.
+
+The Group 22 curl stub recorded its full argv — including
+`Authorization: Bearer <token>` — to `curl.log`, which was not in `.gitignore`
+in a repo whose `after_doing` commits with `git add -A`. The recorder now
+redacts the bearer value with pure parameter expansion (adding no dependency a
+restricted-PATH farm would have to carry), `curl.log` and `curl-call.txt` are
+ignored, and case `22ai` pins the redaction so the claim cannot rot. The
+PowerShell fixture root is now `0700`, matching what `mktemp -d` gives the bash
+half.
+
 ## [2.35.0] - 2026-08-20
 
 ### Added — the four port-canon anchors, plus row precedence and `reason_code` (D253, D239)
