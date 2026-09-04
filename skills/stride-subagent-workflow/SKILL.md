@@ -211,7 +211,7 @@ The reviewer returns a human-readable prose summary followed by a fenced ```json
 **If issues are found:**
 - Fix all Critical issues before proceeding — a `critical` always blocks, at any round number, and is exempt from the two-round ceiling in `stride-workflow` Step 5
 - Fix Important issues before proceeding, through round two; after round two remaining `important` and `minor` findings are recorded rather than fixed (see the ceiling in `stride-workflow` Step 5). **The security rule is not part of that disposition and is not conditioned on the round:** a security finding is fixed or escalated at any severity and at any round number, round one included
-- Minor issues are optional but recommended — **except a security finding, which is never optional at any severity.** A `category: "security"` issue, or a `project_check` failure on a security bullet (authentication, authorization, injection, secret handling, transport), is fixed or escalated whatever severity it carries and whatever round surfaced it, including round one. **Those two are examples, not the test** — the rule keys on subject matter however the reviewer categorized it, `code_quality` and `pitfall` included. See "A security finding is never recorded" in `stride-workflow` Step 5.
+- Minor issues are optional but recommended — **except a security finding, which is never optional at any severity.** A `minor` carrying `cosmetic: true` is presentational only, and a round finding nothing else does not earn another dispatch; the definition, its three gates, its prohibitions and that disposition all live in `agents/task-reviewer.agent.md` and `stride-workflow` Step 5, and are deliberately not restated here. A `category: "security"` issue, or a `project_check` failure on a security bullet (authentication, authorization, injection, secret handling, transport), is fixed or escalated whatever severity it carries and whatever round surfaced it, including round one. **Those two are examples, not the test** — the rule keys on subject matter however the reviewer categorized it, `code_quality` and `pitfall` included. See "A security finding is never recorded" in `stride-workflow` Step 5.
 - After fixing, you do NOT need to re-run the reviewer — proceed to the after_doing hook. Re-running is not required as a matter of course; but when you **do** re-run it — to verify a fix you could not confirm by reading, or to clear a `critical` — that re-run is **round two**, and the two-round ceiling in `stride-workflow` Step 5 governs it. There is no round three except for a `critical`.
 
 ### Extracting the structured review block
@@ -237,7 +237,7 @@ Approved
 
 ```json
 {
-  "schema_version": "1.6",
+  "schema_version": "1.7",
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
@@ -265,7 +265,7 @@ Approved
   "summary": "Reviewed 3 acceptance criteria and 4 pitfalls against the diff; no issues found and all criteria met.",
   "issues_found": 0,
   "acceptance_criteria_checked": 3,
-  "schema_version": "1.6",
+  "schema_version": "1.7",
   "status": "approved",
   "issue_counts": {"critical": 0, "important": 0, "minor": 0},
   "issues": [],

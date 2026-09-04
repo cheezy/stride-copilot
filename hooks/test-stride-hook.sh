@@ -5710,15 +5710,309 @@ else
   assert_eq "23ag: and the sweep found mandates to check" \
     "1" "$([ "$(grep -hcF -e 'Re-run the reviewer' "${G23_MD[@]}" 2>/dev/null | grep -c '^[1-9]' || true)" -ge 1 ] && echo 1 || echo 0)"
 
-  # --- Chained-task boundaries: W2155 must not pre-empt W2156 or W2157 ---
-  assert_eq "23x: no cosmetic finding class yet (that is W2156)" \
-    "0" "$(g23_count "$G23_ALL_TXT" 'cosmetic')"
-  assert_eq "23x: and the reviewer schema is still 1.6 (the 1.7 bump is W2156)" \
-    "0" "$(g23_count "$G23_RV_TXT" '"1.7"')"
-  assert_contains "23x: schema_version unchanged at 1.6" \
-    "Always \`\"1.6\"\` for this prompt version" "$G23_RV_TXT"
+  # --- Chained-task boundaries: W2156 has landed; W2157 has not ---
+  assert_contains "23x: the cosmetic finding class has landed (W2156)" \
+    "cosmetic" "$G23_ALL_TXT"
+  assert_contains "23x: and the reviewer schema is at 1.7 (bumped by W2156)" \
+    "\"1.7\"" "$G23_RV_TXT"
+  assert_contains "23x: schema_version now reads 1.7" \
+    "Always \`\"1.7\"\` for this prompt version" "$G23_RV_TXT"
   assert_eq "23y: no dispatch_count telemetry yet (that is W2157)" \
     "0" "$(g23_count "$G23_ALL_TXT" 'dispatch_count')"
+fi
+# ============================================================
+# Test Group 24: the cosmetic finding class (W2156)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 21.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. The cosmetic class is PROSE,
+# not a pin. This port has no extraction pin and no hook that can read a
+# reviewer's block, so NOTHING here refuses a `cosmetic: true` on a critical or
+# on a security finding. These cases pin that the prohibition is STATED, stated
+# where a reader meets it, and that the port says so rather than claiming a
+# mechanism it lacks. They cannot verify that any flag is honest: `cosmetic` is
+# self-certified and no artifact in this port reaches its truth.
+#
+# NOT PORTED, recorded so the omission reads as a decision:
+#   * The reference's `cosmetic_shape_ok` jq and its Python mirror, which run on
+#     its two extraction paths. Copilot ships no executable check to extract and
+#     no extraction split to attach one to. Hand-inventing one to have an
+#     executed half would be W2127's defect in a new costume — there, 25
+#     hand-retyped assertions went green over a real defect.
+#   * No dispatch_count case belongs here. That boundary lives at 23y and stays
+#     asserting zero until W2157 lands.
+echo ""
+echo "=== Test Group 24: the cosmetic finding class (W2156) ==="
+
+G24_ROOT="$SCRIPT_DIR/.."
+G24_WF="$G24_ROOT/skills/stride-workflow/SKILL.md"
+G24_SUB="$G24_ROOT/skills/stride-subagent-workflow/SKILL.md"
+G24_CT="$G24_ROOT/skills/stride-completing-tasks/SKILL.md"
+G24_RV="$G24_ROOT/agents/task-reviewer.agent.md"
+G24_README="$G24_ROOT/README.md"
+
+if [ ! -f "$G24_WF" ] || [ ! -f "$G24_SUB" ] || [ ! -f "$G24_CT" ] || [ ! -f "$G24_RV" ] || [ ! -f "$G24_README" ]; then
+  echo "  SKIP: Test Group 24 (contract files not found relative to $SCRIPT_DIR)"
+else
+  G24_WF_TXT=$(cat "$G24_WF")
+  G24_SUB_TXT=$(cat "$G24_SUB")
+  G24_CT_TXT=$(cat "$G24_CT")
+  G24_RV_TXT=$(cat "$G24_RV")
+  G24_README_TXT=$(cat "$G24_README")
+
+  # Same find-into-an-array enumeration as Group 23, and for the same reasons:
+  # the developer grep may be ugrep (honors .gitignore, would scan nothing), and
+  # a word-split list would silently shrink the corpus — which, because the
+  # cases below are exactly-zero and exactly-one assertions, makes them PASS.
+  G24_MD=()
+  while IFS= read -r g24f; do G24_MD+=("$g24f"); done \
+    < <(find "$G24_ROOT/skills" "$G24_ROOT/agents" -name '*.md' -type f 2>/dev/null | sort)
+  G24_ALL_TXT=$(cat "${G24_MD[@]}" 2>/dev/null || true)
+
+  g24_count() {
+    { grep -oF -- "$2" <<< "$1" || true; } | grep -c . || true
+  }
+
+  # --- The schema carries the key, documented optional (AC 1) ---
+  assert_contains "24a: the issue schema carries an optional cosmetic boolean" \
+    "**\`cosmetic\`** (boolean, optional" "$G24_RV_TXT"
+  assert_contains "24a: with an explicit default" \
+    "absent means \`false\`" "$G24_RV_TXT"
+
+  # --- Canon anchor, beside the definition and nowhere else ---
+  assert_contains "24b: carries the canon back-reference anchor" \
+    "<!-- canon:cosmetic-finding-class v1 -->" "$G24_RV_TXT"
+  G24_ANCHOR_LN=$(grep -nF "<!-- canon:cosmetic-finding-class v1 -->" "$G24_RV" | head -1 | cut -d: -f1)
+  G24_DEF_LN=$(grep -nF "The \`cosmetic\` finding class — what it is." "$G24_RV" | head -1 | cut -d: -f1)
+  assert_eq "24c: the anchor sits immediately above the definition" \
+    "1" "$((G24_DEF_LN - G24_ANCHOR_LN))"
+  # The canon's check is "anchor", and it must sit beside the DEFINITION only —
+  # the SKILL.md paragraph is a mirror and must not carry a second one.
+  assert_eq "24d: the anchor appears exactly once port-wide" \
+    "1" "$(g24_count "$G24_ALL_TXT" '<!-- canon:cosmetic-finding-class v1 -->')"
+
+  # --- The two gates, and the artifact-claim gate specifically (ACs 4, 5) ---
+  assert_contains "24e: gate one — the finding's own claim is correct" \
+    "the *finding's* claim is correct" "$G24_RV_TXT"
+  assert_contains "24e: gate two — the artifact asserts nothing false" \
+    "asserts nothing that is itself false" "$G24_RV_TXT"
+  assert_contains "24f: a false statement of fact is never cosmetic" \
+    "A false statement of fact is never cosmetic" "$G24_RV_TXT"
+  # The subject list is a test, not a lookup table.
+  assert_contains "24f: the subject list illustrates gate three, it does not define it" \
+    "that list illustrates gate three, it does not define it" "$G24_RV_TXT"
+
+  # --- Location qualifier (the named pitfall) ---
+  assert_contains "24g: a re-wrap inside executable content is substantive" \
+    "inside executable content" "$G24_RV_TXT"
+
+  # --- What it does NOT do (AC 2) ---
+  assert_contains "24h: does not change severity" \
+    "It does not change \`severity\`" "$G24_RV_TXT"
+  assert_contains "24h: does not change category" \
+    "It does not change \`category\`" "$G24_RV_TXT"
+  assert_contains "24h: does not change status" \
+    "It does not change \`status\`" "$G24_RV_TXT"
+  assert_contains "24h: does not remove the finding from the record" \
+    "does not remove the finding from \`issues[]\`" "$G24_RV_TXT"
+  assert_contains "24h: disposition only" \
+    "The single thing it changes is the orchestrator's re-review disposition" "$G24_RV_TXT"
+
+  # --- Never a downgrade; orthogonal to severity (AC 4, pitfall 1) ---
+  assert_contains "24i: a cosmetic flag on a substantive finding is a reviewer defect" \
+    "is a **reviewer defect**, not a judgement call" "$G24_RV_TXT"
+  assert_contains "24i: minor and cosmetic are orthogonal, not synonyms" \
+    "orthogonal, not synonyms" "$G24_RV_TXT"
+
+  # --- The three refused conditions, and that they are prose (ACs 6, 7) ---
+  assert_contains "24j: refused when severity is not minor" \
+    "The severity is anything other than \`minor\`" "$G24_RV_TXT"
+  assert_contains "24j: covering critical and important alike" \
+    "covers **\`critical\` and \`important\` alike**" "$G24_RV_TXT"
+  assert_contains "24j: refused on the security category" \
+    "or \`category\` is \`\"security\"\`" "$G24_RV_TXT"
+  assert_contains "24j: refused when not a real boolean" \
+    "is not a real boolean" "$G24_RV_TXT"
+  assert_contains "24k: the enforcement class is stated, not implied" \
+    "This prohibition is stated, not mechanically checked." "$G24_RV_TXT"
+  assert_contains "24k: and says plainly that nothing refuses the submission" \
+    "nothing refuses the submission" "$G24_RV_TXT"
+
+  # --- The completion hard gate carries it, INSIDE the gate (ACs 6, 7) ---
+  assert_contains "24l: the self-check has a cosmetic bullet" \
+    "Cosmetic findings are correctly flagged" "$G24_CT_TXT"
+  G24_GATE_LN=$(grep -nF "MANDATORY pre-submission self-check (hard gate)" "$G24_CT" | head -1 | cut -d: -f1)
+  G24_BULLET_LN=$(grep -nF "Cosmetic findings are correctly flagged" "$G24_CT" | head -1 | cut -d: -f1)
+  G24_CLOSE_LN=$(grep -nF "This gate is **not bypassable**" "$G24_CT" | head -1 | cut -d: -f1)
+  if [ "$G24_GATE_LN" -lt "$G24_BULLET_LN" ] && [ "$G24_BULLET_LN" -lt "$G24_CLOSE_LN" ]; then
+    G24_INSIDE="inside"
+  else
+    G24_INSIDE="outside (gate=$G24_GATE_LN bullet=$G24_BULLET_LN close=$G24_CLOSE_LN)"
+  fi
+  assert_eq "24m: the bullet sits inside the hard gate, not merely in the file" \
+    "inside" "$G24_INSIDE"
+  # The W2155 interaction, stated at the last check before submission.
+  assert_contains "24m: and the flag never reaches the security rule" \
+    "the flag never reaches the security rule above" "$G24_CT_TXT"
+
+  # --- No fourth severity (pitfall 1) ---
+  assert_contains "24n: the severity enum is unchanged" \
+    "\`severity\` (enum: \`\"critical\"\` | \`\"important\"\` | \`\"minor\"\`)" "$G24_RV_TXT"
+  assert_eq "24n: cosmetic never appears as a severity value" \
+    "0" "$(g24_count "$G24_ALL_TXT" '"severity": "cosmetic"')"
+
+  # --- The disposition: stated once, in the cap section (AC 3) ---
+  assert_eq "24o: the disposition is stated exactly once port-wide" \
+    "1" "$(g24_count "$G24_ALL_TXT" 'buys no further review round')"
+  G24_DISP_LN=$(grep -nF 'buys no further review round' "$G24_WF" | head -1 | cut -d: -f1)
+  G24_CAP_LN=$(grep -nF '#### Review rounds: two is the ceiling' "$G24_WF" | head -1 | cut -d: -f1)
+  G24_NEXT_LN=$(grep -nF '#### Deep security-considerations review' "$G24_WF" | head -1 | cut -d: -f1)
+  if [ "$G24_CAP_LN" -lt "$G24_DISP_LN" ] && [ "$G24_DISP_LN" -lt "$G24_NEXT_LN" ]; then
+    G24_IN_CAP="inside"
+  else
+    G24_IN_CAP="outside (cap=$G24_CAP_LN disp=$G24_DISP_LN next=$G24_NEXT_LN)"
+  fi
+  assert_eq "24p: the disposition sits inside the cap section" \
+    "inside" "$G24_IN_CAP"
+
+  # --- The three qualifications that have been got wrong (AC 3) ---
+  assert_contains "24q: an empty issues[] is never an all-cosmetic round" \
+    "An absent or empty \`issues[]\` is never an all-cosmetic round" "$G24_WF_TXT"
+  assert_contains "24r: changes_requested overrides regardless" \
+    "honour that and re-dispatch regardless" "$G24_WF_TXT"
+  assert_contains "24s: cosmetic findings are still recorded" \
+    "Not buying a round is not being dropped" "$G24_WF_TXT"
+
+  # --- The schema bump, and the stale-mirror catcher ---
+  # This is the reference's own recorded failure on this change: its
+  # implementer bumped agents/ and skills/ and left README.md stale.
+  # 24t sweeps the corpus; 24u covers README, which is OUTSIDE that corpus and
+  # is therefore exactly the file that gets missed.
+  assert_eq "24t: no stale \"1.6\" mirror survives in the contracts" \
+    "1" "$(g24_count "$G24_ALL_TXT" '"1.6"')"
+  G24_SIXLINE=$(grep -hF '"1.6"' "${G24_MD[@]}" 2>/dev/null || true)
+  assert_contains "24t: and its one occurrence is the bump note, not a live mirror" \
+    "Bumped from" "$G24_SIXLINE"
+  assert_contains "24u: the README headline is bumped" \
+    "\`schema_version\` 1.7" "$G24_README_TXT"
+  assert_contains "24u: the new field is described there" \
+    "each \`issues[]\` entry may carry an optional \`cosmetic\` boolean" "$G24_README_TXT"
+  # An over-eager global replace is as wrong as a missed one: the historical
+  # "as of schema 1.5 / 1.6" sentences record what shipped then and must survive.
+  assert_contains "24u: and the schema-1.6 history survives unrewritten" \
+    "schema 1.6" "$G24_README_TXT"
+  assert_contains "24u: as does the schema-1.5 history" \
+    "schema 1.5" "$G24_README_TXT"
+  assert_contains "24v: the reviewer contract declares 1.7" \
+    "Always \`\"1.7\"\` for this prompt version" "$G24_RV_TXT"
+  assert_contains "24v: and its worked example matches" \
+    "\"schema_version\": \"1.7\"," "$G24_RV_TXT"
+
+  # --- The residual is stated, and stated as this port's, not the reference's ---
+  assert_contains "24w: the category-keyed residual is disclosed" \
+    "Stated residual — the category-keyed edge" "$G24_RV_TXT"
+  assert_contains "24w: keyed on subject matter here, unlike the reference" \
+    "That is a narrower residual than the reference's" "$G24_RV_TXT"
+
+  # --- Self-certification recorded among the cap's stated limits (AC 7) ---
+  assert_contains "24x: the classification is recorded as self-certified" \
+    "The \`cosmetic\` classification is self-certified" "$G24_WF_TXT"
+  assert_contains "24x: including that the Review queue cannot show it" \
+    "the flag is invisible there" "$G24_WF_TXT"
+
+  # --- Gate three and the default-deny (the porting loss, round-two fix) ---
+  # The reference states FOUR conditions: two gates, then "the subject must
+  # then be purely presentational", then "set it false on everything else".
+  # The first draft kept the two gates, demoted the third to a descriptive
+  # sentence and dropped the default entirely — leaving only necessary
+  # conditions, which an exploratory session then exploited to build a
+  # defensible argument for marking a substantive finding cosmetic.
+  assert_contains "24aa: the definition states three gates, not two" \
+    "only when **all three** gates hold" "$G24_RV_TXT"
+  assert_contains "24aa: gate three is the presentational requirement" \
+    "the subject must then be purely presentational" "$G24_RV_TXT"
+  assert_contains "24aa: stated as a requirement, not a description" \
+    "it is a requirement, not a description" "$G24_RV_TXT"
+  assert_contains "24ab: the default is deny" \
+    "Default deny: set \`cosmetic\` \`false\`, or omit it, on everything else." "$G24_RV_TXT"
+  assert_contains "24ab: apply the test, not the examples" \
+    "Apply the test, not the examples" "$G24_RV_TXT"
+  # The three gates are cumulative: clearing one and two must not imply three.
+  assert_contains "24ab: clearing the first two gates does not clear the third" \
+    "clearing gates one and two does not clear gate three" "$G24_RV_TXT"
+  # Latent defects were the majority of the real corpus and passed every
+  # present-tense formulation.
+  assert_contains "24ac: gate three is not present-tense" \
+    "Gate three is not present-tense" "$G24_RV_TXT"
+  assert_contains "24ac: naming the latent shapes explicitly" \
+    "skip-list entry that currently matches nothing" "$G24_RV_TXT"
+
+  # --- Location keyed on the property, not on two named operations ---
+  # A blank line inserted in markdown PROSE breaks case 24c's own line
+  # arithmetic, and the first draft's qualifier (re-wraps and re-orderings)
+  # did not reach it.
+  assert_contains "24ad: location is keyed on what reads the thing you changed" \
+    "whether anything reads the thing you changed" "$G24_RV_TXT"
+  assert_contains "24ad: covering a blank line, not only a re-wrap" \
+    "including inserting or removing a blank line" "$G24_RV_TXT"
+
+  # --- The mirror carries the definition's logical force (round-two fix) ---
+  # The permissive appositive sat in the file read by the party that pays for
+  # a re-review round; the strict phrasing sat with the reviewer.
+  assert_contains "24ae: the workflow mirror states all three gates" \
+    "clears **all three** gates the definition sets" "$G24_WF_TXT"
+  assert_contains "24ae: and says it is necessary, not sufficient" \
+    "That is a necessary condition, not a definition" "$G24_WF_TXT"
+  # The gate COUNT rots the way the stated-limits numeral did: restoring gate
+  # three left three pointer sentences still saying "two gates", which both
+  # reviewers caught independently. Sweep for any surviving count claim that
+  # is not the deliberate "the first two gates" (meaning gates one and two).
+  # Scoped to lines that are about THIS definition: an unrelated gate elsewhere
+  # in the port legitimately speaks of two conditions.
+  G24_GATECOUNT=$(grep -hF 'two gates' "${G24_MD[@]}" 2>/dev/null \
+    | grep -vF 'first two gates' | grep -F 'cosmetic' || true)
+  assert_eq "24ah: no pointer sentence still calls it a two-gate definition" \
+    "0" "$(printf '%s' "$G24_GATECOUNT" | grep -c . || true)"
+
+  # --- The licence defers to the three non-round dispatches (round-two fix) ---
+  # W2155 fixed this defect class across nine sites; this paragraph
+  # reintroduced it, and the 23ag sweep structurally cannot see it because the
+  # paragraph contains neither of that sweep's needles.
+  assert_contains "24af: the all-cosmetic licence excepts the non-round dispatches" \
+    "except for the dispatches that are not rounds" "$G24_WF_TXT"
+
+  # --- The gate's closing claim does not generalize over its self-reports ---
+  assert_contains "24ag: the gate scopes its enforcement claim" \
+    "That does not generalize to every bullet in this gate" "$G24_CT_TXT"
+
+  # --- The stated-limits numeral matches the list it heads ---
+  # W2156 appended a fourth limit and left the heading reading "Three limits",
+  # which is verbatim the shape agents/task-reviewer.agent.md ships as its own
+  # example of a substantive, never-cosmetic finding ("a heading reading 'Two
+  # limits' above three"). Pin the numeral against the actual list length so
+  # the next limit added cannot re-introduce it.
+  G24_LIMITS_LN=$(grep -nF 'limits, written down so nobody reads a pin where there is prose' "$G24_WF" | head -1 | cut -d: -f1)
+  G24_LIMIT_ITEMS=0
+  if [ -n "$G24_LIMITS_LN" ]; then
+    G24_LIMIT_ITEMS=$(awk -v s="$G24_LIMITS_LN" 'NR>s {
+        if ($0 ~ /^[0-9]+\. /) { n++; next }
+        if ($0 ~ /^$/) next
+        if (n > 0) exit
+      } END { print n+0 }' "$G24_WF")
+  fi
+  G24_LIMIT_WORD=$(sed -n "${G24_LIMITS_LN}p" "$G24_WF" | grep -oE '(One|Two|Three|Four|Five|Six) limits' | head -1 | cut -d' ' -f1)
+  case "$G24_LIMIT_ITEMS" in
+    ( 1 ) G24_EXPECT_WORD="One" ;; ( 2 ) G24_EXPECT_WORD="Two" ;;
+    ( 3 ) G24_EXPECT_WORD="Three" ;; ( 4 ) G24_EXPECT_WORD="Four" ;;
+    ( 5 ) G24_EXPECT_WORD="Five" ;; ( 6 ) G24_EXPECT_WORD="Six" ;;
+    ( * ) G24_EXPECT_WORD="UNCOUNTED($G24_LIMIT_ITEMS)" ;;
+  esac
+  assert_eq "24z: the stated-limits numeral matches the list it heads" \
+    "$G24_EXPECT_WORD" "$G24_LIMIT_WORD"
+
+  # --- Single-source discipline: the subagent half defers, never restates ---
+  assert_contains "24y: the subagent-workflow bullet defers rather than restating" \
+    "deliberately not restated here" "$G24_SUB_TXT"
 fi
 # ============================================================
 # Summary

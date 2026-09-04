@@ -2,6 +2,258 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.38.0] - 2026-09-04
+
+### Added — the cosmetic finding class (W2156)
+
+`issues[]` entries may now carry an optional `cosmetic` boolean. A cosmetic
+finding is presentational only — wrapping, column width, word and line counts,
+phrasing preference, the ordering of equivalent prose — and it is still emitted
+with its honest severity and category, still reported, and still recorded in
+`completion_notes`. **The single thing it changes is the re-review
+disposition:** a round whose findings are *all* cosmetic buys no further round.
+It is not a carve-out, an exclusion, or a suppression, so it amends none of the
+exhaustive-carve-out wording this port carries.
+
+**The gate reads on the artifact's claim, not only the finding's** — and this is
+the half that is easy to get wrong, because it was the reference's own defect.
+Your finding can be perfectly correct while the thing it points at states
+something false: a doc saying "prints six values" where seven print, a comment
+placing an assert below a write that sits above it, a heading reading "Two
+limits" above three. Each of those is substantive. **A false statement of fact
+is never cosmetic, however small.** The subject list is examples of a test,
+never a list to match against — and it is qualified by **location**: re-wrapping
+a paragraph is cosmetic, but a re-wrap inside executable content (a jq
+expression, a heredoc, a fence something greps) changes what runs.
+
+**Cosmetic is orthogonal to severity, not a fourth level of it.** It only ever
+sits on a `minor`, and a `minor` can be substantive and still buy a round.
+`cosmetic: true` on a substantive finding is a **reviewer defect**, not a
+judgement call.
+
+**Judgement call 1 — prose, not a pin, and the shipped text says so.** The
+reference refuses three conditions (severity ≠ `minor`, `category ==
+"security"`, non-boolean) with a `cosmetic_shape_ok` pin on its two extraction
+paths. This port has no extraction split, no `review-block-extraction.md`, and
+no hook that can observe a reviewer's block, so there is nothing to attach a pin
+to. The refusal became a stated prohibition in the reviewer contract plus a
+self-check bullet in the completion hard gate, and **both say in shipped text
+that nothing refuses the submission.** Inventing a pin to have one would be
+W2127's defect in a new costume. The reference's own recorded slip here is
+avoided too: its prohibition paragraph said "two categories" while naming one
+category and one *severity*, omitting `important` — all three are named
+explicitly.
+
+**Judgement call 2 — the Source A/B/C scoping was re-anchored, not dropped.**
+The reference scopes its all-cosmetic rule to its structured-extraction paths,
+because on its prose fallback `issues[]` is absent by construction and "every
+entry is cosmetic" would be vacuously true. Copilot has no such split, so
+importing that vocabulary would name machinery this port does not have — the
+failure case `23e` already guards for `$MERGED`. The caveat re-anchored on the
+artifact this port *does* have: the parsable fenced json block, the same
+threshold W2155's round definition already uses.
+
+**Judgement call 3 — `schema_version` bumped to `"1.7"`.** The port genuinely
+gains a field, which is the rule the reference applied. **Ten sites moved**,
+including the two `stride-subagent-workflow` worked examples and the `README.md`
+headline — and the README is precisely the file the reference's own implementer
+left stale on this same change. Cases `24t` and `24u` exist to catch that
+recurrence: `24t` sweeps the `find`-enumerated contract corpus for a surviving
+`"1.6"` and requires its single remaining occurrence to be the bump note rather
+than a live mirror; `24u` reads `README.md`, which sits *outside* that corpus
+and is therefore exactly the file a corpus sweep misses. `24u` also asserts the
+historical "as of schema 1.5 / 1.6" sentences **survive**, so an over-eager
+global replace fails just as a missed one does.
+
+**The residual, stated stronger than the reference's.** The refusal keys on the
+literal `category: "security"` string, so a security-relevant finding filed at
+`minor` under `code_quality` or `pitfall` can still carry the flag. The
+reference records that edge as accepted, because *its* round cap relies on the
+same category-keyed boundary. **This port's does not:** W2155 made the security
+rule key on the finding's **subject matter however it was categorized**, and the
+completion hard gate re-applies that test to every finding before submission,
+independent of any `cosmetic` flag. A mis-filed security finding marked cosmetic
+still cannot be recorded and shipped — it is fixed or escalated at the gate.
+What the flag can still spare is the re-review dispatch that might have surfaced
+it a second time. That is a narrower residual, and it is stated rather than left
+to inference — which is what this task's `security_considerations` asked for.
+
+**Recorded, not fixed:** the Review queue groups issues by severity alone, so
+the flag is invisible there. Pre-existing, in the outer Phoenix app, out of
+scope here — and now written down as the fourth stated limit beside the cap,
+alongside the disclosure that the classification is **self-certified**: nothing
+in this port reads a finding and judges whether it is truly presentational, so
+the cheapest abuse is relabelling an ordinary substantive `minor`, which no
+artifact here can see.
+
+### Fixed — the porting loss an exploratory session found (W2156)
+
+A session chartered against the definition's own weak point — judgement drift —
+classified five **real** findings from this port's recent tasks against the
+shipped text and found the definition could not decide three of them. Tracing
+the rule back to the reference explained why: **the reference states four
+conditions and the first draft shipped two.**
+
+The reference gates are (1) the finding's claim is correct, (2) the artifact it
+points at asserts nothing false, (3) *"with both gates satisfied, the subject
+must then be purely presentational"*, and then a default: *"Apply the test, not
+the examples. Set it `false` (or omit it) on everything else."* The draft kept
+gates one and two verbatim, demoted **gate three to a descriptive sentence**,
+and dropped the default entirely — then added "read that list as examples of a
+test, never as a list to match against", which in the reference disclaims the
+exhaustiveness of a *required* gate but here disclaimed the only remaining
+sentence naming a subject test. What shipped was a definition of **necessary
+conditions with no sufficient condition and no default.**
+
+That is not theoretical. Three of the five real findings — a skip-list entry
+matching nothing yet, a trigger stated more broadly than its example, two suite
+halves counting with different primitives — clear gate one, clear gate two (a
+skip-list and a counting function state no proposition for it to bite on), and
+are plainly substantive. Nothing in the draft refused them. The session then
+built the adversarial argument end to end, every sentence of it supported by
+shipped text. **Gate three and the default-deny are restored**, gate three is
+marked a requirement rather than a description, and it is explicitly **not
+present-tense** — "nothing behaves differently today" does not satisfy it —
+because latent defects were the majority of the real corpus and passed every
+present-tense formulation.
+
+**The location qualifier named operations instead of the property.** It reached
+re-wraps and re-orderings, so inserting a blank line in markdown *prose* read as
+cosmetic. The session demonstrated otherwise against this port's own suite:
+case `24c` does line arithmetic over that prose, and one inserted blank line
+turns it red. The qualifier now keys on the property — **whether anything reads
+the thing you changed** — and names blank lines, heading levels and moved lines
+alongside re-wraps.
+
+**The mirror was weaker than the definition, in the file with the incentive.**
+The reviewer contract said "only when both gates hold" (necessary); the
+workflow mirror used an appositive that reads as a definition (sufficient) — and
+the workflow file is the one read by the orchestrator, the party that pays for a
+re-review round. The mirror now states all three gates and says in terms that
+this is a necessary condition, not a definition.
+
+**The all-cosmetic licence reintroduced W2155's own defect class.** "Proceed to
+completion without re-dispatching" carried no deference to the three dispatches
+that are not rounds — so an all-cosmetic round followed by a hardened check
+entering the test tree pitted this paragraph against the Step 5.6 mandate, which
+is exactly the contradiction the previous release fixed across nine sites. Worse,
+the `23ag` sweep structurally could not see it: the paragraph contains neither of
+that sweep's needles. The licence now excepts the non-round dispatches
+explicitly.
+
+**And the hard gate overclaimed its own enforcement.** Its closing sentence said
+a failing self-check is a failing completion, generalizing over two bullets that
+state in their own words that nothing checks them. The claim is now scoped to
+the count, key and status-enum checks the server actually rejects, and says
+plainly that the two self-reports bind because you run them. This tension
+predates W2156 — W2155 added the first such bullet — so it is recorded as
+pre-existing and widened, not newly introduced.
+
+Cases `24aa`–`24ag` pin all five.
+
+### Fixed in the same task — what the review round found (W2156)
+
+**The best of them is the one this change is about.** The diff appended a
+fourth stated limit beside the cap and left the heading reading *"Three limits,
+written down so nobody reads a pin where there is prose"* above a four-item
+list. That is, verbatim, the shape the new definition ships as its own worked
+example of a **substantive, never-cosmetic** finding — "a heading reading 'Two
+limits' above three". A change introducing the rule that a false statement of
+fact is never cosmetic introduced one, in normative contract text, four
+paragraphs away. One word fixed it; **case `24z` now pins the numeral against
+the actual list length**, counting the items rather than trusting the word, so
+the next limit added cannot re-introduce it. Proven to bite by reverting the
+word and watching it go red.
+
+**A false attribution, caught by the specialist security reviewer.** The
+residual paragraph claimed the reference "records the same edge as accepted".
+It does not. What the reference discloses is that its `cosmetic_shape_ok` pin
+reaches a flag's type and co-ordinates but never a finding's subject matter,
+and the cheapest abuse it names is relabelling an ordinary substantive `minor`
+— a *different* edge. The paragraph borrowed authority the source does not
+give, in a document that had just finished saying a false statement of fact is
+never cosmetic. It now states only what is verifiable: the reference's
+recording prohibition keys on the literal `category: "security"` string, and
+this port's keys on subject matter. The comparison survives; the attribution
+does not.
+
+**And an absolute that overstated its own gate.** "A mis-filed security finding
+marked cosmetic therefore still cannot be recorded and shipped" reads as a
+mechanism, twelve words before the same file admits the gate is a self-report.
+It now says the finding is *caught before submission* "on the same
+prose-and-self-report terms as every other bullet there, since nothing in this
+port refuses a payload". Claiming enforcement this port does not have is the
+precise failure both this task and the last one exist to avoid.
+
+**The all-cosmetic licence now carries the qualifier its sibling had.** The
+disposition granted "fix them or not as you choose" with its only security
+qualification keyed on the literal category string, while the record-don't-fix
+paragraph eleven lines below was explicitly written as "subject to the security
+rule below, which is not conditioned on the round number". A security-substance
+finding filed under `code_quality` at `minor` with the flag set was, reading
+Step 5 alone, both exempted from re-review and permitted to go unfixed — the
+completion gate still caught it, so this weakened a defence-in-depth layer
+rather than opening a suppression channel, but the asymmetry was real. Both
+paragraphs now carry the pointer, and the qualification names subject matter
+rather than three category strings.
+
+**A guard that did not cover what its group reads.** Group 24's SKIP guard
+omitted the one contract file case `24y` actually opens, so an absent file
+would have produced a spurious failure instead of the intended skip. Group 23
+guards its equivalent; both halves now match it.
+
+### Fixed after round two — a count that rotted, under the security exemption
+
+Round two and a specialist security re-check independently found the same
+defect, and it is the same shape as the "Three limits" one: restoring gate
+three left **three pointer sentences still calling it a two-gate definition** —
+in `stride-subagent-workflow`, in `stride-workflow` seven lines below the
+paragraph that correctly says "all three", and in this changelog. A reader
+acting on the numeral rather than opening the definition reconstructs exactly
+the necessary-conditions-only rule the exploratory session showed admits
+substantive findings. Fixed at all three, and **case `24ah` now sweeps the
+corpus** for any surviving two-gate claim that is not the deliberate "the first
+two gates", so the count cannot rot a third time. That sweep needed one correction of its own before it was honest: first written, it swept every `two gates` line in the corpus and tripped on an unrelated gate elsewhere in the port that legitimately describes two conditions. It is now scoped to lines about this definition, and was proven to bite by re-introducing the defect and watching it go red.
+
+Two more from the same pass. The residual's replacement clause — "on the same
+prose-and-self-report terms as **every other bullet there**" — was itself false:
+verified against the server's own completion validator, most bullets in that
+gate *do* have server backing, and the same diff had just added the correct
+scoping to the gate itself. It understated this port's enforcement rather than
+granting a licence, but it re-committed in one file the generalization that had
+just been removed from the other; it is now scoped to the two self-report
+bullets. And the non-round exception introduced "the three dispatches" above a
+two-item gloss closed by "both" — verbatim the shape `24z` exists to police —
+so the numeral is dropped.
+
+**These were fixed rather than recorded, and the reason is the rule this
+release ships.** Round two is the ceiling, and remaining `important` and `minor`
+findings after it are recorded — **except a security finding, at any severity**.
+The specialist filed all three under `category: security`, which exempts them.
+No third review round was dispatched: the fixes are verified by the full suites
+and by three new assertions, and the exemption is recorded here rather than
+being used to buy another round.
+
+### Added — hook suite coverage
+
+**Test Group 24** (bash) and **Test Group 21** (PowerShell), 62 cases each (Group 23 unchanged at 65),
+mirrored case-for-case and verified label-for-label. They pin the three gates, the
+false-statement rule, the location qualifier, the four things the flag does not
+change, all three refused conditions, the prose-not-pin disclosure, the
+hard-gate bullet's presence *inside* the gate (line arithmetic, not mere
+presence), the canon anchor sitting immediately above the definition and
+appearing exactly once port-wide, the disposition being stated exactly once and
+inside the cap section, and the stale-mirror catchers above.
+
+`24o` earned its keep immediately: the first draft of the deference line in
+`stride-subagent-workflow` repeated the disposition sentence verbatim, and the
+exactly-once assertion caught the single-source violation before it shipped.
+
+The three `23x` boundary guards W2155 left asserting `cosmetic` and `"1.7"` were
+absent are **flipped in place** rather than added to, so Group 23 stays at 65
+cases. `23y` (`dispatch_count`) is deliberately left asserting zero — that
+boundary belongs to W2157 and is not pre-empted here.
+
 ## [2.37.0] - 2026-09-04
 
 ### Added — the two-round review cap (W2155)

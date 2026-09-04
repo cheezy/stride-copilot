@@ -3778,15 +3778,278 @@ if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -a
     Assert-Eq "23ag: and the sweep found mandates to check" `
         "1" "$(if (@($G20Mandates | Where-Object { $_.Contains('Re-run the reviewer') }).Count -ge 1) { 1 } else { 0 })"
 
-    # --- Chained-task boundaries: W2155 must not pre-empt W2156 or W2157 ---
-    Assert-Eq "23x: no cosmetic finding class yet (that is W2156)" `
-        "0" "$(Get-G20Count -Text $G20AllTxt -Needle 'cosmetic')"
-    Assert-Eq "23x: and the reviewer schema is still 1.6 (the 1.7 bump is W2156)" `
-        "0" "$(Get-G20Count -Text $G20RvTxt -Needle '"1.7"')"
-    Assert-Contains "23x: schema_version unchanged at 1.6" `
-        'Always `"1.6"` for this prompt version' $G20RvTxt
+    # --- Chained-task boundaries: W2156 has landed; W2157 has not ---
+    Assert-Contains "23x: the cosmetic finding class has landed (W2156)" `
+        'cosmetic' $G20AllTxt
+    Assert-Contains "23x: and the reviewer schema is at 1.7 (bumped by W2156)" `
+        '"1.7"' $G20RvTxt
+    Assert-Contains "23x: schema_version now reads 1.7" `
+        'Always `"1.7"` for this prompt version' $G20RvTxt
     Assert-Eq "23y: no dispatch_count telemetry yet (that is W2157)" `
         "0" "$(Get-G20Count -Text $G20AllTxt -Needle 'dispatch_count')"
+}
+# ============================================================
+# Test Group 21: the cosmetic finding class (W2156)
+# ============================================================
+# PowerShell mirror of test-stride-hook.sh Test Group 24.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. The cosmetic class is PROSE,
+# not a pin. This port has no extraction pin and no hook that can read a
+# reviewer's block, so NOTHING here refuses a `cosmetic: true` on a critical or
+# on a security finding. These cases pin that the prohibition is STATED, stated
+# where a reader meets it, and that the port says so rather than claiming a
+# mechanism it lacks. They cannot verify that any flag is honest.
+#
+# NOT MIRRORED, with the reason recorded so each gap reads as a decision:
+#   * Nothing. Both halves read the same markdown, so every case in Group 24 is
+#     mirrorable and every one is mirrored. As in Group 20: identical bytes do
+#     NOT imply identical assertions, so Get-G21Count counts literal
+#     OCCURRENCES exactly as the bash half's g24_count does, and the two halves
+#     are kept semantically equivalent by hand.
+Write-Host ""
+Write-Host "=== Test Group 21: the cosmetic finding class (W2156) ==="
+
+$G21Root   = Split-Path -Parent $ScriptDir
+$G21Wf     = Join-Path $G21Root 'skills/stride-workflow/SKILL.md'
+$G21Sub    = Join-Path $G21Root 'skills/stride-subagent-workflow/SKILL.md'
+$G21Ct     = Join-Path $G21Root 'skills/stride-completing-tasks/SKILL.md'
+$G21Rv     = Join-Path $G21Root 'agents/task-reviewer.agent.md'
+$G21Readme = Join-Path $G21Root 'README.md'
+
+if (-not ((Test-Path $G21Wf) -and (Test-Path $G21Sub) -and (Test-Path $G21Ct) -and (Test-Path $G21Rv) -and (Test-Path $G21Readme))) {
+    Write-Host "  SKIP: Test Group 21 (contract files not found relative to $ScriptDir)"
+} else {
+    $G21WfTxt     = Get-Content -Raw $G21Wf
+    $G21SubTxt    = Get-Content -Raw $G21Sub
+    $G21CtTxt     = Get-Content -Raw $G21Ct
+    $G21RvTxt     = Get-Content -Raw $G21Rv
+    $G21ReadmeTxt = Get-Content -Raw $G21Readme
+
+    $G21Md = Get-ChildItem -Path (Join-Path $G21Root 'skills'), (Join-Path $G21Root 'agents') `
+        -Filter '*.md' -Recurse -File | Sort-Object FullName
+    $G21AllTxt = ($G21Md | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
+
+    function Get-G21Count {
+        param([string]$Text, [string]$Needle)
+        return ([regex]::Matches($Text, [regex]::Escape($Needle))).Count
+    }
+
+    # --- The schema carries the key, documented optional (AC 1) ---
+    Assert-Contains "24a: the issue schema carries an optional cosmetic boolean" `
+        '**`cosmetic`** (boolean, optional' $G21RvTxt
+    Assert-Contains "24a: with an explicit default" `
+        'absent means `false`' $G21RvTxt
+
+    # --- Canon anchor, beside the definition and nowhere else ---
+    Assert-Contains "24b: carries the canon back-reference anchor" `
+        '<!-- canon:cosmetic-finding-class v1 -->' $G21RvTxt
+    $G21RvLines   = Get-Content $G21Rv
+    $G21AnchorLn  = ($G21RvLines | Select-String -SimpleMatch '<!-- canon:cosmetic-finding-class v1 -->' | Select-Object -First 1).LineNumber
+    $G21DefLn     = ($G21RvLines | Select-String -SimpleMatch 'The `cosmetic` finding class — what it is.' | Select-Object -First 1).LineNumber
+    Assert-Eq "24c: the anchor sits immediately above the definition" `
+        "1" "$($G21DefLn - $G21AnchorLn)"
+    Assert-Eq "24d: the anchor appears exactly once port-wide" `
+        "1" "$(Get-G21Count -Text $G21AllTxt -Needle '<!-- canon:cosmetic-finding-class v1 -->')"
+
+    # --- The two gates, and the artifact-claim gate specifically (ACs 4, 5) ---
+    Assert-Contains "24e: gate one — the finding's own claim is correct" `
+        "the *finding's* claim is correct" $G21RvTxt
+    Assert-Contains "24e: gate two — the artifact asserts nothing false" `
+        'asserts nothing that is itself false' $G21RvTxt
+    Assert-Contains "24f: a false statement of fact is never cosmetic" `
+        'A false statement of fact is never cosmetic' $G21RvTxt
+    Assert-Contains "24f: the subject list illustrates gate three, it does not define it" `
+        'that list illustrates gate three, it does not define it' $G21RvTxt
+
+    # --- Location qualifier (the named pitfall) ---
+    Assert-Contains "24g: a re-wrap inside executable content is substantive" `
+        'inside executable content' $G21RvTxt
+
+    # --- What it does NOT do (AC 2) ---
+    Assert-Contains "24h: does not change severity" `
+        'It does not change `severity`' $G21RvTxt
+    Assert-Contains "24h: does not change category" `
+        'It does not change `category`' $G21RvTxt
+    Assert-Contains "24h: does not change status" `
+        'It does not change `status`' $G21RvTxt
+    Assert-Contains "24h: does not remove the finding from the record" `
+        'does not remove the finding from `issues[]`' $G21RvTxt
+    Assert-Contains "24h: disposition only" `
+        "The single thing it changes is the orchestrator's re-review disposition" $G21RvTxt
+
+    # --- Never a downgrade; orthogonal to severity (AC 4, pitfall 1) ---
+    Assert-Contains "24i: a cosmetic flag on a substantive finding is a reviewer defect" `
+        'is a **reviewer defect**, not a judgement call' $G21RvTxt
+    Assert-Contains "24i: minor and cosmetic are orthogonal, not synonyms" `
+        'orthogonal, not synonyms' $G21RvTxt
+
+    # --- The three refused conditions, and that they are prose (ACs 6, 7) ---
+    Assert-Contains "24j: refused when severity is not minor" `
+        'The severity is anything other than `minor`' $G21RvTxt
+    Assert-Contains "24j: covering critical and important alike" `
+        'covers **`critical` and `important` alike**' $G21RvTxt
+    Assert-Contains "24j: refused on the security category" `
+        'or `category` is `"security"`' $G21RvTxt
+    Assert-Contains "24j: refused when not a real boolean" `
+        'is not a real boolean' $G21RvTxt
+    Assert-Contains "24k: the enforcement class is stated, not implied" `
+        'This prohibition is stated, not mechanically checked.' $G21RvTxt
+    Assert-Contains "24k: and says plainly that nothing refuses the submission" `
+        'nothing refuses the submission' $G21RvTxt
+
+    # --- The completion hard gate carries it, INSIDE the gate (ACs 6, 7) ---
+    Assert-Contains "24l: the self-check has a cosmetic bullet" `
+        'Cosmetic findings are correctly flagged' $G21CtTxt
+    $G21CtLines  = Get-Content $G21Ct
+    $G21GateLn   = ($G21CtLines | Select-String -SimpleMatch 'MANDATORY pre-submission self-check (hard gate)' | Select-Object -First 1).LineNumber
+    $G21BulletLn = ($G21CtLines | Select-String -SimpleMatch 'Cosmetic findings are correctly flagged' | Select-Object -First 1).LineNumber
+    $G21CloseLn  = ($G21CtLines | Select-String -SimpleMatch 'This gate is **not bypassable**' | Select-Object -First 1).LineNumber
+    if (($G21GateLn -lt $G21BulletLn) -and ($G21BulletLn -lt $G21CloseLn)) {
+        $G21Inside = 'inside'
+    } else {
+        $G21Inside = "outside (gate=$G21GateLn bullet=$G21BulletLn close=$G21CloseLn)"
+    }
+    Assert-Eq "24m: the bullet sits inside the hard gate, not merely in the file" `
+        'inside' $G21Inside
+    Assert-Contains "24m: and the flag never reaches the security rule" `
+        'the flag never reaches the security rule above' $G21CtTxt
+
+    # --- No fourth severity (pitfall 1) ---
+    Assert-Contains "24n: the severity enum is unchanged" `
+        '`severity` (enum: `"critical"` | `"important"` | `"minor"`)' $G21RvTxt
+    Assert-Eq "24n: cosmetic never appears as a severity value" `
+        "0" "$(Get-G21Count -Text $G21AllTxt -Needle '"severity": "cosmetic"')"
+
+    # --- The disposition: stated once, in the cap section (AC 3) ---
+    Assert-Eq "24o: the disposition is stated exactly once port-wide" `
+        "1" "$(Get-G21Count -Text $G21AllTxt -Needle 'buys no further review round')"
+    $G21WfLines = Get-Content $G21Wf
+    $G21DispLn  = ($G21WfLines | Select-String -SimpleMatch 'buys no further review round' | Select-Object -First 1).LineNumber
+    $G21CapLn   = ($G21WfLines | Select-String -SimpleMatch '#### Review rounds: two is the ceiling' | Select-Object -First 1).LineNumber
+    $G21NextLn  = ($G21WfLines | Select-String -SimpleMatch '#### Deep security-considerations review' | Select-Object -First 1).LineNumber
+    if (($G21CapLn -lt $G21DispLn) -and ($G21DispLn -lt $G21NextLn)) {
+        $G21InCap = 'inside'
+    } else {
+        $G21InCap = "outside (cap=$G21CapLn disp=$G21DispLn next=$G21NextLn)"
+    }
+    Assert-Eq "24p: the disposition sits inside the cap section" `
+        'inside' $G21InCap
+
+    # --- The three qualifications that have been got wrong (AC 3) ---
+    Assert-Contains "24q: an empty issues[] is never an all-cosmetic round" `
+        'An absent or empty `issues[]` is never an all-cosmetic round' $G21WfTxt
+    Assert-Contains "24r: changes_requested overrides regardless" `
+        'honour that and re-dispatch regardless' $G21WfTxt
+    Assert-Contains "24s: cosmetic findings are still recorded" `
+        'Not buying a round is not being dropped' $G21WfTxt
+
+    # --- The schema bump, and the stale-mirror catcher ---
+    Assert-Eq "24t: no stale `"1.6`" mirror survives in the contracts" `
+        "1" "$(Get-G21Count -Text $G21AllTxt -Needle '"1.6"')"
+    $G21SixLine = ($G21Md | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_.Contains('"1.6"') }) -join "`n"
+    Assert-Contains "24t: and its one occurrence is the bump note, not a live mirror" `
+        'Bumped from' $G21SixLine
+    Assert-Contains "24u: the README headline is bumped" `
+        '`schema_version` 1.7' $G21ReadmeTxt
+    Assert-Contains "24u: the new field is described there" `
+        'each `issues[]` entry may carry an optional `cosmetic` boolean' $G21ReadmeTxt
+    Assert-Contains "24u: and the schema-1.6 history survives unrewritten" `
+        'schema 1.6' $G21ReadmeTxt
+    Assert-Contains "24u: as does the schema-1.5 history" `
+        'schema 1.5' $G21ReadmeTxt
+    Assert-Contains "24v: the reviewer contract declares 1.7" `
+        'Always `"1.7"` for this prompt version' $G21RvTxt
+    Assert-Contains "24v: and its worked example matches" `
+        '"schema_version": "1.7",' $G21RvTxt
+
+    # --- The residual is stated, and stated as this port's ---
+    Assert-Contains "24w: the category-keyed residual is disclosed" `
+        'Stated residual — the category-keyed edge' $G21RvTxt
+    Assert-Contains "24w: keyed on subject matter here, unlike the reference" `
+        "That is a narrower residual than the reference's" $G21RvTxt
+
+    # --- Self-certification recorded among the cap's stated limits (AC 7) ---
+    Assert-Contains "24x: the classification is recorded as self-certified" `
+        'The `cosmetic` classification is self-certified' $G21WfTxt
+    Assert-Contains "24x: including that the Review queue cannot show it" `
+        'the flag is invisible there' $G21WfTxt
+
+    # --- Gate three and the default-deny (the porting loss, round-two fix) ---
+    Assert-Contains "24aa: the definition states three gates, not two" `
+        'only when **all three** gates hold' $G21RvTxt
+    Assert-Contains "24aa: gate three is the presentational requirement" `
+        'the subject must then be purely presentational' $G21RvTxt
+    Assert-Contains "24aa: stated as a requirement, not a description" `
+        'it is a requirement, not a description' $G21RvTxt
+    Assert-Contains "24ab: the default is deny" `
+        'Default deny: set `cosmetic` `false`, or omit it, on everything else.' $G21RvTxt
+    Assert-Contains "24ab: apply the test, not the examples" `
+        'Apply the test, not the examples' $G21RvTxt
+    Assert-Contains "24ab: clearing the first two gates does not clear the third" `
+        'clearing gates one and two does not clear gate three' $G21RvTxt
+    Assert-Contains "24ac: gate three is not present-tense" `
+        'Gate three is not present-tense' $G21RvTxt
+    Assert-Contains "24ac: naming the latent shapes explicitly" `
+        'skip-list entry that currently matches nothing' $G21RvTxt
+
+    # --- Location keyed on the property, not on two named operations ---
+    Assert-Contains "24ad: location is keyed on what reads the thing you changed" `
+        'whether anything reads the thing you changed' $G21RvTxt
+    Assert-Contains "24ad: covering a blank line, not only a re-wrap" `
+        'including inserting or removing a blank line' $G21RvTxt
+
+    # --- The mirror carries the definition's logical force (round-two fix) ---
+    Assert-Contains "24ae: the workflow mirror states all three gates" `
+        'clears **all three** gates the definition sets' $G21WfTxt
+    Assert-Contains "24ae: and says it is necessary, not sufficient" `
+        'That is a necessary condition, not a definition' $G21WfTxt
+    # The gate COUNT rots the way the stated-limits numeral did; sweep for any
+    # surviving count claim that is not the deliberate "the first two gates".
+    # Scoped to lines about THIS definition: an unrelated gate elsewhere in the
+    # port legitimately speaks of two conditions.
+    $G21GateCount = @($G21Md | ForEach-Object { Get-Content $_.FullName } | Where-Object {
+        $_.Contains('two gates') -and -not $_.Contains('first two gates') -and $_.Contains('cosmetic')
+    })
+    Assert-Eq "24ah: no pointer sentence still calls it a two-gate definition" `
+        "0" "$($G21GateCount.Count)"
+
+    # --- The licence defers to the three non-round dispatches (round-two fix) ---
+    Assert-Contains "24af: the all-cosmetic licence excepts the non-round dispatches" `
+        'except for the dispatches that are not rounds' $G21WfTxt
+
+    # --- The gate's closing claim does not generalize over its self-reports ---
+    Assert-Contains "24ag: the gate scopes its enforcement claim" `
+        'That does not generalize to every bullet in this gate' $G21CtTxt
+
+    # --- The stated-limits numeral matches the list it heads ---
+    # W2156 appended a fourth limit and left the heading reading "Three
+    # limits" — verbatim the shape the reviewer contract ships as its example
+    # of a substantive, never-cosmetic finding. Pin the numeral to the list.
+    $G21LimitsIdx = ($G21WfLines | Select-String -SimpleMatch 'limits, written down so nobody reads a pin where there is prose' | Select-Object -First 1).LineNumber
+    $G21LimitItems = 0
+    if ($G21LimitsIdx) {
+        for ($i = $G21LimitsIdx; $i -lt $G21WfLines.Count; $i++) {
+            $ln = $G21WfLines[$i]
+            if ($ln -match '^[0-9]+\. ') { $G21LimitItems++; continue }
+            if ($ln -match '^\s*$') { continue }
+            if ($G21LimitItems -gt 0) { break }
+        }
+    }
+    $G21LimitWord = ''
+    if ($G21LimitsIdx) {
+        $m = [regex]::Match($G21WfLines[$G21LimitsIdx - 1], '(One|Two|Three|Four|Five|Six) limits')
+        if ($m.Success) { $G21LimitWord = $m.Groups[1].Value }
+    }
+    $G21ExpectWord = switch ($G21LimitItems) {
+        1 { 'One' } 2 { 'Two' } 3 { 'Three' } 4 { 'Four' } 5 { 'Five' } 6 { 'Six' }
+        default { "UNCOUNTED($G21LimitItems)" }
+    }
+    Assert-Eq "24z: the stated-limits numeral matches the list it heads" `
+        $G21ExpectWord $G21LimitWord
+
+    # --- Single-source discipline: the subagent half defers, never restates ---
+    Assert-Contains "24y: the subagent-workflow bullet defers rather than restating" `
+        'deliberately not restated here' $G21SubTxt
 }
 # ============================================================
 # Summary
