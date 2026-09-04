@@ -2,6 +2,257 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.37.0] - 2026-09-04
+
+### Added — the two-round review cap (W2155)
+
+A reviewer asked to review always finds something, so an uncapped review loop
+does not converge. The reference measured every task taking two rounds and one
+taking a third fix cycle, at over a hundred thousand subagent tokens a round.
+Copilot inherits that cost until it inherits the cap, so here it is: **two
+review rounds is the ceiling, and the second verifies rather than
+re-reviews.**
+
+Round two's mission is scoped to verifying round one's fixes; its **evidence is
+not** — it still receives the full diff and every field the first dispatch
+received, and it still emits every section verdict, the full 1:1
+`acceptance_criteria` array, and the complete `project_checks`. Scoping changes
+what you look for, never what you emit. A dispatch handed only the fix delta
+would make the 1:1 array dishonest, and a round two that re-enumerates
+everything from scratch buys nothing.
+
+After round two, remaining `important` and `minor` findings are **recorded**,
+by severity, category and `file:line`, in `completion_notes` and one line of
+`completion_summary` — **never** a `category: "security"` issue, at any
+severity, which is fixed or escalated instead. A `critical` is **exempt** from
+the cap and blocks at any round number; where it cannot be fixed the task stops
+at `review_blocked` (`failure.kind: "review_escalation"`) rather than being
+recorded and submitted.
+
+The rule is stated **once**, in `stride-workflow` Step 5, under a
+`<!-- canon:review-round-cap v1 -->` anchor. Every other site defers to it:
+the D66 re-review paragraph, the `stride-subagent-workflow` issues-found
+bullets and its re-review and extraction sections, both Complete Completion
+Process variants, and a new bullet in the completing-tasks hard gate. Two
+copies of a rule is how the D221 drift this port has already been bitten by
+starts.
+
+**Judgement call 1 — what counts as a round.** The reference anchors the count
+on `$MERGED`, the merged result file its Source A / Source B extraction split
+writes. **Copilot has neither**: its reviewer returns the structured block
+inline, and there is no file-based reviewer path anywhere in the port. So the
+anchor moved to the artifact this port *does* already name — a round is a
+`task-reviewer` dispatch whose response yielded a **parsable** fenced ```json
+block, the block the "Extracting the structured review block" section already
+extracts. That is the same threshold under a different surface: both count a
+round when a block was *parsed*, not when a dispatch was *attempted*, so the
+carve-out that a crashed reviewer must not eat a round falls out rather than
+being bolted on. `$MERGED` and `.review-rounds-<IDENTIFIER>.json` now each
+appear exactly once in the port, as prohibitions against importing them; cases
+`23e` pin that they never become live mechanisms.
+
+**Judgement call 2 — no counter file was invented.** A
+`.stride/.review-rounds-<ID>.json` that only an agent writes and only an agent
+reads is exactly as skippable as the instruction it would replace — this port's
+own W2147 finding, and the reason the loop-state record is written by the hook
+rather than the agent. No copilot hook can observe an agent dispatch, so there
+is no non-agent writer available. The count therefore lives in the
+orchestrator's context and touches no file. The state that gives up is handled
+by failing **closed**: where the round number cannot be established — a resumed
+or compacted session — the next dispatch is treated as **round two**, never as
+round one.
+
+**Judgement call 3 — this is prose, not a pin, and it says so.** What shipped
+is a normative instruction. Nothing in this port refuses a third dispatch.
+`stride-workflow` Step 5 carries the sentence "This cap is stated, not
+mechanically enforced." and three stated limits beneath it; the hard-gate
+bullet says in its own words that it is a self-report. That is what the
+reference itself does for `CRITICAL_CLEARED`, and stating the limit is the
+whole point — a rule that reads like a pin and is not one is worse than a rule
+that admits what it is. `dispatch_count` telemetry (W2157) is the first surface
+that could make the cap server-visible, and is deliberately not pre-empted
+here.
+
+**A contradiction closed.** `stride-subagent-workflow` said "After fixing, you
+do NOT need to re-run the reviewer" directly beside a re-review section with
+nothing bounding how many rounds there could be. The clause was **bounded, not
+deleted** — Phase 3.5 quotes it verbatim, so rewriting it would dangle that
+citation. Case `23q` uses a whole-line match to prove the unbounded form is
+gone (a substring test would keep passing, since the amended bullet still
+starts with the same words), and `23r` proves the quoted phrase survives in
+both the bullet and its citation.
+
+### Fixed in the same task — four defects the review round found (W2155 round two)
+
+The cap survived its own review round; its **edges** did not. All four were
+found before the change shipped — one by the specialist security reviewer, one
+by an exploratory session chartered against the cap's own stranding risk, one
+by the paper walkthrough the task's `integration_tests` asked for, and three
+more by the code reviewer.
+
+**The harden step mandated a round the cap forbade.** Step 5.6 / Phase 3.6
+orders a re-review whenever a hardened check enters the test tree, and says in
+terms not to weigh whether the edit was substantial. Nine such post-review
+re-review sites existed across four files and the README, and **not one of them
+deferred to the new ceiling** — while the cap's own limits paragraph claimed the
+rule was "not contradicted elsewhere in the port". An agent that obeyed the
+harden step ran a third round for a non-critical reason and then met a hard gate
+whose only sanctioned third round is one clearing a `critical`, and whose remedy
+for a failed check is another re-run: no terminating exit. An agent that obeyed
+the cap instead shipped unreviewed executable code with a cited reason to do it.
+
+The fix is a rule, not nine cross-references: **three dispatches are not rounds.**
+The cap bounds the find-and-fix loop *over one diff*, so a dispatch that is not
+another turn of that loop does not spend a round — a crashed one, a review of
+material no earlier round saw (the harden case), and a repair demanded by the
+completion self-check. Each is scoped to its own reason, and findings it raises
+about already-reviewed lines are treated as if they had arrived at the ceiling,
+so this buys no rounds. The harden step, Phase 3.6 and the completion gate each
+say so locally, because a reader who lands there and never returns to Step 5
+must still get it right.
+
+**The third of those was a deadlock nobody had reported yet.** The completion
+gate mandates a reviewer re-run on *any* failed check and budgets no rounds for
+it, so a passthrough defect surfacing at the ceiling would have pitted the gate
+against the cap with no compliant exit. Found by walking a task through the
+review path on paper, which is exactly what the task's `integration_tests` asked
+for and the reason that step is worth doing.
+
+**The security carve-out never fired on the single-round path.** It was
+grammatically inside the "after round two" disposition — in all three copies —
+while the port makes one round the default and an unamended neighbouring bullet
+still called `minor` issues optional. A `category: "security"`, `severity:
+"minor"` finding from round one was therefore neither fixed nor recorded. The
+rule is now stated **outside** the cap: never recorded, at any severity, at any
+round number, round one included, and the `minor`-issues bullet excludes it
+explicitly.
+
+**And it keyed on the wrong thing.** The carve-out named `category: "security"`,
+but a security control failing a `CODE-REVIEW.md` bullet arrives as `category:
+"project_check"` — at the reviewer's documented default `important`, the one
+default this port actually does document. An unauthenticated mutation route
+could have been recorded and shipped under a rule the prose itself describes as
+written for nits. The carve-out now keys on **subject matter**, not the category
+string.
+
+**Two smaller ones.** The fail-closed round-two default capped dispatches but
+also silently licensed *recording* on a compacted session that had never run a
+real round one — recording now requires having seen a round-one findings list
+and fixed against it. And both Complete Completion Process variants read as
+capping Critical fixes; Critical is now split out at both.
+
+### Fixed — the security carve-out's restatements, after a specialist re-check
+
+The specialist security review was re-run against the round-two fixes and came
+back `partial` a second time — on a narrower gap, and a real one. The **canon**
+now keyed on subject matter, but its two **restatements** still enumerated
+`category: "security"` and `project_check` and stopped there. The reviewer's
+category enum has seven values, and security substance lands in others
+routinely: a violated "don't log tokens" pitfall arrives as `category:
+"pitfall"`, a hardcoded credential noted during review as `code_quality`, both
+`important` by default. The restatement that mattered most is the hard-gate
+bullet — the last check before the PATCH — and it deferred for the round
+definition but not for the security rule. **Both restatements now say the two
+routes are examples, not the test.**
+
+Two more from the same pass. **"Fixed, or escalated" had only one working
+limb:** the single named non-submit exit (`review_blocked` /
+`review_escalation`) was textually bound to `critical`, so an `important` or
+`minor` security finding that could not be fixed faced three prohibitions and
+no compliant path — and that pressure resolves toward submitting. The escalate
+limb now names that exit explicitly, **whatever severity the finding carries**.
+And the one recording instruction added by the non-round paragraph — "record
+which dispatches you treated as non-rounds, and why" — was unbounded free text
+into a persisted, rendered sink, where every sibling instruction constrains its
+payload; it now carries the same redaction pointer, which matters because
+reason 2's "why" describes harden-drafted material this port classifies as
+application-influenced text.
+
+Cases `23ah`, `23ai` and `23aj` pin all three, so no site can drift back to a
+bare enumeration or lose the exit.
+
+### Recorded, not fixed — round two's remaining findings
+
+The cap this release ships says remaining `important` and `minor` findings after
+round two are recorded rather than fixed, security excepted. Applying that rule
+to this task's own review, three `minor` `code_quality` findings from round two
+are recorded here rather than fixed:
+
+- `minor` / `code_quality` / `skills/stride-workflow/SKILL.md:237` — three
+  consecutive blank lines where the section uses one. Presentational only; no
+  assertion, anchor arithmetic or grep depends on it.
+- `minor` / `code_quality` / `skills/stride-workflow/SKILL.md:241` — non-round
+  carve-out 2 ("a dispatch reviewing material no previous round saw") states its
+  trigger more broadly than its worked example, so an agent could argue that
+  fixes it wrote in response to round one are themselves unseen material and
+  spend an extra dispatch. The outcome constraint one paragraph later already
+  forces any finding such a dispatch raises about already-reviewed lines onto
+  the at-ceiling disposition, so the loophole buys tokens rather than fixes.
+- `minor` / `code_quality` / `hooks/test-stride-hook.sh:5676` — the `23ag`
+  sweep's skip-list carries a deference keyword (`same terms as a check`) that
+  no current mandate line contains: a pre-authorized exemption inside an
+  assertion whose purpose is to refuse exemptions. It would silently absolve a
+  future undeferred mandate that happened to carry the phrase. The other five
+  keyword skips are live and load-bearing.
+
+The security findings above were **not** recorded under that rule, because the
+rule this release ships exempts them — which is the point of the exemption, and
+this task is the first thing to test it.
+
+### Added — hook suite coverage
+
+**Test Group 23** (bash) and **Test Group 20** (PowerShell), **65 cases each**,
+mirrored case-for-case and verified label-for-label. They pin that the rule is stated, stated exactly once,
+placed inside the hard gate rather than merely somewhere in the file, and not
+contradicted elsewhere — plus the anchor sitting on the line immediately above
+the sentence it governs, and negative pins holding the W2156 (`cosmetic`,
+`schema_version` `1.7`) and W2157 (`dispatch_count`) boundaries so this task
+cannot silently pre-empt the next two.
+
+**The port-wide contradiction sweep is the case that would have caught the
+harden defect**, and it did not exist in round one — the group built a
+whole-port text variable and then used it for a single assertion. It now sweeps
+every markdown contract for the known competing re-review phrasings and requires
+each hit to sit beside a deference, skipping flow-diagram lines that restate
+prose. It was proven to bite by injecting an undeferred mandate and watching it
+go red. It is a **keyword** sweep, not a proof of consistency — a contradiction
+phrased in words it does not carry passes it — and stated-limit 1 in the
+contract now says exactly that, where round one had claimed the group pinned
+non-contradiction outright.
+
+**No executed half was written, and that is a decision rather than a gap.** The
+reference's Group 36 `awk`-extracts its `round_cap_ok` jq out of
+`review-block-extraction.md` and `eval`s it, so the test runs the contract's
+own bytes. Copilot ships no executable check to extract — the cap is prose — so
+there is nothing to extract. Hand-*inventing* check logic to have an executed
+half would be W2127's defect in a new costume: there, 25 hand-retyped
+assertions went green over a real defect precisely because they tested the
+retyping. Both group headers record this, and record that a green group means
+"the contract says the right thing", never "the cap is enforced".
+
+**Two mirror-fidelity fixes.** The bash half counted with `grep -c`, which
+counts matching **lines**, while the PowerShell half counts **occurrences** —
+so four exact-count cases asserted subtly different propositions and would have
+diverged the first time a needle appeared twice on one line. Bash now counts
+occurrences too. And the bash half's file list was word-split from `find`
+output; with `set -f` unset, a future markdown filename carrying a space or a
+glob character would have silently shrunk the scanned set — which, because the
+sweeps are exactly-zero and exactly-one assertions, would have made them **pass**
+rather than fail. It is read into an array.
+
+### Fixed — `assert_contains` failed on large haystacks under `pipefail`
+
+Found while writing Group 23. The helper piped its haystack into `grep -q`,
+which exits at the first match and closes the pipe — SIGPIPE-ing a writer still
+pushing bytes. Under this file's `set -o pipefail` that turned a genuine
+**match** into status 141 and failed the assertion. It only bites past the
+~64KB pipe buffer, which is why 22 groups of small fixtures never saw it and
+Group 23's whole-contract haystacks did immediately: every assertion against
+`skills/stride-workflow/SKILL.md` (119KB) failed while the same needle grepped
+directly from the file passed. The helper now uses a herestring, and `--` so a
+needle beginning with `-` cannot be read as an option. The PowerShell half uses
+`.Contains()` and never had the bug.
+
 ## [2.36.0] - 2026-09-02
 
 ### Added — the loop gate: a completion record, an `agentStop` gate, and the coverage that proves it (G423)

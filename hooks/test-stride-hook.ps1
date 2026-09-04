@@ -3498,6 +3498,297 @@ try {
 }
 
 # ============================================================
+# Test Group 20: two-round review cap (W2155)
+# ============================================================
+# PowerShell mirror of test-stride-hook.sh Test Group 23.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. The cap this group covers is
+# PROSE, not a pin: nothing in stride-copilot refuses a third reviewer
+# dispatch, because no hook can observe an agent dispatch and no counter file
+# exists. So these cases pin that the rule is STATED, stated ONCE, stated in
+# the right place, and not contradicted elsewhere in the port. They cannot and
+# do not verify that the rule is OBEYED at runtime. Read a green Group 20 as
+# "the contract says the right thing", never as "the cap is enforced".
+#
+# NOT MIRRORED, with the reason recorded so each gap reads as a decision:
+#   * Nothing. Unlike Groups 18/19 — where one half shells out to tools the
+#     other does not — both halves here read the SAME markdown contracts, so
+#     every case in Group 23 is mirrorable and every one is mirrored.
+#   * No cross-half byte-parity case is added (Groups 18/19 carry one). Both
+#     halves read identical bytes on disk, so there is no artifact to compare —
+#     but identical bytes do NOT imply identical assertions, so the two halves
+#     must still be kept semantically equivalent BY HAND. Get-G20Count and the
+#     bash half's g23_count both count literal OCCURRENCES for exactly that
+#     reason: `grep -c` would have counted matching LINES, and the mirrored
+#     exact-count cases would then assert different propositions.
+Write-Host ""
+Write-Host "=== Test Group 20: two-round review cap (W2155) ==="
+
+$G20Root = Split-Path -Parent $ScriptDir
+$G20Wf   = Join-Path $G20Root 'skills/stride-workflow/SKILL.md'
+$G20Sub  = Join-Path $G20Root 'skills/stride-subagent-workflow/SKILL.md'
+$G20Ct   = Join-Path $G20Root 'skills/stride-completing-tasks/SKILL.md'
+$G20Rv   = Join-Path $G20Root 'agents/task-reviewer.agent.md'
+
+if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -and (Test-Path $G20Rv))) {
+    Write-Host "  SKIP: Test Group 20 (contract files not found relative to $ScriptDir)"
+} else {
+    $G20WfTxt  = Get-Content -Raw $G20Wf
+    $G20SubTxt = Get-Content -Raw $G20Sub
+    $G20CtTxt  = Get-Content -Raw $G20Ct
+    $G20RvTxt  = Get-Content -Raw $G20Rv
+
+    # Every markdown contract in the port. The bash half enumerates these with
+    # find rather than a recursive grep, because the grep on a developer
+    # machine may be ugrep and would honor .gitignore; Get-ChildItem has no
+    # such behaviour, but the file SET must match the bash half exactly.
+    $G20Md = Get-ChildItem -Path (Join-Path $G20Root 'skills'), (Join-Path $G20Root 'agents') `
+        -Filter '*.md' -Recurse -File | Sort-Object FullName
+    $G20AllTxt = ($G20Md | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
+
+    # Literal (non-regex) occurrence count, mirroring the bash half's `grep -cF`
+    # on a single concatenated string. Never a hand-rolled loop.
+    function Get-G20Count {
+        param([string]$Text, [string]$Needle)
+        return ([regex]::Matches($Text, [regex]::Escape($Needle))).Count
+    }
+
+    # --- The ceiling itself (AC 1, verification step 1) ---
+    Assert-Contains "23a: the ceiling is stated in the port's review step" `
+        'Two review rounds is the ceiling, and the second verifies rather than re-reviews.' $G20WfTxt
+
+    Assert-Contains "23b: carries the canon back-reference anchor" `
+        '<!-- canon:review-round-cap v1 -->' $G20WfTxt
+
+    # Structural: the anchor must sit on the line immediately above the
+    # sentence it governs. A bare presence check passes even after the anchor
+    # drifts to some unrelated paragraph, which is exactly how a
+    # back-reference rots.
+    $G20WfLines  = Get-Content $G20Wf
+    $G20AnchorLn = ($G20WfLines | Select-String -SimpleMatch '<!-- canon:review-round-cap v1 -->' | Select-Object -First 1).LineNumber
+    $G20CeilLn   = ($G20WfLines | Select-String -SimpleMatch 'Two review rounds is the ceiling' | Select-Object -First 1).LineNumber
+    Assert-Eq "23c: the anchor sits immediately above the ceiling sentence" `
+        "1" "$($G20CeilLn - $G20AnchorLn)"
+
+    # --- The round definition, in surfaces this port actually has (AC 2) ---
+    Assert-Contains "23d: a crashed or unparsable dispatch consumes no round" `
+        'consumes no round' $G20WfTxt
+    Assert-Contains "23d: and the threshold is the parse, not the attempt" `
+        'parsable' $G20WfTxt
+    Assert-Contains "23d: the definition is anchored on the extraction step" `
+        'IS a completed review round' $G20SubTxt
+
+    # AC 2 negative. The port carries neither artifact, so each name may appear
+    # ONLY as a prohibition against importing it — never as a live mechanism.
+    # A second occurrence means someone started depending on a file that does
+    # not exist here.
+    $G20MergedLines = ($G20Md | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_.Contains('$MERGED') }) -join "`n"
+    Assert-Eq "23e: `$MERGED named exactly once in the port" `
+        "1" "$(Get-G20Count -Text $G20AllTxt -Needle '$MERGED')"
+    Assert-Contains "23e: and only as a prohibition, never as a mechanism" `
+        'do not import' $G20MergedLines
+
+    $G20RoundsLines = ($G20Md | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_.Contains('.review-rounds-') }) -join "`n"
+    Assert-Eq "23e: the round-counter file named exactly once" `
+        "1" "$(Get-G20Count -Text $G20AllTxt -Needle '.review-rounds-')"
+    Assert-Contains "23e: and only as a prohibition, never as a mechanism" `
+        'do not import' $G20RoundsLines
+
+    # --- Round two: mission scoped, evidence not (AC 3) ---
+    Assert-Contains "23f: round two still receives the full diff" `
+        'still receives the full diff' $G20WfTxt
+    Assert-Contains "23g: round two verifies rather than re-reviews" `
+        'verifies rather than re-reviews' $G20WfTxt
+    Assert-Contains "23h: the scoping rule is stated in the review step" `
+        'Scoping changes what you look for, never what you emit' $G20WfTxt
+    Assert-Contains "23h: and in the reviewer's own contract" `
+        'Scoping changes what you look for, never what you emit' $G20RvTxt
+
+    # --- After round two: record, do not fix (AC 4) ---
+    Assert-Contains "23i: remaining non-Critical findings are recorded, not fixed" `
+        'RECORDED, not fixed' $G20WfTxt
+    Assert-Contains "23i: recorded by severity, category and file:line only" `
+        'severity, category and `file:line`' $G20WfTxt
+
+    # --- Critical is exempt and always blocks (AC 5) ---
+    Assert-Contains "23j: a critical is exempt from the cap" `
+        'exempt from the cap' $G20WfTxt
+    Assert-Contains "23j: and blocks at any round number" `
+        'always blocks, at any round number' $G20WfTxt
+    Assert-Contains "23k: the unfixable-Critical exit is named" `
+        'review_blocked' $G20WfTxt
+    Assert-Contains "23k: with its failure kind" `
+        'review_escalation' $G20WfTxt
+    # The manual test's target: a Critical found late must not be stranded by
+    # the ceiling. Pin the sentence that says so, not merely the exemption.
+    Assert-Contains "23k: a late Critical is explicitly not stranded" `
+        'never stranded by the ceiling' $G20WfTxt
+
+    # --- A security issue is never recordable, at any severity (AC 6) ---
+    Assert-Contains "23l: the security carve-out is in the review step" `
+        'A security finding is never recorded' $G20WfTxt
+    Assert-Contains "23m: and in the completion self-check (verification step 2)" `
+        'A security finding is never recorded, at any severity' $G20CtTxt
+
+    # --- The hard gate carries the cap, inside the gate (AC 6 placement) ---
+    Assert-Contains "23n: the self-check has a rounds-within-cap bullet" `
+        'Review rounds are within the cap' $G20CtTxt
+
+    # Structural: presence in the file is not presence in the GATE. Pin that
+    # the bullet falls between the gate's heading and its closing paragraph.
+    $G20CtLines   = Get-Content $G20Ct
+    $G20GateLn    = ($G20CtLines | Select-String -SimpleMatch 'MANDATORY pre-submission self-check (hard gate)' | Select-Object -First 1).LineNumber
+    $G20BulletLn  = ($G20CtLines | Select-String -SimpleMatch 'Review rounds are within the cap' | Select-Object -First 1).LineNumber
+    $G20CloseLn   = ($G20CtLines | Select-String -SimpleMatch 'This gate is **not bypassable**' | Select-Object -First 1).LineNumber
+    if (($G20GateLn -lt $G20BulletLn) -and ($G20BulletLn -lt $G20CloseLn)) {
+        $G20Inside = 'inside'
+    } else {
+        $G20Inside = "outside (gate=$G20GateLn bullet=$G20BulletLn close=$G20CloseLn)"
+    }
+    Assert-Eq "23o: the bullet sits inside the hard gate, not merely in the file" `
+        'inside' $G20Inside
+
+    # --- Prose or pin? Say which (AC 7) ---
+    Assert-Contains "23p: the enforcement class is stated, not left implied" `
+        'This cap is stated, not mechanically enforced.' $G20WfTxt
+    Assert-Contains "23p: the self-check bullet says so too" `
+        'This bullet is a self-report, not a pin' $G20CtTxt
+    Assert-Contains "23u: an unestablishable round number fails closed" `
+        'treat the next dispatch as round two' $G20WfTxt
+
+    # --- The contradiction that existed before W2155 is closed ---
+    # The old bullet ended at the hook with nothing bounding it. Whole-LINE
+    # match: the amended bullet still STARTS with that text, so a substring
+    # test would keep passing after the amendment and pin nothing.
+    $G20OldBullet = '- After fixing, you do NOT need to re-run the reviewer — proceed to the after_doing hook'
+    $G20SubLines  = Get-Content $G20Sub
+    Assert-Eq "23q: the unbounded re-review bullet is gone" `
+        "0" "$(@($G20SubLines | Where-Object { $_ -eq $G20OldBullet }).Count)"
+
+    # ...but the clause itself must survive, because Phase 3.5 quotes it
+    # verbatim ("a deliberate exception to Phase 3's ..."). Two occurrences:
+    # the bullet and the citation. Rewriting the phrase would dangle it.
+    Assert-Eq "23r: the quoted clause survives in both the bullet and its citation" `
+        "2" "$(Get-G20Count -Text $G20SubTxt -Needle 'fixing, you do NOT need to re-run the reviewer')"
+
+    Assert-Contains "23s: the issues-found bullets defer to the ceiling" `
+        'the two-round ceiling in `stride-workflow` Step 5' $G20SubTxt
+    Assert-Contains "23v: the D66 re-review paragraph points at the ceiling" `
+        'bounded by the two-round ceiling in Step 5 above' $G20WfTxt
+
+    # --- The reviewer's round-two input contract ---
+    Assert-Contains "23t: review_round is an optional reviewer input" `
+        '`review_round`' $G20RvTxt
+    Assert-Contains "23t: and absent means round 1" `
+        'absent means round 1' $G20RvTxt
+
+    # --- Single source: the ceiling is stated ONCE and cross-referenced ---
+    # Every other site defers. A second statement is how two copies drift
+    # apart, which is the D221 failure mode this port has already been bitten
+    # by.
+    Assert-Eq "23w: the ceiling sentence appears exactly once in the port" `
+        "1" "$(Get-G20Count -Text $G20AllTxt -Needle 'Two review rounds is the ceiling')"
+
+    # --- Dispatches that are NOT rounds (round-two fix) ---
+    # The cap bounds the find-and-fix loop over one diff. Three dispatches are
+    # outside it, and each was a live deadlock before it was a paragraph.
+    Assert-Contains "23z: the non-round carve-out is stated" `
+        'Three dispatches are NOT rounds' $G20WfTxt
+    Assert-Contains "23z: the harden re-review is one of them" `
+        "Step 5.6's re-review requirement stands and this cap never overrides it" $G20WfTxt
+    Assert-Contains "23z: so is a repair demanded by the completion self-check" `
+        'A repair dispatch demanded by the completion self-check' $G20WfTxt
+    Assert-Contains "23z: non-round dispatches are scoped, not a round budget" `
+        'so this is not a way to buy rounds' $G20WfTxt
+    Assert-Contains "23aa: the harden step says the ceiling does not bound it" `
+        'the review-round ceiling in Step 5 does NOT bound this dispatch' $G20WfTxt
+    Assert-Contains "23aa: and Phase 3.6 says it too" `
+        'NOT bounded by the review-round ceiling' $G20SubTxt
+    Assert-Contains "23aa: and the completion gate says a repair re-run is not a round" `
+        'is a repair dispatch, not a review round' $G20CtTxt
+
+    # --- The security rule stands OUTSIDE the cap (round-two fix) ---
+    Assert-Contains "23ab: the security rule is not conditioned on the round" `
+        'at any severity, at any round number, including round one' $G20WfTxt
+    Assert-Contains "23ab: it stands outside the cap explicitly" `
+        'This rule stands outside the cap entirely' $G20WfTxt
+    Assert-Contains "23ab: and the completion gate says so too" `
+        'at any severity and at any round number including round one' $G20CtTxt
+    Assert-Contains "23ac: a minor security finding is not optional" `
+        'except a security finding, which is never optional at any severity' $G20SubTxt
+    Assert-Contains "23ad: the carve-out is not limited to the security category" `
+        'However it was categorized' $G20WfTxt
+    Assert-Contains "23ad: naming the project_check route explicitly" `
+        'wearing another category' $G20WfTxt
+    Assert-Contains "23ad: and the completion gate names it too" `
+        '`project_check` failure on a security bullet' $G20CtTxt
+
+    # --- The security rule keys on SUBJECT MATTER at every site, and its
+    #     escalate limb has a named exit (security re-check fixes) ---
+    Assert-Contains "23ah: the gate restatement is not a two-route enumeration" `
+        'Those two are examples, not the test' $G20CtTxt
+    Assert-Contains "23ah: naming the categories that carry security substance" `
+        '`code_quality` and `pitfall` carry security substance routinely' $G20CtTxt
+    Assert-Contains "23ah: and the subagent-workflow bullet generalizes too" `
+        'Those two are examples, not the test' $G20SubTxt
+    Assert-Contains "23ai: the escalate limb has a named exit" `
+        'the escalate limb has a named exit' $G20WfTxt
+    Assert-Contains "23ai: usable at any severity, not just critical" `
+        'whatever severity it carries' $G20WfTxt
+    Assert-Contains "23aj: the non-round recording instruction is bounded" `
+        'never quote reviewer prose, drafted-check contents, or observed application output' $G20WfTxt
+
+    # --- Recording requires a real round one (round-two fix) ---
+    Assert-Contains "23ae: recording is what the second round buys" `
+        "Entering record-don't-fix requires that you actually saw a round-one findings list" $G20WfTxt
+    Assert-Contains "23ae: the fail-closed default does not unlock recording" `
+        'it does **not** license recording' $G20WfTxt
+
+    # --- Single-source: the ROUND DEFINITION, like the ceiling sentence ---
+    Assert-Eq "23af: the round definition is stated exactly once in the port" `
+        "1" "$(Get-G20Count -Text $G20AllTxt -Needle 'A round is a `task-reviewer` dispatch whose response yielded')"
+    Assert-Contains "23af: and the gate defers rather than restating it" `
+        'read it there rather than from this bullet, which deliberately does not restate it' $G20CtTxt
+
+    # --- The port-wide contradiction sweep ---
+    # Stated-limit 1 tells a maintainer this group checks the rule is not
+    # contradicted elsewhere. Before this sweep existed it did not, and a real
+    # contradiction (the harden step's mandatory re-review) sat in a file the
+    # group already read. Scope: IMPERATIVE mandates only — a gate check whose
+    # remedy happens to be "re-run the reviewer" is covered by the gate
+    # preamble's repair-dispatch rule (pinned by 23aa). ASCII flow-diagram
+    # lines are skipped: they restate prose and instruct nothing independently.
+    # This is a KEYWORD sweep, not a proof of consistency.
+    $G20Mandates = $G20Md | ForEach-Object { Get-Content $_.FullName } | Where-Object {
+        $_.Contains('Re-run the reviewer') -or $_.Contains('re-review whenever')
+    }
+    $G20Undeferred = @($G20Mandates | Where-Object {
+        -not ($_.Contains([char]0x2502)) -and
+        -not ($_.StartsWith('               ')) -and
+        -not ($_.Contains('ceiling')) -and
+        -not ($_.Contains('two-round')) -and
+        -not ($_.Contains('NOT rounds')) -and
+        -not ($_.Contains('not a review round')) -and
+        -not ($_.Contains('same terms as a check'))
+    })
+    Assert-Eq "23ag: every competing re-review mandate defers to the ceiling" `
+        "0" "$($G20Undeferred.Count)"
+    # ...and the sweep must actually be looking at something: a zero-hit scan
+    # would also assert 0 and pin nothing.
+    Assert-Eq "23ag: and the sweep found mandates to check" `
+        "1" "$(if (@($G20Mandates | Where-Object { $_.Contains('Re-run the reviewer') }).Count -ge 1) { 1 } else { 0 })"
+
+    # --- Chained-task boundaries: W2155 must not pre-empt W2156 or W2157 ---
+    Assert-Eq "23x: no cosmetic finding class yet (that is W2156)" `
+        "0" "$(Get-G20Count -Text $G20AllTxt -Needle 'cosmetic')"
+    Assert-Eq "23x: and the reviewer schema is still 1.6 (the 1.7 bump is W2156)" `
+        "0" "$(Get-G20Count -Text $G20RvTxt -Needle '"1.7"')"
+    Assert-Contains "23x: schema_version unchanged at 1.6" `
+        'Always `"1.6"` for this prompt version' $G20RvTxt
+    Assert-Eq "23y: no dispatch_count telemetry yet (that is W2157)" `
+        "0" "$(Get-G20Count -Text $G20AllTxt -Needle 'dispatch_count')"
+}
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

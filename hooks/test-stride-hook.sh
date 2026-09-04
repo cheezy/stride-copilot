@@ -36,7 +36,13 @@ assert_eq() {
 
 assert_contains() {
   local label="$1" needle="$2" haystack="$3"
-  if echo "$haystack" | grep -qF "$needle"; then
+  # Herestring, not a pipe. `grep -q` exits at the first match and closes the
+  # pipe, which SIGPIPEs a writer still pushing a large haystack — and under
+  # this file's `set -o pipefail` that turns a genuine MATCH into status 141,
+  # failing the assertion. It only bites past the ~64KB pipe buffer, which is
+  # why 22 groups of small fixtures never saw it and Group 23's whole-contract
+  # haystacks did (found while writing W2155).
+  if grep -qF -- "$needle" <<< "$haystack"; then
     echo -e "  ${GREEN}PASS${RESET}: $label"
     PASS=$((PASS + 1))
   else
@@ -5393,6 +5399,327 @@ G22NAIVE
   fi
 fi
 
+# ============================================================
+# Test Group 23: two-round review cap (W2155)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 20.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. The cap this group covers is
+# PROSE, not a pin: nothing in stride-copilot refuses a third reviewer
+# dispatch, because no hook can observe an agent dispatch and no counter file
+# exists. So these cases pin that the rule is STATED, stated ONCE, stated in
+# the right place, and not contradicted elsewhere in the port. They cannot and
+# do not verify that the rule is OBEYED at runtime. Read a green Group 23 as
+# "the contract says the right thing", never as "the cap is enforced".
+#
+# NOT PORTED, recorded so the omissions read as decisions:
+#   * The reference's executed half. Stride's Group 36 awk-extracts its
+#     round_cap_ok jq out of review-block-extraction.md and evals it, so the
+#     test runs the contract's own bytes rather than a retyping of them.
+#     Copilot ships NO executable check to extract — the cap is prose — so
+#     there is nothing to extract and no executed half is faked here.
+#     Hand-INVENTING check logic to have an executed half would be W2127's
+#     defect in a new costume: there, 25 hand-retyped assertions went green
+#     over a real defect precisely because they tested the retyping.
+#   * Any assertion on round COUNTING. The count lives in the orchestrator's
+#     context and touches no file, so it has no observable surface to assert
+#     against. That is a stated limit of the design, not a gap in the suite.
+echo ""
+echo "=== Test Group 23: two-round review cap (W2155) ==="
+
+G23_ROOT="$SCRIPT_DIR/.."
+G23_WF="$G23_ROOT/skills/stride-workflow/SKILL.md"
+G23_SUB="$G23_ROOT/skills/stride-subagent-workflow/SKILL.md"
+G23_CT="$G23_ROOT/skills/stride-completing-tasks/SKILL.md"
+G23_RV="$G23_ROOT/agents/task-reviewer.agent.md"
+
+if [ ! -f "$G23_WF" ] || [ ! -f "$G23_SUB" ] || [ ! -f "$G23_CT" ] || [ ! -f "$G23_RV" ]; then
+  echo "  SKIP: Test Group 23 (contract files not found relative to $SCRIPT_DIR)"
+else
+  G23_WF_TXT=$(cat "$G23_WF")
+  G23_SUB_TXT=$(cat "$G23_SUB")
+  G23_CT_TXT=$(cat "$G23_CT")
+  G23_RV_TXT=$(cat "$G23_RV")
+
+  # Every markdown contract in the port, enumerated with find rather than a
+  # recursive grep: the grep on a developer machine may be ugrep, which honors
+  # .gitignore during directory traversal and would silently scan nothing.
+  # Read into an ARRAY, never a word-split string: this file sets `set -uo
+  # pipefail` but not `set -f`, so a future markdown filename containing a space
+  # or a glob character would silently shrink the scanned set — and because the
+  # sweeps below are exactly-zero and exactly-one assertions, a shrunken set
+  # makes them PASS rather than fail.
+  G23_MD=()
+  while IFS= read -r g23f; do G23_MD+=("$g23f"); done \
+    < <(find "$G23_ROOT/skills" "$G23_ROOT/agents" -name '*.md' -type f 2>/dev/null | sort)
+  G23_ALL_TXT=$(cat "${G23_MD[@]}" 2>/dev/null || true)
+
+  # Literal OCCURRENCE count — deliberately not `grep -c`, which counts matching
+  # LINES. The PowerShell twin counts occurrences via [regex]::Matches().Count,
+  # and two needles on one line would make the mirrored cases assert different
+  # propositions. `|| true` because grep exits 1 on no match under pipefail.
+  g23_count() {
+    { grep -oF -- "$2" <<< "$1" || true; } | grep -c . || true
+  }
+
+  # --- The ceiling itself (AC 1, verification step 1) ---
+  assert_contains "23a: the ceiling is stated in the port's review step" \
+    "Two review rounds is the ceiling, and the second verifies rather than re-reviews." \
+    "$G23_WF_TXT"
+
+  assert_contains "23b: carries the canon back-reference anchor" \
+    "<!-- canon:review-round-cap v1 -->" "$G23_WF_TXT"
+
+  # Structural: the anchor must sit on the line immediately above the sentence
+  # it governs. A bare presence check passes even after the anchor drifts to
+  # some unrelated paragraph, which is exactly how a back-reference rots.
+  G23_ANCHOR_LN=$(grep -nF "<!-- canon:review-round-cap v1 -->" "$G23_WF" | head -1 | cut -d: -f1)
+  G23_CEIL_LN=$(grep -nF "Two review rounds is the ceiling" "$G23_WF" | head -1 | cut -d: -f1)
+  assert_eq "23c: the anchor sits immediately above the ceiling sentence" \
+    "1" "$((G23_CEIL_LN - G23_ANCHOR_LN))"
+
+  # --- The round definition, in surfaces this port actually has (AC 2) ---
+  assert_contains "23d: a crashed or unparsable dispatch consumes no round" \
+    "consumes no round" "$G23_WF_TXT"
+  assert_contains "23d: and the threshold is the parse, not the attempt" \
+    "parsable" "$G23_WF_TXT"
+  assert_contains "23d: the definition is anchored on the extraction step" \
+    "IS a completed review round" "$G23_SUB_TXT"
+
+  # AC 2 negative. The port carries neither artifact, so each name may appear
+  # ONLY as a prohibition against importing it — never as a live mechanism.
+  # A second occurrence means someone started depending on a file that does
+  # not exist here.
+  G23_MERGED_LINES=$(grep -hF '$MERGED' "${G23_MD[@]}" 2>/dev/null || true)
+  assert_eq "23e: \$MERGED named exactly once in the port" \
+    "1" "$(g23_count "$G23_ALL_TXT" '$MERGED')"
+  assert_contains "23e: and only as a prohibition, never as a mechanism" \
+    "do not import" "$G23_MERGED_LINES"
+
+  G23_ROUNDS_LINES=$(grep -hF '.review-rounds-' "${G23_MD[@]}" 2>/dev/null || true)
+  assert_eq "23e: the round-counter file named exactly once" \
+    "1" "$(g23_count "$G23_ALL_TXT" '.review-rounds-')"
+  assert_contains "23e: and only as a prohibition, never as a mechanism" \
+    "do not import" "$G23_ROUNDS_LINES"
+
+  # --- Round two: mission scoped, evidence not (AC 3) ---
+  assert_contains "23f: round two still receives the full diff" \
+    "still receives the full diff" "$G23_WF_TXT"
+  assert_contains "23g: round two verifies rather than re-reviews" \
+    "verifies rather than re-reviews" "$G23_WF_TXT"
+  assert_contains "23h: the scoping rule is stated in the review step" \
+    "Scoping changes what you look for, never what you emit" "$G23_WF_TXT"
+  assert_contains "23h: and in the reviewer's own contract" \
+    "Scoping changes what you look for, never what you emit" "$G23_RV_TXT"
+
+  # --- After round two: record, do not fix (AC 4) ---
+  assert_contains "23i: remaining non-Critical findings are recorded, not fixed" \
+    "RECORDED, not fixed" "$G23_WF_TXT"
+  assert_contains "23i: recorded by severity, category and file:line only" \
+    "severity, category and \`file:line\`" "$G23_WF_TXT"
+
+  # --- Critical is exempt and always blocks (AC 5) ---
+  assert_contains "23j: a critical is exempt from the cap" \
+    "exempt from the cap" "$G23_WF_TXT"
+  assert_contains "23j: and blocks at any round number" \
+    "always blocks, at any round number" "$G23_WF_TXT"
+  assert_contains "23k: the unfixable-Critical exit is named" \
+    "review_blocked" "$G23_WF_TXT"
+  assert_contains "23k: with its failure kind" \
+    "review_escalation" "$G23_WF_TXT"
+  # The manual test's target: a Critical found late must not be stranded by
+  # the ceiling. Pin the sentence that says so, not merely the exemption.
+  assert_contains "23k: a late Critical is explicitly not stranded" \
+    "never stranded by the ceiling" "$G23_WF_TXT"
+
+  # --- A security issue is never recordable, at any severity (AC 6) ---
+  assert_contains "23l: the security carve-out is in the review step" \
+    "A security finding is never recorded" "$G23_WF_TXT"
+  assert_contains "23m: and in the completion self-check (verification step 2)" \
+    "A security finding is never recorded, at any severity" "$G23_CT_TXT"
+
+  # --- The hard gate carries the cap, inside the gate (AC 6 placement) ---
+  assert_contains "23n: the self-check has a rounds-within-cap bullet" \
+    "Review rounds are within the cap" "$G23_CT_TXT"
+
+  # Structural: presence in the file is not presence in the GATE. Pin that the
+  # bullet falls between the gate's heading and its closing paragraph.
+  G23_GATE_LN=$(grep -nF "MANDATORY pre-submission self-check (hard gate)" "$G23_CT" | head -1 | cut -d: -f1)
+  G23_BULLET_LN=$(grep -nF "Review rounds are within the cap" "$G23_CT" | head -1 | cut -d: -f1)
+  G23_CLOSE_LN=$(grep -nF "This gate is **not bypassable**" "$G23_CT" | head -1 | cut -d: -f1)
+  if [ "$G23_GATE_LN" -lt "$G23_BULLET_LN" ] && [ "$G23_BULLET_LN" -lt "$G23_CLOSE_LN" ]; then
+    G23_INSIDE="inside"
+  else
+    G23_INSIDE="outside (gate=$G23_GATE_LN bullet=$G23_BULLET_LN close=$G23_CLOSE_LN)"
+  fi
+  assert_eq "23o: the bullet sits inside the hard gate, not merely in the file" \
+    "inside" "$G23_INSIDE"
+
+  # --- Prose or pin? Say which (AC 7) ---
+  assert_contains "23p: the enforcement class is stated, not left implied" \
+    "This cap is stated, not mechanically enforced." "$G23_WF_TXT"
+  assert_contains "23p: the self-check bullet says so too" \
+    "This bullet is a self-report, not a pin" "$G23_CT_TXT"
+  assert_contains "23u: an unestablishable round number fails closed" \
+    "treat the next dispatch as round two" "$G23_WF_TXT"
+
+  # --- The contradiction that existed before W2155 is closed ---
+  # The old bullet ended at the hook with nothing bounding it. Exact-line match
+  # (-x): the amended bullet still STARTS with that text, so a substring test
+  # would keep passing after the amendment and pin nothing.
+  assert_eq "23q: the unbounded re-review bullet is gone" \
+    "0" \
+    "$(grep -cxF -- '- After fixing, you do NOT need to re-run the reviewer — proceed to the after_doing hook' "$G23_SUB" || true)"
+
+  # ...but the clause itself must survive, because Phase 3.5 quotes it verbatim
+  # ("a deliberate exception to Phase 3's ..."). Two occurrences: the bullet
+  # and the citation. Rewriting the phrase would dangle the citation.
+  assert_eq "23r: the quoted clause survives in both the bullet and its citation" \
+    "2" "$(g23_count "$G23_SUB_TXT" 'fixing, you do NOT need to re-run the reviewer')"
+
+  assert_contains "23s: the issues-found bullets defer to the ceiling" \
+    "the two-round ceiling in \`stride-workflow\` Step 5" "$G23_SUB_TXT"
+  assert_contains "23v: the D66 re-review paragraph points at the ceiling" \
+    "bounded by the two-round ceiling in Step 5 above" "$G23_WF_TXT"
+
+  # --- The reviewer's round-two input contract ---
+  assert_contains "23t: review_round is an optional reviewer input" \
+    "\`review_round\`" "$G23_RV_TXT"
+  assert_contains "23t: and absent means round 1" \
+    "absent means round 1" "$G23_RV_TXT"
+
+  # --- Single source: the ceiling is stated ONCE and cross-referenced ---
+  # Every other site defers. A second statement is how two copies drift apart,
+  # which is the D221 failure mode this port has already been bitten by.
+  assert_eq "23w: the ceiling sentence appears exactly once in the port" \
+    "1" "$(g23_count "$G23_ALL_TXT" 'Two review rounds is the ceiling')"
+
+  # --- Dispatches that are NOT rounds (round-two fix) ---
+  # The cap bounds the find-and-fix loop over one diff. Three dispatches are
+  # outside it, and each was a live deadlock before it was a paragraph.
+  assert_contains "23z: the non-round carve-out is stated" \
+    "Three dispatches are NOT rounds" "$G23_WF_TXT"
+  assert_contains "23z: the harden re-review is one of them" \
+    "Step 5.6's re-review requirement stands and this cap never overrides it" "$G23_WF_TXT"
+  assert_contains "23z: so is a repair demanded by the completion self-check" \
+    "A repair dispatch demanded by the completion self-check" "$G23_WF_TXT"
+  # ...and it must not become a way to buy rounds.
+  assert_contains "23z: non-round dispatches are scoped, not a round budget" \
+    "so this is not a way to buy rounds" "$G23_WF_TXT"
+  # The harden step and the gate must each carry the deference locally — a
+  # reader who lands there and never returns to Step 5 still gets it right.
+  assert_contains "23aa: the harden step says the ceiling does not bound it" \
+    "the review-round ceiling in Step 5 does NOT bound this dispatch" "$G23_WF_TXT"
+  assert_contains "23aa: and Phase 3.6 says it too" \
+    "NOT bounded by the review-round ceiling" "$G23_SUB_TXT"
+  assert_contains "23aa: and the completion gate says a repair re-run is not a round" \
+    "is a repair dispatch, not a review round" "$G23_CT_TXT"
+
+  # --- The security rule stands OUTSIDE the cap (round-two fix) ---
+  # It was previously grammatically inside the "after round two" disposition,
+  # so it never fired on the single-round path — which the port makes the
+  # default. Pin that it is unconditional at every site, and that the
+  # neighbouring "minor issues are optional" bullet excludes it.
+  assert_contains "23ab: the security rule is not conditioned on the round" \
+    "at any severity, at any round number, including round one" "$G23_WF_TXT"
+  assert_contains "23ab: it stands outside the cap explicitly" \
+    "This rule stands outside the cap entirely" "$G23_WF_TXT"
+  assert_contains "23ab: and the completion gate says so too" \
+    "at any severity and at any round number including round one" "$G23_CT_TXT"
+  assert_contains "23ac: a minor security finding is not optional" \
+    "except a security finding, which is never optional at any severity" "$G23_SUB_TXT"
+  # The carve-out keys on SUBJECT MATTER, not the category string: a security
+  # control failing a CODE-REVIEW.md bullet arrives as category project_check
+  # at the reviewer's default `important` severity.
+  assert_contains "23ad: the carve-out is not limited to the security category" \
+    "However it was categorized" "$G23_WF_TXT"
+  assert_contains "23ad: naming the project_check route explicitly" \
+    "wearing another category" "$G23_WF_TXT"
+  assert_contains "23ad: and the completion gate names it too" \
+    "\`project_check\` failure on a security bullet" "$G23_CT_TXT"
+
+  # --- The security rule keys on SUBJECT MATTER at every site, and its
+  #     escalate limb has a named exit (security re-check fixes) ---
+  # The canon generalized first; the two restatements enumerated `security`
+  # and `project_check` and stopped there, so security substance filed as
+  # `code_quality` or `pitfall` still fell into record-don't-fix at the
+  # submission gate — the last check before the PATCH.
+  assert_contains "23ah: the gate restatement is not a two-route enumeration" \
+    "Those two are examples, not the test" "$G23_CT_TXT"
+  assert_contains "23ah: naming the categories that carry security substance" \
+    "\`code_quality\` and \`pitfall\` carry security substance routinely" "$G23_CT_TXT"
+  assert_contains "23ah: and the subagent-workflow bullet generalizes too" \
+    "Those two are examples, not the test" "$G23_SUB_TXT"
+  # "Fixed or escalated" is only half a disposition unless escalate has a
+  # mechanism. Before this, the only named non-submit exit was bound to
+  # `critical`, leaving a non-critical security finding with no compliant path.
+  assert_contains "23ai: the escalate limb has a named exit" \
+    "the escalate limb has a named exit" "$G23_WF_TXT"
+  assert_contains "23ai: usable at any severity, not just critical" \
+    "whatever severity it carries" "$G23_WF_TXT"
+  # The one added recording instruction that invites free prose must point at
+  # the redaction rules its siblings already carry.
+  assert_contains "23aj: the non-round recording instruction is bounded" \
+    "never quote reviewer prose, drafted-check contents, or observed application output" "$G23_WF_TXT"
+
+  # --- Recording requires a real round one (round-two fix) ---
+  # The fail-closed round-two default caps further DISPATCHES; it must not also
+  # license recording findings that never had a fix-and-verify pass.
+  assert_contains "23ae: recording is what the second round buys" \
+    "Entering record-don't-fix requires that you actually saw a round-one findings list" "$G23_WF_TXT"
+  assert_contains "23ae: the fail-closed default does not unlock recording" \
+    "it does **not** license recording" "$G23_WF_TXT"
+
+  # --- Single-source: the ROUND DEFINITION, like the ceiling sentence ---
+  # 23w pins the ceiling sentence to one site. The definition needs the same
+  # pin, or it is a live drift surface of exactly the D221 kind.
+  assert_eq "23af: the round definition is stated exactly once in the port" \
+    "1" "$(g23_count "$G23_ALL_TXT" 'A round is a `task-reviewer` dispatch whose response yielded')"
+  assert_contains "23af: and the gate defers rather than restating it" \
+    "read it there rather than from this bullet, which deliberately does not restate it" "$G23_CT_TXT"
+
+  # --- The port-wide contradiction sweep ---
+  # Stated-limit 1 tells a maintainer this group checks the rule is not
+  # contradicted elsewhere. Before this sweep existed it did not, and a real
+  # contradiction (the harden step's mandatory re-review) sat in a file the
+  # group already read. Every known competing re-review phrasing must sit
+  # beside a deference to Step 5. This is a KEYWORD sweep, not a proof — a
+  # contradiction phrased in words not listed here passes it, which is why
+  # stated-limit 1 now says exactly that.
+  # Scope: IMPERATIVE mandates only — text that orders a dispatch. A gate check
+  # whose remedy happens to be "re-run the reviewer" is covered by the gate
+  # preamble's repair-dispatch rule (pinned by 23aa) and is not swept here.
+  # ASCII flow-diagram lines are skipped: they restate prose and instruct
+  # nothing independently.
+  G23_UNDEFERRED=""
+  while IFS= read -r g23line; do
+    [ -n "$g23line" ] || continue
+    case "$g23line" in
+      *"│"*) continue ;;
+      "               "*) continue ;;
+      *"ceiling"*|*"two-round"*|*"NOT rounds"*|*"not a review round"*|*"same terms as a check"*) continue ;;
+    esac
+    G23_UNDEFERRED="$G23_UNDEFERRED$g23line
+"
+  done < <(grep -hF -e 'Re-run the reviewer' -e 're-review whenever' \
+             "${G23_MD[@]}" 2>/dev/null || true)
+  assert_eq "23ag: every competing re-review mandate defers to the ceiling" \
+    "0" "$(printf '%s' "$G23_UNDEFERRED" | grep -c . || true)"
+  # ...and the sweep must actually be looking at something: a zero-hit grep
+  # would also assert 0 and pin nothing. Pin that mandates exist to sweep.
+  assert_eq "23ag: and the sweep found mandates to check" \
+    "1" "$([ "$(grep -hcF -e 'Re-run the reviewer' "${G23_MD[@]}" 2>/dev/null | grep -c '^[1-9]' || true)" -ge 1 ] && echo 1 || echo 0)"
+
+  # --- Chained-task boundaries: W2155 must not pre-empt W2156 or W2157 ---
+  assert_eq "23x: no cosmetic finding class yet (that is W2156)" \
+    "0" "$(g23_count "$G23_ALL_TXT" 'cosmetic')"
+  assert_eq "23x: and the reviewer schema is still 1.6 (the 1.7 bump is W2156)" \
+    "0" "$(g23_count "$G23_RV_TXT" '"1.7"')"
+  assert_contains "23x: schema_version unchanged at 1.6" \
+    "Always \`\"1.6\"\` for this prompt version" "$G23_RV_TXT"
+  assert_eq "23y: no dispatch_count telemetry yet (that is W2157)" \
+    "0" "$(g23_count "$G23_ALL_TXT" 'dispatch_count')"
+fi
 # ============================================================
 # Summary
 # ============================================================
