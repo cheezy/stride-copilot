@@ -3785,8 +3785,10 @@ if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -a
         '"1.7"' $G20RvTxt
     Assert-Contains "23x: schema_version now reads 1.7" `
         'Always `"1.7"` for this prompt version' $G20RvTxt
-    Assert-Eq "23y: no dispatch_count telemetry yet (that is W2157)" `
-        "0" "$(Get-G20Count -Text $G20AllTxt -Needle 'dispatch_count')"
+    # W2157 has landed; this guard now asserts the opposite, flipped in place so
+    # Group 20 keeps its case count. Substantive coverage lives in Group 22.
+    Assert-Contains "23y: dispatch_count telemetry has landed (W2157)" `
+        'dispatch_count' $G20AllTxt
 }
 # ============================================================
 # Test Group 21: the cosmetic finding class (W2156)
@@ -4050,6 +4052,159 @@ if (-not ((Test-Path $G21Wf) -and (Test-Path $G21Sub) -and (Test-Path $G21Ct) -a
     # --- Single-source discipline: the subagent half defers, never restates ---
     Assert-Contains "24y: the subagent-workflow bullet defers rather than restating" `
         'deliberately not restated here' $G21SubTxt
+}
+# ============================================================
+# Test Group 22: dispatch_count review-cost telemetry (W2157)
+# ============================================================
+# PowerShell mirror of test-stride-hook.sh Test Group 25.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. `dispatch_count` is
+# SELF-REPORTED: no hook in this port observes a subagent dispatch, and the
+# Stride server's workflow_steps validator does not check the key at all. So
+# nothing here can verify that a recorded count is honest, or even an integer.
+# These cases pin that the key is documented as optional, counts dispatches
+# rather than rounds, adds no seventh step name, and above all that the six
+# limits ship WITH it.
+#
+# NOT MIRRORED, with the reason recorded so each gap reads as a decision:
+#   * Nothing. Both halves read the same markdown. As in Groups 20 and 21,
+#     identical bytes do NOT imply identical assertions, so Get-G22Count counts
+#     literal OCCURRENCES exactly as the bash half's g25_count does, and the
+#     two halves are kept semantically equivalent by hand.
+Write-Host ""
+Write-Host "=== Test Group 22: dispatch_count review-cost telemetry (W2157) ==="
+
+$G22Root = Split-Path -Parent $ScriptDir
+$G22Wf   = Join-Path $G22Root 'skills/stride-workflow/SKILL.md'
+$G22Ct   = Join-Path $G22Root 'skills/stride-completing-tasks/SKILL.md'
+
+if (-not ((Test-Path $G22Wf) -and (Test-Path $G22Ct))) {
+    Write-Host "  SKIP: Test Group 22 (contract files not found relative to $ScriptDir)"
+} else {
+    $G22WfTxt = Get-Content -Raw $G22Wf
+    $G22CtTxt = Get-Content -Raw $G22Ct
+
+    $G22Md = Get-ChildItem -Path (Join-Path $G22Root 'skills'), (Join-Path $G22Root 'agents') `
+        -Filter '*.md' -Recurse -File | Sort-Object FullName
+    $G22AllTxt = ($G22Md | ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
+
+    function Get-G22Count {
+        param([string]$Text, [string]$Needle)
+        return ([regex]::Matches($Text, [regex]::Escape($Needle))).Count
+    }
+
+    # --- The key exists, and is optional (AC 1, AC 3) ---
+    Assert-Contains "25a: the schema table carries a dispatch_count row" `
+        '| `dispatch_count` | integer | Optional' $G22WfTxt
+    Assert-Contains "25a: meaningful only on a dispatched step" `
+        'meaningful only where `dispatched` is `true`' $G22WfTxt
+    Assert-Contains "25b: omitting it stays valid" `
+        'Omitting it is always valid' $G22WfTxt
+
+    # --- It counts DISPATCHES, not ROUNDS (AC 2) ---
+    Assert-Contains "25c: it counts dispatches, not rounds" `
+        'It counts **dispatches, not rounds**' $G22WfTxt
+    Assert-Contains "25c: a crashed dispatch still counts, because it spent its tokens" `
+        'a crashed dispatch still spent its tokens' $G22WfTxt
+    Assert-Contains "25c: and never filled from a round count" `
+        'never fill it from a round count' $G22WfTxt
+
+    # --- No seventh step name (AC 4) ---
+    Assert-Contains "25d: a new key is not a new step name" `
+        'A new key is not a new step name' $G22WfTxt
+    Assert-Contains "25d: the six-name vocabulary is unchanged" `
+        'Always include **all six** step names' $G22WfTxt
+    Assert-Eq "25d: no seventh name was coined alongside the key" `
+        "0" "$(Get-G22Count -Text $G22AllTxt -Needle '"name": "dispatch_count"')"
+
+    # --- The six limits ship WITH the key (AC 5) ---
+    Assert-Contains "25e: the limits are anchored to the canon" `
+        '<!-- canon:dispatch-count-telemetry v1 -->' $G22WfTxt
+    Assert-Eq "25e: and that anchor appears exactly once port-wide" `
+        "1" "$(Get-G22Count -Text $G22AllTxt -Needle '<!-- canon:dispatch-count-telemetry v1 -->')"
+    Assert-Contains "25e: stated with the key rather than after it" `
+        'These six limits ship *with* the key rather than after it' $G22WfTxt
+    Assert-Contains "25f: wall-clock is not token cost" `
+        'Wall-clock is not token cost' $G22WfTxt
+    Assert-Contains "25f: carrying the measured variation" `
+        '2.1×' $G22WfTxt
+    Assert-Contains "25f: and the inversion that proves the point" `
+        '20.3% more expensive when its token cost was in fact 1.4% cheaper' $G22WfTxt
+    Assert-Contains "25f: with the rule that follows from it" `
+        'never to conclude it was the more expensive of two' $G22WfTxt
+    Assert-Contains "25g: the two keys measure different populations" `
+        'measure different populations, so do not divide one by the other' $G22WfTxt
+    Assert-Contains "25g: naming the measured overstatement" `
+        'overstated the mean reviewer round by **40% and 52%**' $G22WfTxt
+    Assert-Contains "25g: there is no per-round figure to compute" `
+        'There is no per-round figure in this record. Do not compute one.' $G22WfTxt
+    Assert-Contains "25h: absence of a cost figure is not absence of cost" `
+        'Absence of a cost figure is not evidence of absent cost' $G22WfTxt
+    Assert-Contains "25i: an omitted count must not be imputed" `
+        'readers must not impute' $G22WfTxt
+    Assert-Contains "25i: report the covered subset instead" `
+        'report the covered subset and its size' $G22WfTxt
+    Assert-Contains "25j: a crash and an extra round are indistinguishable" `
+        'cannot separate a crashed re-dispatch from a genuine extra round' $G22WfTxt
+    Assert-Contains "25j: a compliant 3 is not a cap breach" `
+        'never read a cap breach out of `dispatch_count` alone' $G22WfTxt
+    Assert-Contains "25k: and this port carries neither reconciling artifact" `
+        'This port carries neither' $G22WfTxt
+    Assert-Contains "25l: nothing validates the value on the way in" `
+        'Nothing validates the value on the way in, so a consumer must guard it' $G22WfTxt
+    Assert-Contains "25l: the guard obligation is assigned to the first consumer" `
+        'The first consumer to read it' $G22WfTxt
+    Assert-Contains "25l: and the alternative is named" `
+        'the same optional-but-validated shape `reason_code` already has' $G22WfTxt
+
+    # --- No invented token count (pitfall) ---
+    Assert-Contains "25m: a token count is deliberately not invented" `
+        'record what is actually measurable rather than inventing a number' $G22WfTxt
+    Assert-Contains "25m: for the right reason — portability, not measurability" `
+        'The open question is **portability**' $G22WfTxt
+
+    # --- The honesty clause: this port cannot measure it ---
+    Assert-Contains "25n: the count is self-reported, not measured" `
+        'self-reported by the orchestrator from its own context' $G22WfTxt
+    Assert-Contains "25n: because no hook observes a dispatch" `
+        'No hook in this port observes a subagent dispatch' $G22WfTxt
+
+    # --- The writing rule (AC 2, AC 3) ---
+    Assert-Contains "25o: state a 1 you know" `
+        'state a `1` you know' $G22WfTxt
+    Assert-Contains "25o: because an omission is indistinguishable from an inability" `
+        'looks exactly like one a version could not avoid' $G22WfTxt
+
+    # --- The canonical example carries it, exactly once ---
+    Assert-Contains "25p: the full-dispatch example records a count" `
+        '"dispatch_count": 2' $G22WfTxt
+    # Every full-dispatch reviewer example must carry one, not just the canonical
+    # one — the same record appears four times across two skills.
+    $G22RevEx = @((Get-Content $G22Wf) + (Get-Content $G22Ct) | Where-Object {
+        $_.Contains('"name": "reviewer",       "dispatched": true') })
+    Assert-Eq "25s: every full-dispatch reviewer example carries a count" `
+        "$($G22RevEx.Count)" "$(@($G22RevEx | Where-Object { $_.Contains('dispatch_count') }).Count)"
+    Assert-Eq "25s: and there were examples to check" `
+        "1" "$(if ($G22RevEx.Count -ge 3) { 1 } else { 0 })"
+
+    $G22SkipLine = ((Get-Content $G22Wf) | Where-Object { $_.Contains('"name": "reviewer",       "dispatched": false') }) -join "`n"
+    Assert-Eq "25p: the skip-form example carries no count" `
+        "0" "$(Get-G22Count -Text $G22SkipLine -Needle 'dispatch_count')"
+
+    # --- Single-source discipline ---
+    Assert-Eq "25q: the limits are stated exactly once port-wide" `
+        "1" "$(Get-G22Count -Text $G22AllTxt -Needle 'These six limits ship *with* the key rather than after it')"
+    # ...and check the completing-tasks file directly rather than inferring it.
+    Assert-Eq "25q: and the completing-tasks side restates none of them" `
+        "0" "$(Get-G22Count -Text $G22CtTxt -Needle 'These six limits ship *with* the key rather than after it')"
+    Assert-Eq "25q: nor redefines the key there" `
+        "0" "$(Get-G22Count -Text $G22CtTxt -Needle 'It counts **dispatches, not rounds**')"
+
+    # --- The record-a-reconciliation clause is bounded (security fix) ---
+    Assert-Contains "25r: the reconciliation clause is bookkeeping, not review substance" `
+        'as dispatch bookkeeping only' $G22WfTxt
+    Assert-Contains "25r: and carries the redaction pointer its siblings carry" `
+        "never quote reviewer prose, a finding's description, or observed crash output" $G22WfTxt
 }
 # ============================================================
 # Summary

@@ -2,6 +2,145 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.39.0] - 2026-09-04
+
+### Added — `dispatch_count` review-cost telemetry (W2157)
+
+The `reviewer` entry of `workflow_steps` may now carry an optional
+`dispatch_count`: how many times the reviewer subagent was **dispatched**,
+counting a re-dispatch after a crash, because a crashed dispatch really did
+spend its tokens. A cost nobody can see is a cost nobody manages — the review
+phase is the most expensive part of a task and nothing in a completion record
+showed it.
+
+**It counts dispatches, not rounds**, and those are deliberately different
+quantities. Omitting it stays valid, so a version of this port predating the key
+completes exactly as before. **No seventh step name was added** — the six-name
+vocabulary is untouched, and the optional sub-step dispatches (deep security
+review, Step 5.5, Step 5.6) still fold their wall-clock into this entry's
+`duration_ms` rather than earning names of their own. A new key is not a new
+name. It follows the `reason_code` precedent exactly: a table row marked
+optional, a canon anchor, and the elaboration immediately below it.
+
+**The six limits are the more important half, and they ship with the key.** The
+task's own instruction was "port the limits with the key, or do not port the
+key", and it is right: a figure trusted past its accuracy is worse than no
+figure. Wall-clock is not token cost — tokens per second varied about **2.1×**
+by dispatch kind, and on real records the pair ranked one task **20.3% more
+expensive when its token cost was 1.4% cheaper**, inverting the order. The two
+keys measure **different populations**, so `duration_ms / dispatch_count` is not
+a per-round figure; it overstated the mean reviewer round by 40% and 52% on the
+records available. A review-skipped task can have real review-phase cost and
+record none of it, so **absence of a figure is not evidence of absent cost**. An
+omitted count is ambiguous and must not be imputed. And nothing validates the
+value on the way in.
+
+**Judgement call 1 — the limits are an inline section, not a sibling file.** The
+reference keeps them in `skills/stride-workflow/telemetry-cost.md`. This port
+has **no sibling files at all** — every skill is a single `SKILL.md` — so
+importing that shape would have introduced a file convention the port does not
+use, the same mistake as importing a `$MERGED` it does not have. Same substance,
+this port's shape, following the `reason_code` model that already lives eight
+lines away.
+
+**Judgement call 2 — limit 5 says something stronger here than in the
+reference.** A `2` may be one round plus one crash or two rounds, so a fully
+compliant `3` reads like a breach of the two-round cap to anyone who knows that
+cap. **It is not one.** The reference can reconcile the distinction while a task
+is in flight, from its round-counter and merged-result files. **This port
+carries neither** — W2155 said so explicitly and deliberately — so the round
+count lives only in the orchestrator's context and is recoverable from no
+artifact at all, in flight or afterwards. That makes it *more* important here to
+say in `completion_notes` what a count above two meant — **as dispatch
+bookkeeping only**, on the bounded terms the contract sentence carries.
+
+**Judgement call 3 — say plainly that this port cannot measure it.** The task's
+manual test asked whether the field is fillable here or merely aspirational.
+Verified: `hooks.json` wires only Bash tool events and the stop gate, so nothing
+observes a subagent dispatch. `dispatch_count` is **self-reported by the
+orchestrator from its own context**, exactly as the review-round count is — a
+record of what the orchestrator says it did, not a measurement. The contract
+says so rather than leaving a reader to assume a mechanism.
+
+**The guard obligation is assigned, not left implicit.** Verified directly
+against this Stride server: the `workflow_steps` validator checks `name`,
+`dispatched`, `duration_ms` and `reason`, and separately gates the `reason_code`
+enum — but **not** `dispatch_count`. Unlike `reason_code`, which is refused when
+unrecognised, this key is accepted whatever its type, persisted, and returned
+verbatim. Nothing reads it today, so the present cost is a corrupt record rather
+than anything worse — and the first consumer to read it must guard for a
+non-integer itself, or the validator should gain `reason_code`'s
+optional-but-validated shape. **Recorded, not fixed:** the task page renders
+name, duration and `reason_code` only, so a recorded count is invisible there.
+That is in the outer Phoenix app, outside this task's scope, and matches the
+reference's own disclosure.
+
+**No token count was invented** — but be precise about why, because the usual
+justification is wrong. Some runtimes *do* measure a per-dispatch token cost, so
+recording one would not be inventing it; the open question is **portability**,
+and it is unsettled.
+
+### Fixed in the same task — the sink that keeps re-opening (W2157)
+
+The specialist security review returned `partial` on the counts-and-durations
+consideration, and the cause is a pattern this goal has now hit **three times in
+three tasks**: limit 5 ended with "say in `completion_notes` what a count above
+two meant" — a free-prose write into a persisted, Review-queue-rendered field,
+with no redaction pointer. Every sibling instruction writing to that field in
+the same file carries one, and there is no unconditional blanket rule to
+inherit: the completing-tasks security rule is scoped to material *captured
+during exploration*, and the schema row attaches nothing. Explaining what a
+count meant naturally invites the reviewer prose or finding description the
+consideration bars.
+
+The clause is now bounded to **dispatch bookkeeping only** — "3 = two rounds
+plus one crashed dispatch" — in the agent's own words, paths repository-relative,
+redacted on the terms already governing that field, and never quoting reviewer
+prose, a finding's description, or observed crash output. Case `25r` pins both
+halves of that.
+
+An exploratory session chartered on the measurability question found the other
+half. The same illustrative `workflow_steps` record appears **four times** across
+two skills with byte-identical figures, and only the canonical copy gained the
+key — so three examples, one of them in the schema-owning file itself, modelled
+exactly the chosen omission the writing rule added in this same change forbids
+("state a `1` you know: an omission you chose looks exactly like one a version
+could not avoid"), and manufactured the ambiguity limit 4 warns readers about.
+Worse, `stride-completing-tasks` — the skill an agent actually reads while
+building a completion payload — mentioned `dispatch_count` **zero times** while
+carrying two full payload examples without it. All four now carry the count, and
+case `25s` counts the full-dispatch examples and requires the counts to match,
+with a non-vacuity guard so it cannot pass on an empty sweep. Proven to bite by
+reverting one copy.
+
+That session is also worth recording for what it did *not* find. It verified
+every checkable self-claim in this change: the hooks wiring description exactly,
+"no hook observes a subagent dispatch" exactly, "this port carries neither"
+round-count artifact (independently corroborated by text predating the change),
+"no sibling files at all", limit 3's no-reviewer-precondition gates, and **all
+twelve numeric figures against the reference, with no drift in magnitude or
+direction.**
+
+The code review's one finding was the mirror image: Group 25 read the
+completing-tasks contract into a variable and never used it, while its comment
+claimed that side "defers rather than restating" — a claim the group proved only
+via a port-wide count. Both reads are now live assertions against that file
+directly, so the comment is backed by a check rather than by inference.
+
+### Added — hook suite coverage
+
+**Test Group 25** (bash) and **Test Group 22** (PowerShell), 43 cases each,
+mirrored case-for-case and verified label-for-label. They pin the optional row,
+the dispatches-not-rounds rule, the absence of a seventh name, every one of the
+six limits including its figures, the self-reported honesty clause, and that the
+canonical full-dispatch example carries a count while the **skip-form example
+does not** — a skipped step has no dispatches to count.
+
+Group 23's `23y` guard, left by W2155 asserting `dispatch_count` was absent, is
+**flipped in place** so Group 23 keeps its 65 cases. That is the third and last
+of the boundary guards this goal's chained tasks left for each other, and all
+three have now been flipped by the task that earned it.
+
 ## [2.38.0] - 2026-09-04
 
 ### Added — the cosmetic finding class (W2156)

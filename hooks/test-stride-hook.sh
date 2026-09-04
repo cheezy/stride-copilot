@@ -5717,8 +5717,10 @@ else
     "\"1.7\"" "$G23_RV_TXT"
   assert_contains "23x: schema_version now reads 1.7" \
     "Always \`\"1.7\"\` for this prompt version" "$G23_RV_TXT"
-  assert_eq "23y: no dispatch_count telemetry yet (that is W2157)" \
-    "0" "$(g23_count "$G23_ALL_TXT" 'dispatch_count')"
+  # W2157 has landed; this guard now asserts the opposite, flipped in place so
+  # Group 23 keeps its case count. Substantive coverage lives in Group 25.
+  assert_contains "23y: dispatch_count telemetry has landed (W2157)" \
+    "dispatch_count" "$G23_ALL_TXT"
 fi
 # ============================================================
 # Test Group 24: the cosmetic finding class (W2156)
@@ -6013,6 +6015,188 @@ else
   # --- Single-source discipline: the subagent half defers, never restates ---
   assert_contains "24y: the subagent-workflow bullet defers rather than restating" \
     "deliberately not restated here" "$G24_SUB_TXT"
+fi
+# ============================================================
+# Test Group 25: dispatch_count review-cost telemetry (W2157)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 22.
+#
+# WHAT THESE CASES PROVE, AND WHAT THEY DO NOT. `dispatch_count` is
+# SELF-REPORTED: no hook in this port observes a subagent dispatch (hooks.json
+# wires Bash tool events and the stop gate only), and the Stride server's
+# workflow_steps validator does not check the key at all. So nothing here — and
+# nothing anywhere in this port — can verify that a recorded count is honest,
+# or even that it is an integer. These cases pin that the key is DOCUMENTED as
+# optional, that it counts dispatches rather than rounds, that no seventh step
+# name was added, and above all that the six limits ship WITH it. They cannot
+# check a single recorded value.
+#
+# NOT PORTED, recorded so the omission reads as a decision:
+#   * The reference keeps these limits in a sibling file,
+#     skills/stride-workflow/telemetry-cost.md. This port has no sibling files
+#     at all — every skill is a single SKILL.md — so the limits are an inline
+#     section following the `reason_code` model (table row, canon anchor,
+#     elaboration immediately below). Same substance, this port's shape.
+#   * No assertion on a recorded count's correctness. There is no artifact to
+#     check it against; saying so is the honest coverage statement.
+echo ""
+echo "=== Test Group 25: dispatch_count review-cost telemetry (W2157) ==="
+
+G25_ROOT="$SCRIPT_DIR/.."
+G25_WF="$G25_ROOT/skills/stride-workflow/SKILL.md"
+G25_CT="$G25_ROOT/skills/stride-completing-tasks/SKILL.md"
+
+if [ ! -f "$G25_WF" ] || [ ! -f "$G25_CT" ]; then
+  echo "  SKIP: Test Group 25 (contract files not found relative to $SCRIPT_DIR)"
+else
+  G25_WF_TXT=$(cat "$G25_WF")
+  G25_CT_TXT=$(cat "$G25_CT")
+
+  G25_MD=()
+  while IFS= read -r g25f; do G25_MD+=("$g25f"); done \
+    < <(find "$G25_ROOT/skills" "$G25_ROOT/agents" -name '*.md' -type f 2>/dev/null | sort)
+  G25_ALL_TXT=$(cat "${G25_MD[@]}" 2>/dev/null || true)
+
+  g25_count() {
+    { grep -oF -- "$2" <<< "$1" || true; } | grep -c . || true
+  }
+
+  # --- The key exists, and is optional (AC 1, AC 3) ---
+  assert_contains "25a: the schema table carries a dispatch_count row" \
+    "| \`dispatch_count\` | integer | Optional" "$G25_WF_TXT"
+  assert_contains "25a: meaningful only on a dispatched step" \
+    "meaningful only where \`dispatched\` is \`true\`" "$G25_WF_TXT"
+  assert_contains "25b: omitting it stays valid" \
+    "Omitting it is always valid" "$G25_WF_TXT"
+
+  # --- It counts DISPATCHES, not ROUNDS (AC 2) ---
+  # The reference spent paragraphs separating these two quantities; this port
+  # has even more reason to, since its round count lives in no artifact.
+  assert_contains "25c: it counts dispatches, not rounds" \
+    "It counts **dispatches, not rounds**" "$G25_WF_TXT"
+  assert_contains "25c: a crashed dispatch still counts, because it spent its tokens" \
+    "a crashed dispatch still spent its tokens" "$G25_WF_TXT"
+  assert_contains "25c: and never filled from a round count" \
+    "never fill it from a round count" "$G25_WF_TXT"
+
+  # --- No seventh step name (AC 4) ---
+  assert_contains "25d: a new key is not a new step name" \
+    "A new key is not a new step name" "$G25_WF_TXT"
+  # The six-name vocabulary must be untouched, and the fold-in rule with it.
+  assert_contains "25d: the six-name vocabulary is unchanged" \
+    "Always include **all six** step names" "$G25_WF_TXT"
+  assert_eq "25d: no seventh name was coined alongside the key" \
+    "0" "$(g25_count "$G25_ALL_TXT" '"name": "dispatch_count"')"
+
+  # --- The six limits ship WITH the key (AC 5) — the more important half ---
+  assert_contains "25e: the limits are anchored to the canon" \
+    "<!-- canon:dispatch-count-telemetry v1 -->" "$G25_WF_TXT"
+  assert_eq "25e: and that anchor appears exactly once port-wide" \
+    "1" "$(g25_count "$G25_ALL_TXT" '<!-- canon:dispatch-count-telemetry v1 -->')"
+  assert_contains "25e: stated with the key rather than after it" \
+    "These six limits ship *with* the key rather than after it" "$G25_WF_TXT"
+  # Limit 1 — wall-clock is not token cost, with the figures that show it.
+  assert_contains "25f: wall-clock is not token cost" \
+    "Wall-clock is not token cost" "$G25_WF_TXT"
+  assert_contains "25f: carrying the measured variation" \
+    "2.1×" "$G25_WF_TXT"
+  assert_contains "25f: and the inversion that proves the point" \
+    "20.3% more expensive when its token cost was in fact 1.4% cheaper" "$G25_WF_TXT"
+  assert_contains "25f: with the rule that follows from it" \
+    "never to conclude it was the more expensive of two" "$G25_WF_TXT"
+  # Limit 2 — different populations, so the division is meaningless.
+  assert_contains "25g: the two keys measure different populations" \
+    "measure different populations, so do not divide one by the other" "$G25_WF_TXT"
+  assert_contains "25g: naming the measured overstatement" \
+    "overstated the mean reviewer round by **40% and 52%**" "$G25_WF_TXT"
+  assert_contains "25g: there is no per-round figure to compute" \
+    "There is no per-round figure in this record. Do not compute one." "$G25_WF_TXT"
+  # Limit 3 — a skipped review is not a costless review.
+  assert_contains "25h: absence of a cost figure is not absence of cost" \
+    "Absence of a cost figure is not evidence of absent cost" "$G25_WF_TXT"
+  # Limit 4 — an omitted count is ambiguous.
+  assert_contains "25i: an omitted count must not be imputed" \
+    "readers must not impute" "$G25_WF_TXT"
+  assert_contains "25i: report the covered subset instead" \
+    "report the covered subset and its size" "$G25_WF_TXT"
+  # Limit 5 — and the port-specific divergence that makes it sharper here.
+  assert_contains "25j: a crash and an extra round are indistinguishable" \
+    "cannot separate a crashed re-dispatch from a genuine extra round" "$G25_WF_TXT"
+  assert_contains "25j: a compliant 3 is not a cap breach" \
+    "never read a cap breach out of \`dispatch_count\` alone" "$G25_WF_TXT"
+  # This is where the port MUST diverge from the reference: it has neither of
+  # the artifacts the reference reconciles the distinction from.
+  assert_contains "25k: and this port carries neither reconciling artifact" \
+    "This port carries neither" "$G25_WF_TXT"
+  # Limit 6 — nothing validates it, so the first consumer must guard it.
+  assert_contains "25l: nothing validates the value on the way in" \
+    "Nothing validates the value on the way in, so a consumer must guard it" "$G25_WF_TXT"
+  assert_contains "25l: the guard obligation is assigned to the first consumer" \
+    "The first consumer to read it" "$G25_WF_TXT"
+  assert_contains "25l: and the alternative is named" \
+    "the same optional-but-validated shape \`reason_code\` already has" "$G25_WF_TXT"
+
+  # --- No invented token count (pitfall) ---
+  assert_contains "25m: a token count is deliberately not invented" \
+    "record what is actually measurable rather than inventing a number" "$G25_WF_TXT"
+  assert_contains "25m: for the right reason — portability, not measurability" \
+    "The open question is **portability**" "$G25_WF_TXT"
+
+  # --- The honesty clause: this port cannot measure it ---
+  # The task's own manual test asks whether the field is fillable here or only
+  # aspirational. The answer is in the contract rather than left implied.
+  assert_contains "25n: the count is self-reported, not measured" \
+    "self-reported by the orchestrator from its own context" "$G25_WF_TXT"
+  assert_contains "25n: because no hook observes a dispatch" \
+    "No hook in this port observes a subagent dispatch" "$G25_WF_TXT"
+
+  # --- The writing rule (AC 2, AC 3) ---
+  assert_contains "25o: state a 1 you know" \
+    "state a \`1\` you know" "$G25_WF_TXT"
+  assert_contains "25o: because an omission is indistinguishable from an inability" \
+    "looks exactly like one a version could not avoid" "$G25_WF_TXT"
+
+  # --- The canonical example carries it, exactly once ---
+  assert_contains "25p: the full-dispatch example records a count" \
+    "\"dispatch_count\": 2" "$G25_WF_TXT"
+  # Every full-dispatch reviewer example must carry one, not just the canonical
+  # one: the same illustrative record appears four times across two skills, and
+  # updating one copy leaves the other three modelling the chosen omission the
+  # writing rule above forbids — and manufacturing exactly the ambiguity limit 4
+  # warns readers about. Count the examples and require the counts to match.
+  G25_REVEX=$(grep -hF '"name": "reviewer",       "dispatched": true' \
+    "$G25_WF" "$G25_CT" 2>/dev/null || true)
+  G25_REVEX_N=$(printf '%s' "$G25_REVEX" | grep -c . || true)
+  assert_eq "25s: every full-dispatch reviewer example carries a count" \
+    "$G25_REVEX_N" "$(printf '%s' "$G25_REVEX" | grep -cF 'dispatch_count' || true)"
+  # ...and the sweep must actually have found examples, or it asserts 0 == 0.
+  assert_eq "25s: and there were examples to check" \
+    "1" "$([ "${G25_REVEX_N:-0}" -ge 3 ] && echo 1 || echo 0)"
+
+  # The skip-form example must NOT gain one: a skipped step has no dispatches.
+  G25_SKIPLINE=$(grep -hF '"name": "reviewer",       "dispatched": false' "$G25_WF" 2>/dev/null || true)
+  assert_eq "25p: the skip-form example carries no count" \
+    "0" "$(g25_count "$G25_SKIPLINE" 'dispatch_count')"
+
+  # --- The completing-tasks side defers rather than restating ---
+  # Single-source discipline: the schema is owned by stride-workflow.
+  assert_eq "25q: the limits are stated exactly once port-wide" \
+    "1" "$(g25_count "$G25_ALL_TXT" 'These six limits ship *with* the key rather than after it')"
+  # ...and the completing-tasks side is where a restatement would most likely
+  # land, since it owns the completion payload. Check that file directly rather
+  # than inferring it from the port-wide count.
+  assert_eq "25q: and the completing-tasks side restates none of them" \
+    "0" "$(g25_count "$G25_CT_TXT" 'These six limits ship *with* the key rather than after it')"
+  assert_eq "25q: nor redefines the key there" \
+    "0" "$(g25_count "$G25_CT_TXT" 'It counts **dispatches, not rounds**')"
+
+  # --- The record-a-reconciliation clause is bounded (security fix) ---
+  # Every sibling completion_notes instruction in this file carries a redaction
+  # pointer; a new free-prose one without it re-opens a persisted, rendered sink.
+  assert_contains "25r: the reconciliation clause is bookkeeping, not review substance" \
+    "as dispatch bookkeeping only" "$G25_WF_TXT"
+  assert_contains "25r: and carries the redaction pointer its siblings carry" \
+    "never quote reviewer prose, a finding's description, or observed crash output" "$G25_WF_TXT"
 fi
 # ============================================================
 # Summary

@@ -455,7 +455,7 @@ match the `--arg` / `--argjson` substitutions above):
     {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
     {"name": "planner",        "dispatched": true,  "duration_ms": 8200},
     {"name": "implementation", "dispatched": true,  "duration_ms": 1820000},
-    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300},
+    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300, "dispatch_count": 2},
     {"name": "after_doing",    "dispatched": true,  "duration_ms": 45678},
     {"name": "before_review",  "dispatched": true,  "duration_ms": 2340}
   ]
@@ -856,7 +856,7 @@ REQUIRED BODY: {
     {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
     {"name": "planner",        "dispatched": true,  "duration_ms": 8200},
     {"name": "implementation", "dispatched": true,  "duration_ms": 1820000},
-    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300},
+    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300, "dispatch_count": 2},
     {"name": "after_doing",    "dispatched": true,  "duration_ms": 45678},
     {"name": "before_review",  "dispatched": true,  "duration_ms": 2340}
   ]

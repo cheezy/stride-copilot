@@ -683,7 +683,7 @@ Call `PATCH /api/tasks/:id/complete` with ALL required fields:
     {"name": "explorer",       "dispatched": true,  "duration_ms": 12450},
     {"name": "planner",        "dispatched": true,  "duration_ms": 8200},
     {"name": "implementation", "dispatched": true,  "duration_ms": 1820000},
-    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300},
+    {"name": "reviewer",       "dispatched": true,  "duration_ms": 15300, "dispatch_count": 2},
     {"name": "after_doing",    "dispatched": true,  "duration_ms": 45678},
     {"name": "before_review",  "dispatched": true,  "duration_ms": 2340}
   ]
@@ -784,8 +784,27 @@ Each element of `workflow_steps` is an object with these keys:
 | `name` | string | Always | One of the six vocabulary values above |
 | `dispatched` | boolean | Always | `true` if the step ran; `false` if intentionally skipped |
 | `duration_ms` | integer | When `dispatched=true` | Wall-clock time the step took, in milliseconds |
+| `dispatch_count` | integer | Optional; meaningful only where `dispatched` is `true` | How many times this step's subagent was **dispatched** — the cost unit, since a crashed dispatch still spent its tokens. It counts **dispatches, not rounds**: those are deliberately different quantities, so never fill it from a round count. Omitting it is always valid. **Read the six limits below before drawing any conclusion from it** |
 | `reason` | string | When `dispatched=false` | Short explanation of why the step was skipped |
 | `reason_code` | enum | Optional; meaningful only where `dispatched` is `false` | Short machine-readable tag naming *which kind* of skip this was (D239). It travels with `reason` rather than displacing it: aggregation groups on the tag, a human reads the sentence. Six accepted spellings, listed below — anything else fails validation with a `422`, while sending no tag at all always passes |
+
+<!-- canon:dispatch-count-telemetry v1 -->
+### What `dispatch_count` and `duration_ms` do and do not tell you
+
+`dispatch_count` exists because a cost nobody can see is a cost nobody manages: the review phase is the most expensive part of a task and nothing in a completion record showed it. It does that job. **It does not rank tasks by cost, and the difference matters.** These six limits ship *with* the key rather than after it, because a figure trusted past its accuracy is worse than no figure at all.
+
+1. **Wall-clock is not token cost, and the two can disagree about which task was more expensive.** Measured across eight real dispatches, tokens per second of wall-clock varied about **2.1×** by dispatch kind — reviewer rounds roughly 300–375 tok/s, specialist security dispatches roughly 455–625 tok/s — so the figure is driven by a task's review *mix*, not its size. On the two real records available when this was written, the pair ranked one task **20.3% more expensive when its token cost was in fact 1.4% cheaper**: the order inverted and the recorded gap was about fifteen times the real one. **Use the pair to see that a review phase was long, never to conclude it was the more expensive of two.**
+2. **The two keys measure different populations, so do not divide one by the other.** `duration_ms` on this entry is an **aggregate** — the deep security-considerations review, the Step 5.5 exploratory session and Step 5.6 hardening all fold their wall-clock into it, per the never-a-seventh-name rule. `dispatch_count` counts only **this step's own subagent**, the reviewer, and is typically smaller. On the two real records the duration covered four dispatches while the count reported two, and `duration_ms / dispatch_count` overstated the mean reviewer round by **40% and 52%**. The bias is not constant, so it cannot be divided out, and the composition is recorded nowhere. **There is no per-round figure in this record. Do not compute one.**
+3. **A review-skipped task can have a real review-phase cost and record none of it.** The deep security review and the Step 5.5 session each gate with **no reviewer precondition**, so both run on a task whose review the decision matrix skipped. There the reviewer entry is the skip form: `dispatched: false`, no `duration_ms`, no `dispatch_count`. A task that ran a security specialist and a full exploratory session is therefore byte-identical, in `workflow_steps`, to one whose review truly cost nothing — those dispatches go to `completion_notes` prose, which is not aggregatable. **Absence of a cost figure is not evidence of absent cost.**
+4. **An omitted `dispatch_count` is ambiguous, and readers must not impute.** It may mean a version of this port predating the key, or an oversight. It should *not* mean a `1` the author knew and declined to state — the rule below says state it — but a reader cannot tell that from the record. Imputing `1` versus a higher value moved a sample mean by over 100%. **When aggregating, report the covered subset and its size rather than imputing a value for absences.**
+5. **It cannot separate a crashed re-dispatch from a genuine extra round, and in this port the round number is recoverable from nothing.** A `2` may be one round plus one crash, or two rounds. That is deliberate — the count captures *cost*, and a crashed dispatch really did spend its tokens — but it has a consequence: a fully compliant `3` (two rounds plus a crash) reads like a breach of the two-round cap to anyone who knows that cap. **It is not one.** And note where this port differs from the reference: the reference can reconcile the distinction while a task is in flight, from its round-counter and merged-result files. **This port carries neither** — Step 5 says so explicitly — so the round count lives only in the orchestrator's context and is recoverable from no artifact at all, in flight or afterwards. That makes it more important here, not less, to say in `completion_notes` what a count above two meant — **as dispatch bookkeeping only** ("3 = two rounds plus one crashed dispatch"), **in your own words**, any path repository-relative, redacted on exactly the terms that already govern anything reaching that field; **never quote reviewer prose, a finding's description, or observed crash output.** Reconciling a count is a counts-and-durations record, not a place to restate what a round found. And **never read a cap breach out of `dispatch_count` alone.**
+6. **Nothing validates the value on the way in, so a consumer must guard it.** Verified against this Stride server's own `workflow_steps` validator: it checks `name`, `dispatched`, `duration_ms` and `reason`, and separately gates the `reason_code` enum — but **not** `dispatch_count`. Unlike `reason_code`, which is refused when unrecognised, this key is accepted whatever its type, persisted into the array, and returned verbatim. Nothing reads it today, so the present cost is a corrupt record rather than anything worse. **The first consumer to read it — a renderer, a dashboard, an aggregation — must guard for a non-integer itself, or the validator should gain the same optional-but-validated shape `reason_code` already has.** Stated here so the next person does not inherit the absence as though it were a design choice. Relatedly, the task page renders name, duration and `reason_code` only, so a recorded `dispatch_count` is currently invisible there — known, and outside this skill.
+
+**Why not a token count.** The obvious fix for limit 1 is to record tokens, the only figure observed to rank correctly. That is deliberately **not** done: record what is actually measurable rather than inventing a number. Be precise about why, though — the usual justification is wrong, because some runtimes *do* measure a per-dispatch token cost, so recording it would not be inventing it. The open question is **portability**, whether every runtime this schema serves can produce one, and that is unsettled.
+
+**And be plain about what produces the count here.** No hook in this port observes a subagent dispatch — `hooks.json` wires only Bash tool events and the stop gate — so `dispatch_count` is **self-reported by the orchestrator from its own context**, exactly as the review-round count is. It is a record of what the orchestrator says it did, not a measurement. Nothing refuses a wrong value.
+
+**Canon-governed — entry `dispatch-count-telemetry` in `stride/docs/port-canon.md`.** That entry registers the key, its counts-dispatches-not-rounds rule, and these six limits as rules every port must carry. A change to their substance owes a version bump in **two** places before the next release: that entry in the canon, and this file's own `<!-- canon:dispatch-count-telemetry ... -->` anchor above.
 
 <!-- canon:reason-code-vocabulary v1 -->
 ### The six `reason_code` values
@@ -810,7 +829,7 @@ A medium-complexity task that exercised every phase:
   {"name": "explorer",       "dispatched": true, "duration_ms": 12450},
   {"name": "planner",        "dispatched": true, "duration_ms": 8200},
   {"name": "implementation", "dispatched": true, "duration_ms": 1820000},
-  {"name": "reviewer",       "dispatched": true, "duration_ms": 15300},
+  {"name": "reviewer",       "dispatched": true, "duration_ms": 15300, "dispatch_count": 2},
   {"name": "after_doing",    "dispatched": true, "duration_ms": 45678},
   {"name": "before_review",  "dispatched": true, "duration_ms": 2340}
 ]
@@ -836,6 +855,7 @@ A small task with 0-1 key_files that legitimately skipped exploration, planning,
 - Always include **all six** step names. Skipped steps are recorded with `dispatched: false` — never omitted.
 - Record entries in the order the steps occurred in the workflow (the order listed in the vocabulary table above).
 - When `dispatched: false`, the `reason` must describe **why** the step was skipped (e.g., decision matrix rule, task metadata, platform constraint) — not merely restate that it was skipped.
+- Add `dispatch_count` to a `dispatched: true` entry whenever you dispatched its subagent more than once. **Count dispatches, including one re-dispatched after a crash; never fill it from a round count**, which deliberately excludes those. Omitting it stays valid so an older version of this port completes as before — but **state a `1` you know**: an omission you chose looks exactly like one a version could not avoid. **A new key is not a new step name** — the six-name vocabulary is unchanged, and the optional sub-step dispatches still fold into this entry's `duration_ms` rather than earning a name of their own.
 - A missing `workflow_steps` array, or one with fewer than six entries, indicates an incomplete telemetry record.
 
 ---
