@@ -94,6 +94,8 @@ Use this matrix to determine which custom agents to invoke based on task attribu
 
 **Why the `small, 0-1 key_files` entry sits above the `Defect type` entry:** swap them and every small single-file defect picks up `Run` in both the `task-explorer` and `task-reviewer` columns — two agents attached to the cheapest work on the board, and a direct conflict with `stride-workflow` Step 3's "Small Task, 0-1 Key Files" branch, which sends the identical task to Step 4 with no exploration at all. Settling an ambiguity should leave the existing answers standing (D221).
 
+**Canon-governed — entries `decision-matrix-authority` and `row-precedence` in `stride/docs/port-canon.md`.** The first covers the sentence directly under the table; the second covers the precedence list and the paragraph explaining its order. Edit what either states and two version numbers move with it, both before release: the canon entry's, and the one on the anchor immediately above that statement.
+
 **Quick rules:**
 - If the task is a **goal** or has **large complexity without child tasks** or a **25+ hour estimate**: invoke the decomposer first. The decomposer breaks it into claimable child tasks — you don't implement goals directly.
 - If the task is small with 0-1 key_files, skip all custom agents and code directly.

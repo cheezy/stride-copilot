@@ -262,6 +262,8 @@ The definition, its three gates, and the three conditions that make the flag inv
 3. **The `critical` exemption is deliberately unbounded.** Nothing caps how many rounds a Critical may buy; convergence there is the orchestrator's own judgement, and no artifact records it.
 4. **The `cosmetic` classification is self-certified.** Nothing in this port reads a finding and judges whether it is truly presentational. The cheapest abuse is therefore not relabelling a `critical` or a security finding — the stated prohibition names those — but relabelling an ordinary substantive `minor`, which no artifact here can see. The remedy is a human reading `issues[]`, and note the Review queue groups issues by severity alone, so the flag is invisible there.
 
+**Canon-governed — entry `review-round-cap` in `stride/docs/port-canon.md`.** Edit what this states and two version numbers move with it, both before release: the canon entry's, and the one on this file's `<!-- canon:review-round-cap ... -->` anchor, which opens the section above.
+
 #### Deep security-considerations review (Optional, Gated)
 
 **This sub-step runs after the self-review above. It is optional and gated — it runs ONLY when BOTH conditions hold:**
@@ -819,6 +821,8 @@ The set is closed. Pick whichever one fits; if none of them fits, that is inform
 - **`matrix_deviation`** — the matrix wanted this step; it did not happen.
 
 Only the last of the six describes a workflow the runner did not follow, and that is precisely why it is in the vocabulary. Reach for it when a step the matrix marked `Run` was skipped anyway, and do not relabel that case as `decision_matrix_skip` — that would make a deviation look like a sanctioned skip, and the telemetry would lose the ability to tell them apart. Explain the circumstances in `reason`.
+
+**Canon-governed — entry `reason-code-vocabulary` in `stride/docs/port-canon.md`.** Edit what this states and two version numbers move with it, both before release: the canon entry's, and the one on the anchor immediately above.
 
 ### End-of-Workflow Example (full dispatch)
 
