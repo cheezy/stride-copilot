@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.40.0] - 2026-09-07
+
+### Added — a back-reference beside every anchored rule (W2137)
+
+Canon entry `edit-site-back-reference` requires prose beside every governed-rule statement naming the canon by path and the entry id, and the drift check now implements it as a property, so an anchor standing alone is reported. Four paragraphs close this port's five anchored statements. The decision matrix and its precedence ordering are back-referenced in `skills/stride-subagent-workflow/SKILL.md`, where this port keeps its matrix rather than in the workflow skill, with one paragraph naming both entries.
+
+Placement respects two assertions this repository owns. The suite requires the `review-round-cap` anchor to sit exactly one line above the ceiling sentence, so that paragraph goes at the end of its section instead — 47 lines down — and names an elided `<!-- canon:review-round-cap ... -->` so a reader landing there has something to grep for. The suite reads only the first match of the real anchor literal, so a version-less second occurrence cannot move the offset it checks.
+
 ## [2.39.0] - 2026-09-04
 
 ### Added — `dispatch_count` review-cost telemetry (W2157)
