@@ -6531,6 +6531,25 @@ else
       "$(jq -s 'length' < "$g26_dir/ps.out" 2>/dev/null)"
   fi
 
+
+  # --- 26am: CROSS-PORT RECONCILIATION (W2184) ----------------------------
+  # A matrix driving all three hardened guards over one corpus found two defects
+  # here and one over-refusal. Pinned, because the matrix was throwaway.
+  g26_case "26am: --remote-name-all is refused" "curl --remote-name-all $G26_U" deny
+  g26_case "26am: 2>&2 is permitted"            "curl $G26_C 2>&2"              permit
+  g26_case "26am: but >&2 is refused"           "curl $G26_U >&2"               deny
+  g26_case "26am: an endpoint only in a redirect target is out of scope" \
+    "curl https://example.invalid/x > /tmp/api/tasks/9/complete" permit
+  # The twin got the same three fixes; parity must hold on each.
+  if command -v pwsh > /dev/null 2>&1; then
+    g26_parity "--remote-name-all"      "curl --remote-name-all $G26_U"  deny
+    g26_parity "2>&2 permitted"         "curl $G26_C 2>&2"               permit
+    g26_parity "endpoint in redirect target only" \
+      "curl https://example.invalid/x > /tmp/api/tasks/9/complete" permit
+  else
+    echo "  SKIP: 26am: twin parity for the W2184 fixes (pwsh not available)"
+  fi
+
   rm -rf "$g26_dir"
 fi
 

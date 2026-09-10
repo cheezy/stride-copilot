@@ -239,7 +239,27 @@ function Get-StrideGuardReason {
     foreach ($pair in $pairs) {
         $segRaw = $pair[0]
         $seg    = $pair[1]
-        if ($segRaw -notmatch '/api/tasks/') { continue }
+        # W2184: scope is judged on raw text with redirect TARGETS blanked, so
+        # `curl https://example.test/x > /tmp/api/tasks/9/complete` is permitted --
+        # there the endpoint appears only where the output was going. The bash
+        # half got this fix first; the two halves must not disagree.
+        $scopeText = $segRaw
+        $sn = $seg.Length
+        $si = 0
+        $sb = [System.Text.StringBuilder]::new($scopeText)
+        while ($si -lt $sn) {
+            if ($seg[$si] -ne '>') { $si++; continue }
+            $sj = $si + 1
+            while ($sj -lt $sn -and ($seg[$sj] -eq '>' -or $seg[$sj] -eq '|' -or $seg[$sj] -eq '&')) { $sj++ }
+            while ($sj -lt $sn -and ($seg[$sj] -eq ' ' -or $seg[$sj] -eq "`t")) { $sj++ }
+            while ($sj -lt $sn -and $seg[$sj] -notmatch '[\s;|&]') {
+                if ($sj -lt $sb.Length) { $sb[$sj] = ' ' }
+                $sj++
+            }
+            $si = $sj
+        }
+        $scopeText = $sb.ToString()
+        if ($scopeText -notmatch '/api/tasks/') { continue }
 
         $sawCurl = $false
         $first = $true

@@ -191,8 +191,7 @@ own payload and drops a hiding flag into a fragment with no endpoint beside it.
 
 W2184 drove the three hardened guards over ONE corpus — the thing three green
 per-port suites structurally cannot do — and found 18 shapes where the ports
-disagreed. Two were defects here, both in this port's favour being stricter than
-it should have been or looser than it claimed:
+disagreed. Three involved this port: one false permit and two over-refusals.
 
 - **`--remote-name-all` was permitted.** It writes bodies to local files exactly
   as `-O` does, and a server-named file can never be the canonical one; the
