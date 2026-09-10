@@ -187,6 +187,31 @@ command. Above the ceiling the command is judged **whole** rather than
 segmented, because segmenting unblanked text shatters it on the `;` inside its
 own payload and drops a hiding flag into a fragment with no endpoint beside it.
 
+### Fixed — cross-port reconciliation (W2184)
+
+W2184 drove the three hardened guards over ONE corpus — the thing three green
+per-port suites structurally cannot do — and found 18 shapes where the ports
+disagreed. Two were defects here, both in this port's favour being stricter than
+it should have been or looser than it claimed:
+
+- **`--remote-name-all` was permitted.** It writes bodies to local files exactly
+  as `-O` does, and a server-named file can never be the canonical one; the
+  generic `--*` arm had skipped it wholesale.
+- **`2>&2` was refused,** though a stderr-to-stderr redirect leaves the body on
+  stdout — the exact false positive the task's pitfall names. The stderr-only
+  exemption is now tested before the `>&2` rule.
+- **An endpoint appearing only inside a redirect target was refused.** The scope
+  test now runs on raw text with redirect targets blanked, so the endpoint has to
+  appear where a request could actually go.
+
+The six remaining divergences are deliberate and share one cause, already
+recorded here and now in the sibling ports too: this port is FILE-FIRST, so
+delivering the response to its canonical response file preserves it and the
+siblings' refusal of that same shape is equally correct for them. Its mirror —
+`tee -a` onto that file, refused here because appending corrupts the single
+document Tier 1 parses, permitted there because `tee -a` still passes the body
+through the stdout they read — is recorded the same way.
+
 ## [2.40.0] - 2026-09-07
 
 ### Added — a back-reference beside every anchored rule (W2137)

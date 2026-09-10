@@ -165,7 +165,8 @@ function Get-StrideGuardRedirectKind {
     $n = $Segment.Length
     for ($i = 0; $i -lt $n; $i++) {
         if ($Segment[$i] -ne '>') { continue }
-        if ($i + 2 -lt $n -and $Segment.Substring($i, 3) -eq '>&2') { return 'redirect' }
+        # W2184 reordered this: the stderr-only exemption is tested BEFORE the
+        # `>&2` rule, for the reason given on the bash half.
         $prev = if ($i -gt 0) { $Segment[$i - 1] } else { ' ' }
         if ($prev -eq '>') { continue }
         $merged = ($prev -eq '&')
@@ -173,6 +174,7 @@ function Get-StrideGuardRedirectKind {
             $before = if ($i -gt 1) { $Segment[$i - 2] } else { ' ' }
             if ($before -eq ' ' -or $before -eq "`t" -or $i -eq 1) { continue }
         }
+        if ($i + 2 -lt $n -and $Segment.Substring($i, 3) -eq '>&2') { return 'redirect' }
         $appending = ($i + 1 -lt $n -and $Segment[$i + 1] -eq '>')
         $opEnd = $i
         if ($appending -or ($i + 1 -lt $n -and $Segment[$i + 1] -eq '|')) { $opEnd = $i + 1 }
@@ -257,6 +259,9 @@ function Get-StrideGuardReason {
                     # case-sensitive here (-o and -O are different options), so
                     # every option comparison in this loop must be too.
                     if ($tok -ceq '-O' -or $tok -ceq '--remote-name') { return 'remote' }
+                    # W2184: named before the generic --* skip, for the reason
+                    # given on the bash half.
+                    if ($tok -ceq '--remote-name-all') { return 'remote' }
                     if ($tok -ceq '-o' -or $tok -ceq '--output') {
                         $target = if ($t + 1 -lt $tokens.Count) { $tokens[$t + 1] } else { '' }
                         if ($target -ne $StrideGuardCanonMark) { return 'flag' }

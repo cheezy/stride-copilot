@@ -1714,6 +1714,37 @@ _stride_guard_cmd_word() {
 # documented calls QUOTE their URL, so asking this of the blanked view answers
 # "no" for every real Stride curl and the guard would permit exactly what it
 # exists to refuse.
+# Raw text with every REDIRECT TARGET blanked, for the scope test only.
+#
+# W2184 added this. Without it `curl https://example.test/x > /tmp/api/tasks/9/complete`
+# is refused: the segment carries curl and a redirect, and a routed endpoint
+# appears -- but only inside the redirect's own target, which says nothing about
+# what was called. A sibling port permitted it, so the two disagreed. The
+# endpoint has to appear somewhere a request could actually go.
+#
+# Target spans are located in the BLANKED view and blanked in the RAW view at the
+# same offsets, which stays sound because every substitution is a space per byte.
+_stride_guard_scope_text() {
+  STRIDE_SC_RAW="$1" STRIDE_SC_BL="$2" LC_ALL=C awk '
+    BEGIN {
+      raw = ENVIRON["STRIDE_SC_RAW"]; bl = ENVIRON["STRIDE_SC_BL"]
+      n = length(bl); out = raw; i = 1
+      while (i <= n) {
+        if (substr(bl, i, 1) != ">") { i++; continue }
+        j = i + 1
+        while (j <= n && (substr(bl, j, 1) == ">" || substr(bl, j, 1) == "|" || substr(bl, j, 1) == "&")) j++
+        while (j <= n && substr(bl, j, 1) ~ /[ \t]/) j++
+        while (j <= n && substr(bl, j, 1) !~ /[ \t\n;|&]/) {
+          out = substr(out, 1, j - 1) " " substr(out, j + 1)
+          j++
+        }
+        i = j
+      }
+      printf "%s", out
+    }
+  ' 2>/dev/null || printf '%s' "$1"
+}
+
 _stride_guard_is_stride_call() {
   case "$1" in
     *"/api/tasks/"*) ;;
@@ -1739,7 +1770,10 @@ _stride_guard_redirect_kind() {
       n = length($0)
       for (i = 1; i <= n; i++) {
         if (substr($0, i, 1) != ">") continue
-        if (substr($0, i, 3) == ">&2") { print "redirect"; exit }
+        # W2184 reordered this: the stderr-only exemption is tested BEFORE the
+        # `>&2` rule. The other order refused `2>&2`, a stderr-to-stderr redirect
+        # that leaves the body on stdout -- the exact false positive the pitfall
+        # names -- and a sibling port permitted it, so the two disagreed.
         prev = (i > 1) ? substr($0, i - 1, 1) : " "
         if (prev == ">") continue
         merged = (prev == "&")
@@ -1747,6 +1781,7 @@ _stride_guard_redirect_kind() {
           before = (i > 2) ? substr($0, i - 2, 1) : " "
           if (before ~ /[ \t]/ || i == 2) continue
         }
+        if (substr($0, i, 3) == ">&2") { print "redirect"; exit }
         op_end = i
         if (substr($0, i + 1, 1) == ">") op_end = i + 1
         else if (substr($0, i + 1, 1) == "|") op_end = i + 1
@@ -1847,7 +1882,10 @@ _stride_guard_reason() {
     _seg_raw="${_pair%%$'\037'*}"
     _seg="${_pair#*$'\037'}"
     [ -n "$_seg_raw" ] || continue
-    case "$_seg_raw" in *"/api/tasks/"*) ;; *) continue ;; esac
+    case "$(_stride_guard_scope_text "$_seg_raw" "$_seg")" in
+      *"/api/tasks/"*) ;;
+      *) continue ;;
+    esac
 
     _sawcurl=0
     _first=1
@@ -1871,6 +1909,11 @@ _stride_guard_reason() {
           fi
           case "$_word" in
             -O|--remote-name) printf 'remote'; return 0 ;;
+            # W2184: named BEFORE the generic `--*` arm, which skipped it
+            # wholesale. It writes bodies to local files exactly as -O does, and
+            # the cross-port matrix found it PERMITTED here while a sibling port
+            # refused it. A server-named file can never be the canonical one.
+            --remote-name-all) printf 'remote'; return 0 ;;
             -o|--output)      _next=1 ;;
             --output=*)       [ "${_word#--output=}" = "$STRIDE_GUARD_CANON_MARK" ] || { printf 'flag'; return 0; }
                               _canon_captured=1 ;;
