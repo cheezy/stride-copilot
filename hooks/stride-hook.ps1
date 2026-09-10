@@ -243,22 +243,32 @@ function Get-StrideGuardReason {
         # `curl https://example.test/x > /tmp/api/tasks/9/complete` is permitted --
         # there the endpoint appears only where the output was going. The bash
         # half got this fix first; the two halves must not disagree.
-        $scopeText = $segRaw
-        $sn = $seg.Length
-        $si = 0
-        $sb = [System.Text.StringBuilder]::new($scopeText)
-        while ($si -lt $sn) {
-            if ($seg[$si] -ne '>') { $si++; continue }
-            $sj = $si + 1
-            while ($sj -lt $sn -and ($seg[$sj] -eq '>' -or $seg[$sj] -eq '|' -or $seg[$sj] -eq '&')) { $sj++ }
-            while ($sj -lt $sn -and ($seg[$sj] -eq ' ' -or $seg[$sj] -eq "`t")) { $sj++ }
-            while ($sj -lt $sn -and $seg[$sj] -notmatch '[\s;|&]') {
-                if ($sj -lt $sb.Length) { $sb[$sj] = ' ' }
-                $sj++
+        #
+        # In WHOLE mode $seg is the unblanked command, so a `>` in a live payload
+        # reads as an operator and would blank the URL out of the scope view --
+        # a false permit on the branch that exists to over-refuse. There the raw
+        # text is the scope text. See the bash half for why all three ports cut
+        # at the same place.
+        if ($whole) {
+            $scopeText = $segRaw
+        } else {
+            $scopeText = $segRaw
+            $sn = $seg.Length
+            $si = 0
+            $sb = [System.Text.StringBuilder]::new($scopeText)
+            while ($si -lt $sn) {
+                if ($seg[$si] -ne '>') { $si++; continue }
+                $sj = $si + 1
+                while ($sj -lt $sn -and ($seg[$sj] -eq '>' -or $seg[$sj] -eq '|' -or $seg[$sj] -eq '&')) { $sj++ }
+                while ($sj -lt $sn -and ($seg[$sj] -eq ' ' -or $seg[$sj] -eq "`t")) { $sj++ }
+                while ($sj -lt $sn -and $seg[$sj] -notmatch '[\s;|&]') {
+                    if ($sj -lt $sb.Length) { $sb[$sj] = ' ' }
+                    $sj++
+                }
+                $si = $sj
             }
-            $si = $sj
+            $scopeText = $sb.ToString()
         }
-        $scopeText = $sb.ToString()
         if ($scopeText -notmatch '/api/tasks/') { continue }
 
         $sawCurl = $false

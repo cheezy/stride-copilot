@@ -6540,12 +6540,23 @@ else
   g26_case "26am: but >&2 is refused"           "curl $G26_U >&2"               deny
   g26_case "26am: an endpoint only in a redirect target is out of scope" \
     "curl https://example.invalid/x > /tmp/api/tasks/9/complete" permit
+  # ...but only BELOW the ceiling, which is the only place a blanked operator
+  # view exists to walk. Above it every `>` in the command reads as an operator,
+  # so a `>` ending an unquoted word blanks the token after it -- the URL -- and
+  # the segment falls out of scope: a false PERMIT on the branch built to
+  # over-refuse. Whole mode judges scope on the raw text entire, in both halves
+  # and in both sibling ports, so this shape is a refusal everywhere above the
+  # ceiling rather than a refusal in one port and a permit in another.
+  g26_case "26am: past the ceiling a bare > cannot blank the URL out of scope" \
+    "curl --data-urlencode n=a\\> $G26_U -d '{\"n\":\"$G26_HUGE\"}' -o r.json" deny
   # The twin got the same three fixes; parity must hold on each.
   if command -v pwsh > /dev/null 2>&1; then
     g26_parity "--remote-name-all"      "curl --remote-name-all $G26_U"  deny
     g26_parity "2>&2 permitted"         "curl $G26_C 2>&2"               permit
     g26_parity "endpoint in redirect target only" \
       "curl https://example.invalid/x > /tmp/api/tasks/9/complete" permit
+    g26_parity "above-ceiling scope is judged on raw text" \
+      "curl --data-urlencode n=a\\> $G26_U -d '{\"n\":\"$G26_HUGE\"}' -o r.json" deny
   else
     echo "  SKIP: 26am: twin parity for the W2184 fixes (pwsh not available)"
   fi

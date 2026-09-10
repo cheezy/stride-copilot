@@ -201,10 +201,17 @@ disagreed. Three involved this port: one false permit and two over-refusals.
   exemption is now tested before the `>&2` rule.
 - **An endpoint appearing only inside a redirect target was refused.** The scope
   test now runs on raw text with redirect targets blanked, so the endpoint has to
-  appear where a request could actually go.
+  appear where a request could actually go — below the scan ceiling, which is the
+  only place a blanked operator view exists to walk. Above it there is none, so a
+  `>` inside a live payload would read as an operator and blank the URL itself out
+  of the scope view, permitting the call on the one branch that exists to
+  over-refuse. Whole mode therefore judges scope on the raw text entire, in both
+  halves of this port and in both sibling ports, so the verdict above the ceiling
+  is a refusal everywhere rather than a refusal in one port and a permit in
+  another.
 
-The six remaining divergences are deliberate and share one cause, already
-recorded here and now in the sibling ports too: this port is FILE-FIRST, so
+The six remaining divergences are deliberate and share one cause, recorded here
+and, as of this task, in both sibling ports' guard headers: this port is FILE-FIRST, so
 delivering the response to its canonical response file preserves it and the
 siblings' refusal of that same shape is equally correct for them. Its mirror —
 `tee -a` onto that file, refused here because appending corrupts the single

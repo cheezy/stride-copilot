@@ -1882,10 +1882,30 @@ _stride_guard_reason() {
     _seg_raw="${_pair%%$'\037'*}"
     _seg="${_pair#*$'\037'}"
     [ -n "$_seg_raw" ] || continue
-    case "$(_stride_guard_scope_text "$_seg_raw" "$_seg")" in
-      *"/api/tasks/"*) ;;
-      *) continue ;;
-    esac
+    # Scope is the raw half with redirect TARGETS blanked -- but ONLY on the
+    # segmented path. In whole mode `$_seg` is the UNBLANKED command, so a `>`
+    # inside a live payload is indistinguishable from a real operator and the
+    # token after it gets blanked out of the scope view. If that token is the URL
+    # carrying the only endpoint, scope is lost and the call is PERMITTED -- a
+    # false permit on precisely the branch that exists to over-refuse. Above the
+    # ceiling, scope is therefore judged on the raw text whole.
+    #
+    # All three hardened ports make this cut at the same place (W2184). Landing
+    # it here alone would put an above-ceiling shape in one port's refused set
+    # and another's permitted set, and that divergence has none of the
+    # file-first cause the six recorded ones share -- so it would be drift, not
+    # a contract difference.
+    if [ "$_whole" = "1" ]; then
+      case "$_seg_raw" in
+        *"/api/tasks/"*) ;;
+        *) continue ;;
+      esac
+    else
+      case "$(_stride_guard_scope_text "$_seg_raw" "$_seg")" in
+        *"/api/tasks/"*) ;;
+        *) continue ;;
+      esac
+    fi
 
     _sawcurl=0
     _first=1
