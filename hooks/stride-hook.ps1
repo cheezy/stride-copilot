@@ -54,6 +54,300 @@ try {
 
 if (-not $Command) { exit 0 }
 
+# =========================================================================
+# The stdout-preservation guard (W2182) — Windows half
+# =========================================================================
+#
+# The bash half carries the full rationale; the short version is that this port
+# resolves a Stride API response FILE-FIRST, so the question is not "does the
+# body stay on stdout" but "does it reach EITHER tier the resolver reads". A
+# target that is the canonical response file is one of the two delivery shapes
+# this repository documents and is PERMITTED; anything that reaches neither tier
+# is refused.
+#
+# THIS HALF EXISTS BECAUSE THE OTHER ONE CANNOT RUN HERE. stride-hook.sh execs
+# this script on native Windows before it reads stdin, so a bash-only guard
+# would leave every Windows session unguarded while looking complete.
+#
+# The five refusal messages are BYTE-IDENTICAL to the bash half's, and the
+# suite asserts that. They are fixed ASCII strings selected by a switch: the
+# command text carries a Bearer token and nothing derived from it may reach a
+# message, a log or a file.
+#
+# EFFICACY IS UNVERIFIED ON THIS RUNTIME — see the bash half and
+# github/copilot-cli#3874. Both channels are emitted for that reason.
+
+$StrideGuardCanonMark = '__STRIDE_CANONICAL_RESPONSE__'
+$StrideGuardMaxScan = 65536
+
+function Set-StrideGuardCanonical {
+    param([string]$Text)
+    # Strip any pre-existing marker first, so a command cannot borrow its
+    # meaning by containing it; only our own substitutions may create one.
+    $t = $Text.Replace($StrideGuardCanonMark, '')
+    # LONGEST FIRST: reversed, the bare relative spelling eats the tail of the
+    # $CLAUDE_PROJECT_DIR form and leaves a fragment that blanks into a false
+    # refusal of a documented call.
+    $spellings = @(
+        '${CLAUDE_PROJECT_DIR:-.}/.stride/.last-api-response.json',
+        '${CLAUDE_PROJECT_DIR}/.stride/.last-api-response.json',
+        '$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json',
+        '${RESPONSE_FILE}',
+        '$RESPONSE_FILE',
+        './.stride/.last-api-response.json',
+        '.stride/.last-api-response.json'
+    )
+    foreach ($s in $spellings) {
+        $t = $t.Replace('"' + $s + '"', $StrideGuardCanonMark)
+        $t = $t.Replace("'" + $s + "'", $StrideGuardCanonMark)
+        $t = $t.Replace($s, $StrideGuardCanonMark)
+    }
+    return $t
+}
+
+function Join-StrideGuardContinuations {
+    param([string]$Text)
+    return ($Text -replace "\\\r?\n", ' ')
+}
+
+# Blank quoted spans to spaces, carrying quote state ACROSS NEWLINES and
+# honouring the shell's escape asymmetry (\" does not close a double-quoted
+# run; a backslash is literal inside single quotes). Length-preserving, so the
+# raw and blanked views can be cut at shared offsets.
+function Get-StrideGuardBlanked {
+    param([string]$Text)
+    $sb = New-Object System.Text.StringBuilder
+    $q = ''
+    $i = 0
+    $n = $Text.Length
+    while ($i -lt $n) {
+        $c = $Text[$i]
+        if ($q -eq '') {
+            if ($c -eq '\') {
+                [void]$sb.Append(' ')
+                if ($i + 1 -lt $n) { [void]$sb.Append(' '); $i += 2 } else { $i += 1 }
+                continue
+            }
+            if ($c -eq '"' -or $c -eq "'") { $q = $c; [void]$sb.Append(' '); $i += 1; continue }
+            [void]$sb.Append($c); $i += 1; continue
+        }
+        if ($q -eq '"' -and $c -eq '\') {
+            [void]$sb.Append(' ')
+            if ($i + 1 -lt $n) { [void]$sb.Append(' '); $i += 2 } else { $i += 1 }
+            continue
+        }
+        if ($c -eq $q) { $q = ''; [void]$sb.Append(' '); $i += 1; continue }
+        [void]$sb.Append(' '); $i += 1
+    }
+    return $sb.ToString()
+}
+
+# NOTE the wrapper skips. An ordinary `RESP=$(curl ... -o /tmp/x)` fuses the
+# assignment and the command into one word, and `( curl ... > f )` or
+# `if true; then curl ... -o f; fi` put `(` or `then` in command position -- each
+# made the whole segment invisible to every rule. The caller neutralises the
+# grouping characters; these keywords are skipped here. Kept in lockstep with the
+# bash half, where the identical hole was found in review.
+function Get-StrideGuardCmdWord {
+    param([string]$Stage)
+    foreach ($w in ($Stage -split '\s+')) {
+        if ($w -eq '') { continue }
+        if ($w -match '=') { continue }
+        if ($w -in @('env','command','builtin','exec','nohup','time')) { continue }
+        if ($w -in @('if','then','elif','else','fi','while','until','do','done','!')) { continue }
+        return ($w -split '[\\/]')[-1]
+    }
+    return ''
+}
+
+function Get-StrideGuardRedirectKind {
+    param([string]$Segment)
+    $n = $Segment.Length
+    for ($i = 0; $i -lt $n; $i++) {
+        if ($Segment[$i] -ne '>') { continue }
+        if ($i + 2 -lt $n -and $Segment.Substring($i, 3) -eq '>&2') { return 'redirect' }
+        $prev = if ($i -gt 0) { $Segment[$i - 1] } else { ' ' }
+        if ($prev -eq '>') { continue }
+        $merged = ($prev -eq '&')
+        if (-not $merged -and $prev -eq '2') {
+            $before = if ($i -gt 1) { $Segment[$i - 2] } else { ' ' }
+            if ($before -eq ' ' -or $before -eq "`t" -or $i -eq 1) { continue }
+        }
+        $appending = ($i + 1 -lt $n -and $Segment[$i + 1] -eq '>')
+        $opEnd = $i
+        if ($appending -or ($i + 1 -lt $n -and $Segment[$i + 1] -eq '|')) { $opEnd = $i + 1 }
+        $rest = if ($opEnd + 1 -lt $n) { $Segment.Substring($opEnd + 1) } else { '' }
+        $rest = $rest.TrimStart(' ', "`t")
+        $target = ($rest -split '[\s]', 2)[0]
+        if ($target -eq $StrideGuardCanonMark) {
+            if ($appending -or $merged) { return 'append' }
+            continue
+        }
+        return 'redirect'
+    }
+    return ''
+}
+
+function Get-StrideGuardReason {
+    param([string]$Raw)
+    if ($Raw -notmatch '/api/tasks/') { return '' }
+    if ($Raw -notmatch 'curl') { return '' }
+
+    $marked  = Set-StrideGuardCanonical -Text $Raw
+    $joined  = Join-StrideGuardContinuations -Text $marked
+    $whole   = $false
+    if ([System.Text.Encoding]::UTF8.GetByteCount($joined) -le $StrideGuardMaxScan) {
+        $scan = Get-StrideGuardBlanked -Text $joined
+    } else {
+        # Above the ceiling: stateless, and judged as ONE unit. Segmenting
+        # unblanked text shatters the command on the `;` inside its own payload
+        # and drops a hiding flag into a fragment with no endpoint beside it.
+        $scan = $joined
+        $whole = $true
+    }
+    # Neutralise the shell's GROUPING characters in the operator view, each
+    # replaced by a space so the substitution is LENGTH-PRESERVING and the
+    # pairing offsets still line up. Quoted spans are already blanked, so a `(`
+    # or `{` surviving here is genuinely shell syntax and never payload.
+    $scan = ($scan -replace '[()`{}]', ' ')
+    if ($scan.Length -ne $joined.Length) { $scan = $joined; $whole = $true }
+
+    # Boundaries located in the BLANKED view so a separator inside a quoted
+    # payload cannot split a command; both views cut at those same offsets.
+    $pairs = @()
+    if ($whole) {
+        $pairs += ,@($joined, $scan)
+    } else {
+        $start = 0; $i = 0; $n = $scan.Length
+        while ($i -lt $n) {
+            $two = if ($i + 1 -lt $n) { $scan.Substring($i, 2) } else { '' }
+            if ($two -eq '&&' -or $two -eq '||') {
+                if ($i -gt $start) { $pairs += ,@($joined.Substring($start, $i - $start), $scan.Substring($start, $i - $start)) }
+                $i += 2; $start = $i; continue
+            }
+            if ($scan[$i] -eq ';' -or $scan[$i] -eq "`n") {
+                if ($i -gt $start) { $pairs += ,@($joined.Substring($start, $i - $start), $scan.Substring($start, $i - $start)) }
+                $i += 1; $start = $i; continue
+            }
+            $i += 1
+        }
+        if ($n -gt $start) { $pairs += ,@($joined.Substring($start, $n - $start), $scan.Substring($start, $n - $start)) }
+    }
+
+    foreach ($pair in $pairs) {
+        $segRaw = $pair[0]
+        $seg    = $pair[1]
+        if ($segRaw -notmatch '/api/tasks/') { continue }
+
+        $sawCurl = $false
+        $first = $true
+        $canonCaptured = $false
+        foreach ($stage in ($seg -split '\|')) {
+            $word = Get-StrideGuardCmdWord -Stage $stage
+            $isCurl = ($word -eq 'curl') -or ($whole -and ($stage -match '(^|\s)curl(\s|$)'))
+            if ($isCurl) {
+                $sawCurl = $true
+                $tokens = @($stage -split '\s+' | Where-Object { $_ -ne '' })
+                for ($t = 0; $t -lt $tokens.Count; $t++) {
+                    $tok = $tokens[$t]
+                    # -ceq, NOT -eq. PowerShell's -eq is CASE-INSENSITIVE, so
+                    # `-eq '-O'` also matches `-o` -- which made every `-o`
+                    # report as `remote` and, worse, refused `-o <canonical>`
+                    # that the bash half permits. curl's own grammar is
+                    # case-sensitive here (-o and -O are different options), so
+                    # every option comparison in this loop must be too.
+                    if ($tok -ceq '-O' -or $tok -ceq '--remote-name') { return 'remote' }
+                    if ($tok -ceq '-o' -or $tok -ceq '--output') {
+                        $target = if ($t + 1 -lt $tokens.Count) { $tokens[$t + 1] } else { '' }
+                        if ($target -ne $StrideGuardCanonMark) { return 'flag' }
+                        $canonCaptured = $true
+                        $t += 1
+                        continue
+                    }
+                    if ($tok.StartsWith('--output=')) {
+                        if ($tok.Substring(9) -ne $StrideGuardCanonMark) { return 'flag' }
+                        $canonCaptured = $true
+                        continue
+                    }
+                    if ($tok.StartsWith('--')) { continue }
+                    if ($tok.StartsWith('-')) {
+                        if ($tok -cmatch 'O') { return 'remote' }
+                        $oi = $tok.IndexOf('o')
+                        if ($oi -ge 1) {
+                            $attached = $tok.Substring($oi + 1)
+                            if ($attached -eq '') {
+                                $target = if ($t + 1 -lt $tokens.Count) { $tokens[$t + 1] } else { '' }
+                                if ($target -ne $StrideGuardCanonMark) { return 'flag' }
+                                $t += 1
+                            } elseif ($attached -ne $StrideGuardCanonMark) {
+                                return 'flag'
+                            }
+                        }
+                    }
+                }
+                $first = $false
+                continue
+            }
+            # An ALLOWLIST, not the denylist this started as: the question is
+            # whether the body reaches a channel the resolver reads, and
+            # `| python3 -m json.tool` takes it away exactly as `| jq` does. A
+            # tee whose target is the CANONICAL file fills Tier 1, after which
+            # anything downstream is safe -- that shape combines two things the
+            # skills endorse. Lockstep with the bash half.
+            if (-not $first -and $sawCurl -and $word -ne '') {
+                if ($word -eq 'tee') {
+                    if ($stage -match [regex]::Escape($StrideGuardCanonMark)) {
+                        # APPEND MODE IS NOT A CAPTURE: a second JSON document
+                        # after the first makes Tier 1 unparsable, so the
+                        # response is lost. Lockstep with the bash half.
+                        $teeWords = @($stage -split '\s+' | Where-Object { $_ -ne '' })
+                        if (($teeWords -ccontains '-a') -or ($teeWords -ccontains '--append')) {
+                            return 'append'
+                        }
+                        $canonCaptured = $true
+                    }
+                } elseif (-not $canonCaptured) {
+                    return 'pipe'
+                }
+            }
+            $first = $false
+        }
+        if (-not $sawCurl) { continue }
+        # Skipped once Tier 1 is filled: `curl ... | tee <canonical> >/dev/null`
+        # has already delivered the body. Lockstep with the bash half.
+        if ($canonCaptured) { continue }
+        $kind = Get-StrideGuardRedirectKind -Segment $seg
+        if ($kind -ne '') { return $kind }
+    }
+    return ''
+}
+
+function Deny-StrideGuard {
+    param([string]$Kind)
+    # BYTE-IDENTICAL to the bash half. Fixed strings, selected by kind; the
+    # command is never interpolated.
+    switch ($Kind) {
+        'flag'     { $msg = 'Refused by the Copilot preToolUse deny contract: this writes the Stride response to a file the plugin does not read. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- so the body has to reach one of those two, and a different -o/--output target reaches neither. Nothing then records the loop state, the Stop gate cannot see that the task was completed, changed_files lands empty and after_goal detection falls back to a fresh API call, none of it with an error. Either let the body print, pipe it through tee, or point --output at the canonical file this port documents.' }
+        'remote'   { $msg = 'Refused by the Copilot preToolUse deny contract: -O/--remote-name names the output file after the URL, so it can never be the canonical response file this port reads. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- and a server-named file is neither. Nothing then records the loop state, the Stop gate cannot see that the task was completed, and after_goal detection falls back to a fresh API call, silently. Let the body print, pipe it through tee, or point --output at the canonical file.' }
+        'pipe'     { $msg = 'Refused by the Copilot preToolUse deny contract: piping the Stride response into another command consumes it before the plugin reads it. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- and a consumer leaves a truncated or reshaped body in the one channel that was going to carry it, so the loop state is never recorded and the Stop gate cannot see the completion. tee is the ONLY pipe permitted here, because it passes stdout through unchanged; every other command is refused rather than matched against a list of known ones. To read a field, capture first -- tee into the canonical response file, which is also what lets a query follow -- and query the file afterwards.' }
+        'redirect' { $msg = 'Refused by the Copilot preToolUse deny contract: this redirect takes the Stride response off stdout to somewhere the plugin does not read. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- so redirecting elsewhere loses the body from both, the loop state is never recorded and the Stop gate cannot see that the task was completed. A stderr-only redirect (2>, 2>>, 2>&1) is fine and is not refused, because it leaves the body where the plugin reads it. Pipe through tee, or redirect to the canonical response file this port documents.' }
+        'append'   { $msg = 'Refused by the Copilot preToolUse deny contract: appending to the canonical response file, or merging stderr into it, corrupts the one document the plugin parses. This port reads .stride/.last-api-response.json as a single JSON value, so a second response concatenated after the first -- or a curl progress line merged in -- makes it unparsable, the file-first resolver falls through, and the response is lost exactly as if it had never been captured. Truncate rather than append: use a single > to the canonical file, or pipe through tee.' }
+        default    { return }
+    }
+    $doc = [pscustomobject]@{
+        permissionDecision       = 'deny'
+        permissionDecisionReason = $msg
+    } | ConvertTo-Json -Compress
+    [Console]::Out.Write($doc + "`n")
+    [Console]::Error.Write($msg + "`n")
+    exit 2
+}
+
+if ($Phase -eq 'pre') {
+    $StrideGuardHit = Get-StrideGuardReason -Raw $Command
+    if ($StrideGuardHit -ne '') { Deny-StrideGuard -Kind $StrideGuardHit }
+}
+
 # --- Determine which Stride hook to run ---
 # Routing:
 #   post + /api/tasks/claim        → before_doing
@@ -1363,12 +1657,28 @@ function Write-LoopStateForCompletion {
             if (-not $ownParsed) {
                 [Console]::Error.WriteLine('stride-hook: completion response was unparsable; no loop state recorded')
             }
+        } else {
+            # W2182 overturns the silence here, on the same reasoning as the
+            # bash half: the 422 excuse does not cover an ABSENT body. A 422
+            # arrives WITH a well-formed body that parses and correctly records
+            # nothing. An absent body means the response never reached this hook
+            # at all, so the completion may have landed server-side while no
+            # loop state exists — and the Stop gate reads a missing file as
+            # "nothing to gate on" and PERMITS. Byte-identical to the bash line.
+            [Console]::Error.WriteLine('stride-hook: no completion response reached this hook; no loop state recorded, so the Stop gate cannot tell this task was completed')
         }
         return
     }
 
     $ident = ConvertTo-LoopStateValue -Value ([string]$src.data.identifier)
-    if (-not (Test-LoopStateSafe -Value $ident)) { return }
+    # W2182: defensive, and announced rather than silent. Test-LoopStatePayloadOk
+    # has already proven a non-empty string identifier, so reaching this means
+    # the server broke its own contract — there is no operator action, only a
+    # fact worth not swallowing. Byte-identical to the bash line.
+    if (-not (Test-LoopStateSafe -Value $ident)) {
+        [Console]::Error.WriteLine('stride-hook: the completion response carried an identifier this hook will not record; no loop state recorded')
+        return
+    }
 
     # The session id is the ONLY field read out of the hook input, which also
     # carries the Bearer token in tool_input.command — never widen this read.
@@ -1395,15 +1705,31 @@ function Write-LoopStateForCompletion {
     # a .NET custom format string, so on a non-invariant host this would emit
     # 10.34.02 where bash emits 10:34:02 — a byte divergence the reference has
     # simply never been run into.
+    # W2182: defensive, and announced rather than silent, in lockstep with the
+    # bash half. Test-LoopStatePayloadOk has already proven a real boolean, so
+    # reaching this means the server broke its own contract -- there is no
+    # operator action, only a fact worth not swallowing. Byte-identical message.
+    if ($src.data.needs_review -isnot [bool]) {
+        [Console]::Error.WriteLine('stride-hook: the completion response carried a non-boolean needs_review; no loop state recorded')
+        return
+    }
     $obj = [ordered]@{
         identifier   = $ident
         needs_review = [bool]$src.data.needs_review
         completed_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
         session_id   = $sid
     }
+    # W2182: the two assembly failures announce too. Returning in silence here
+    # loses a completion that may well have landed, and leaves the Stop gate
+    # reading a missing file as "nothing to gate on". Byte-identical messages.
     try {
         $json = $obj | ConvertTo-Json -Compress -Depth 4
     } catch {
+        [Console]::Error.WriteLine('stride-hook: the loop-state record could not be assembled; no loop state recorded, so the Stop gate cannot tell this task was completed')
+        return
+    }
+    if (-not $json) {
+        [Console]::Error.WriteLine('stride-hook: the loop-state record came out empty; no loop state recorded, so the Stop gate cannot tell this task was completed')
         return
     }
     Write-LoopState -Json $json

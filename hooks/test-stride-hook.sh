@@ -6199,6 +6199,526 @@ else
     "never quote reviewer prose, a finding's description, or observed crash output" "$G25_WF_TXT"
 fi
 # ============================================================
+# Test Group 26: the stdout-preservation guard (W2182)
+# ============================================================
+#
+# The guard refuses a Stride API call that sends its response somewhere NEITHER
+# tier of this port's resolver reads. That is a narrower rule than the sibling
+# ports carry, and deliberately so: this port is FILE-FIRST, so `--output` to
+# the canonical response file is one of the two delivery shapes it documents,
+# and refusing it would contradict our own skills. The permits below are
+# therefore as load-bearing as the refusals — arguably more so, since a refused
+# command here is the operator's own completion call.
+
+echo ""
+echo "=== Test Group 26: the stdout-preservation guard (W2182) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: Test Group 26 (jq not available)"
+else
+  g26_dir=$(mktemp -d)
+  printf '## after_doing\n\n```bash\n```\n' > "$g26_dir/.stride.md"
+  G26_OUT="$g26_dir/out"; G26_ERR="$g26_dir/err"
+
+  g26_run() {
+    jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c},cwd:"'"$g26_dir"'"}' \
+      | CLAUDE_PROJECT_DIR="$g26_dir" bash "$HOOK_SCRIPT" pre > "$G26_OUT" 2> "$G26_ERR"
+    G26_RC=$?
+  }
+  # $1 label  $2 command  $3 deny|permit
+  g26_case() {
+    g26_run "$2"
+    assert_eq "$1" "$3" "$([ "$G26_RC" = "2" ] && echo deny || echo permit)"
+  }
+
+  G26_U='"$STRIDE_API_URL/api/tasks/$TASK_ID/complete"'
+  G26_CANON='"${CLAUDE_PROJECT_DIR:-.}/.stride/.last-api-response.json"'
+  # A PERMITTED /complete call falls through the guard into routing, which maps
+  # pre + /complete to after_doing and then runs the section and the changed-files
+  # capture -- measured at ~44s per case against a fixture with no auth file,
+  # which put roughly twenty minutes on a suite this port runs as a gate. A
+  # permitted /claim call exits immediately after the guard, because routing maps
+  # nothing for pre + /claim. The guard itself is endpoint-agnostic within its
+  # three routed endpoints, so a permit asserted here is the same guard decision
+  # for a fraction of the wall clock. The /complete permits that specifically
+  # matter -- the documented multi-line shape and the blessed tee -- deliberately
+  # stay on $G26_U so the real fall-through path is still exercised.
+  G26_C='"$STRIDE_API_URL/api/tasks/claim"'
+
+  # --- 26a-26k: sent where neither tier can read it ------------------------
+  g26_case "26a: -o to another file is refused"      "curl -X PATCH $G26_U -o out.json"   deny
+  g26_case "26b: an attached -o is refused"          "curl -X PATCH $G26_U -oout.json"    deny
+  g26_case "26c: a clustered -sSo is refused"        "curl -sSo out.json $G26_U"          deny
+  g26_case "26d: --output to another file is refused" "curl --output out.json $G26_U"     deny
+  g26_case "26e: --output= to another file is refused" "curl --output=out.json $G26_U"    deny
+  g26_case "26f: -o /dev/null is refused"            "curl -X PATCH $G26_U -o /dev/null"  deny
+  g26_case "26g: -O is refused"                      "curl -O $G26_U"                     deny
+  g26_case "26h: --remote-name is refused"           "curl --remote-name $G26_U"          deny
+  g26_case "26i: a pipe into jq is refused"          "curl $G26_U | jq ."                 deny
+  g26_case "26j: a pipe into head is refused"        "curl $G26_U | head -c 100"          deny
+  # A tee does not launder a transformer behind it -- UNLESS that tee wrote the
+  # canonical file, which fills Tier 1 and is the case 26ai covers. This case
+  # was originally written the other way round, asserting that a canonical tee
+  # followed by a transformer is refused; review pointed out that contradicts the
+  # guard's own thesis (the body HAS reached a channel the resolver reads), so
+  # the rule was corrected and this case now pins the tee-elsewhere half.
+  g26_case "26k: a transformer after a tee elsewhere is refused" \
+    "curl $G26_U | tee /tmp/elsewhere.json | jq ." deny
+
+  # --- 26l-26q: redirects --------------------------------------------------
+  g26_case "26l: > to another file is refused"       "curl $G26_U > resp.json"            deny
+  g26_case "26m: 1> to another file is refused"      "curl $G26_U 1> resp.json"           deny
+  g26_case "26n: >| to another file is refused"      "curl $G26_U >| resp.json"           deny
+  g26_case "26o: &> to another file is refused"      "curl $G26_U &> resp.json"           deny
+  g26_case "26p: >&2 is refused"                     "curl $G26_U >&2"                    deny
+  # Appending or merging into the canonical file corrupts the single JSON
+  # document Tier 1 parses, so the response is lost just as surely.
+  g26_case "26q: >> onto the canonical file is refused" "curl $G26_U >> $G26_CANON"       deny
+  g26_case "26q: &> onto the canonical file is refused" "curl $G26_U &> $G26_CANON"       deny
+
+  # --- 26r-26s: the target must be PROVABLY the canonical file -------------
+  g26_case "26r: an unresolvable target is refused"  "curl $G26_U -o \"\$OUT\""           deny
+  # The marker is stripped from the input before any substitution, so a command
+  # cannot borrow its meaning by containing it.
+  g26_case "26s: a spoofed marker is refused" \
+    "curl $G26_U -o __STRIDE_CANONICAL_RESPONSE__" deny
+
+  # --- 26t-26z: THE PERMITS. Both documented delivery shapes, and the
+  # near-misses that must not be caught. -----------------------------------
+  g26_case "26t: the blessed tee is permitted"       "curl -X PATCH $G26_U | tee $G26_CANON" permit
+  g26_case "26u: --output to the canonical file is permitted" \
+    "curl -X PATCH $G26_U --output $G26_CANON" permit
+  g26_case "26u: -o to the canonical file is permitted" \
+    "curl -X PATCH $G26_U -o $G26_CANON" permit
+  g26_case "26u: --output= to the canonical file is permitted" \
+    "curl -X PATCH $G26_U --output=$G26_CANON" permit
+  g26_case "26v: > to the canonical file is permitted" \
+    "curl -X PATCH $G26_U > $G26_CANON" permit
+  g26_case "26v: the \$RESPONSE_FILE spelling is permitted" \
+    "curl -X PATCH $G26_U -o \"\$RESPONSE_FILE\"" permit
+  g26_case "26v: the bare relative spelling is permitted" \
+    "curl -X PATCH $G26_U -o .stride/.last-api-response.json" permit
+  g26_case "26w: a bare call with no capture is permitted" "curl -X PATCH $G26_C"         permit
+  g26_case "26x: 2> is permitted"                    "curl $G26_C 2> err.log"             permit
+  g26_case "26x: 2>> is permitted"                   "curl $G26_C 2>> err.log"            permit
+  g26_case "26x: 2>&1 is permitted"                  "curl $G26_C 2>&1"                   permit
+  g26_case "26y: a non-Stride curl is out of scope"  "curl https://example.invalid/x -o /tmp/r" permit
+  g26_case "26y: gcc -o is not a curl"               "gcc -o app main.c"                  permit
+  g26_case "26y: merely mentioning curl is not a call" \
+    "grep -rn \"/api/tasks/\" skills/ | grep curl" permit
+  # Quote blanking: these are payload bytes, not shell operators.
+  g26_case "26z: a > inside a quoted payload is permitted" \
+    "curl $G26_U -d '{\"notes\":\"a > b\"}' | tee $G26_CANON" permit
+  g26_case "26z: a -o inside a quoted payload is permitted" \
+    "curl $G26_U -d '{\"notes\":\"use -o here\"}'" permit
+  g26_case "26z: a ; inside a quoted payload does not split the command" \
+    "curl $G26_U -d '{\"notes\":\"a;b\"}' | tee $G26_CANON" permit
+
+  # --- 26aa: THE DOCUMENTED MULTI-LINE SHAPE. Quote state must carry across
+  # newlines: this port's own completion call embeds a multi-line single-quoted
+  # payload, and a per-line blanking pass reads it as shell syntax and refuses
+  # the operator's ordinary completion.
+  G26_ML="curl -sS -X PATCH $G26_U \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+  \"completion_notes\": \"done > and | and ;\",
+  \"actual_complexity\": \"medium\"
+}'"
+  g26_case "26aa: the documented multi-line call with tee is permitted" "$G26_ML | tee $G26_CANON" permit
+  g26_case "26aa: the same call to the canonical file is permitted"     "$G26_ML -o $G26_CANON"    permit
+  g26_case "26aa: the same call redirected elsewhere is refused"        "$G26_ML > resp.json"      deny
+  g26_case "26aa: the same call with -o elsewhere is refused"           "$G26_ML -o resp.json"     deny
+
+  # --- 26ab: MULTI-BYTE prose. awk counts bytes and bash counts characters;
+  # unless both are pinned to bytes the two views desynchronise and a hiding
+  # flag slips through. Completion notes are exactly where such prose lives.
+  G26_EM='— — — — —'
+  g26_case "26ab: a multi-byte payload with tee is permitted" \
+    "curl $G26_U -d '{\"n\":\"$G26_EM\"}' | tee $G26_CANON" permit
+  g26_case "26ab: a multi-byte payload redirected away is refused" \
+    "curl $G26_U -d '{\"n\":\"$G26_EM\"}' > resp.json" deny
+
+  # --- 26ac: THE SCAN CEILING, from both sides ----------------------------
+  # A ceiling a genuine completion can cross is not a safety margin: it refuses
+  # the operator's correct command. Deliberately free of -o, > and | so a
+  # refusal below can only come from the real flag.
+  G26_PROSE='All checks pass and the writer was rebuilt from scratch this afternoon. '
+  G26_BIG=""; G26_I=0
+  while [ "$G26_I" -lt 60 ]; do G26_BIG="$G26_BIG$G26_PROSE"; G26_I=$((G26_I + 1)); done
+  G26_HUGE=""; G26_I=0
+  while [ "$G26_I" -lt 1100 ]; do G26_HUGE="$G26_HUGE$G26_PROSE"; G26_I=$((G26_I + 1)); done
+  g26_case "26ac: a large legitimate completion is permitted" \
+    "curl $G26_U -d '{\"n\":\"$G26_BIG\"}' | tee $G26_CANON" permit
+  g26_case "26ac: the same large call hiding the response is refused" \
+    "curl $G26_U -d '{\"n\":\"$G26_BIG\"}' -o r.json" deny
+  # Above the ceiling the text is unblanked, so it must be judged WHOLE. Segment
+  # it there and the payload's own `;` shatters the command, dropping the flag
+  # into a fragment with no endpoint beside it — a false PERMIT, not a refusal.
+  g26_case "26ac: past the ceiling it still fails closed" \
+    "curl $G26_U -d '{\"n\":\"$G26_HUGE\"}' -o r.json" deny
+  g26_case "26ac: and a leading command does not hide it there" \
+    "cd \"\$D\" && curl $G26_U -d '{\"n\":\"$G26_HUGE\"}' -o r.json" deny
+
+  # --- 26ad: the refusal document and its contract ------------------------
+  g26_run "curl -X PATCH $G26_U -H \"Authorization: Bearer SECRETVALUE\" -o out.json"
+  assert_exit "26ad: a refusal exits 2" 2 "$G26_RC"
+  assert_eq "26ad: it emits exactly one JSON document" "1" \
+    "$(jq -s 'length' < "$G26_OUT" 2>/dev/null)"
+  # Copilot's preToolUse deny keys are TOP-LEVEL — not nested under
+  # hookSpecificOutput (a sibling runtime's shape), and not the gate's
+  # decision/reason pair (that is agentStop's).
+  assert_eq "26ad: the deny keys are top-level" "deny" \
+    "$(jq -r '.permissionDecision // "MISSING"' < "$G26_OUT" 2>/dev/null)"
+  assert_eq "26ad: with a non-empty reason" "yes" \
+    "$(jq -r 'if (.permissionDecisionReason | length) > 0 then "yes" else "no" end' < "$G26_OUT" 2>/dev/null)"
+  assert_eq "26ad: and no hookSpecificOutput nesting" "false" \
+    "$(jq -r 'has("hookSpecificOutput")' < "$G26_OUT" 2>/dev/null)"
+  assert_eq "26ad: and not the agentStop decision/reason pair" "false" \
+    "$(jq -r 'has("decision")' < "$G26_OUT" 2>/dev/null)"
+  # THE security case: the command carries a Bearer token on every match.
+  assert_eq "26ad: the token never reaches stdout" "0" \
+    "$(grep -c 'SECRETVALUE\|Bearer' "$G26_OUT" || true)"
+  assert_eq "26ad: nor stderr" "0" \
+    "$(grep -c 'SECRETVALUE\|Bearer' "$G26_ERR" || true)"
+  assert_eq "26ad: the refusal also reaches stderr for the exit-2 channel" "yes" \
+    "$(grep -qF 'Refused by the Copilot preToolUse deny contract' "$G26_ERR" && echo yes || echo no)"
+  # Every message must name THIS port's file-first resolver, which is the
+  # clearest proof the prose was written here rather than pasted from stride.
+  assert_eq "26ad: and names this port's file-first resolver" "yes" \
+    "$(grep -qF 'FILE-FIRST' "$G26_ERR" && echo yes || echo no)"
+
+  # A permit must be SILENT on fd 1: run_stride_section owns that stream later
+  # on this phase, and a stray byte would corrupt its document.
+  g26_run "curl -X PATCH $G26_U | tee $G26_CANON"
+  assert_eq "26ae: a permitted call writes nothing to stdout" "0" \
+    "$(wc -c < "$G26_OUT" | tr -d ' ')"
+  assert_exit "26ae: and does not exit 2" 0 "$G26_RC"
+
+  # Structural: no message may interpolate the command, which carries a token.
+  G26_FN=$(awk '/^_stride_guard_refuse\(\) \{/,/^\}/' "$HOOK_SCRIPT")
+  assert_eq "26af: no refusal message interpolates the command" "0" \
+    "$(printf '%s' "$G26_FN" | grep -c '\$COMMAND\|\$_raw\|\$_scan' || true)"
+
+  # --- 26ah: SHELL WRAPPERS. Found in review, and they defeated the guard
+  # completely -- including the -o and redirect rules criterion 1 names by hand.
+  # `RESP=$(curl ...)` fuses the assignment and the command into one word, and
+  # `( curl ... )` / `if true; then curl ...; fi` put `(` or `then` in command
+  # position, so the command-word scan never saw curl and the whole segment was
+  # skipped. Every fixture above is an unwrapped curl, which is exactly how this
+  # reached review green.
+  g26_case "26ah: a command substitution does not hide -o" \
+    "RESP=\$(curl -X PATCH $G26_U -o /tmp/hidden.json)" deny
+  g26_case "26ah: nor a redirect inside one" \
+    "RESP=\$(curl -X PATCH $G26_U > /tmp/hidden.json)" deny
+  g26_case "26ah: a subshell does not hide a redirect" \
+    "( curl -X PATCH $G26_U > out.json )" deny
+  g26_case "26ah: a brace group does not hide -o" \
+    "{ curl -X PATCH $G26_U -o out.json; }" deny
+  g26_case "26ah: an if/then does not hide -o" \
+    "if true; then curl -X PATCH $G26_U -o out.json; fi" deny
+  g26_case "26ah: backticks do not hide -o" \
+    "RESP=\`curl -X PATCH $G26_U -o out.json\`" deny
+  # ...and the wrappers must not become refusals in themselves.
+  g26_case "26ah: a wrapped safe shape is still permitted" \
+    "RESP=\$(curl -X PATCH $G26_U | tee $G26_CANON)" permit
+  g26_case "26ah: and a wrapped bare call is permitted" \
+    "if true; then curl -X PATCH $G26_U | tee $G26_CANON; fi" permit
+
+  # --- 26ai: the transformer rule is an ALLOWLIST ------------------------
+  # A closed denylist silently permitted every consumer nobody named. The
+  # question the guard actually asks is whether the body reaches a tier, and
+  # these take it away exactly as jq does.
+  g26_case "26ai: a pipe into python3 is refused"  "curl $G26_U | python3 -m json.tool" deny
+  g26_case "26ai: a pipe into xargs is refused"    "curl $G26_U | xargs echo"           deny
+  g26_case "26ai: a pipe into cat is refused"      "curl $G26_U | cat"                  deny
+  # A tee whose target is the CANONICAL file fills Tier 1, so what follows can no
+  # longer lose the response -- and that shape combines two things the skills
+  # endorse. Refusing it would contradict the guard's own thesis.
+  g26_case "26ai: a transformer after tee-to-canonical is permitted" \
+    "curl $G26_U | tee $G26_CANON | jq ." permit
+  g26_case "26ai: even an unlisted one" \
+    "curl $G26_U | tee $G26_CANON | python3 -m json.tool" permit
+  # But a tee to anywhere ELSE has filled no tier, so the transformer still loses it.
+  g26_case "26ai: a transformer after tee-elsewhere is refused" \
+    "curl $G26_U | tee /tmp/x.json | jq ." deny
+
+  # --- 26aj: curl in COMMAND-WORD POSITION after a compound keyword. Found in
+  # review round 2: the round-1 wrapper fix closed the grouping-character subset
+  # (`$( )`, `( )`, `{ }`) but not this one, because `if` / `while` / `until` were
+  # still returned as the stage's command word. `if curl … -o /tmp/x; then …; fi`
+  # is an ordinary shape and it was permitted on both halves.
+  g26_case "26aj: an if-guarded curl does not hide -o" \
+    "if curl -sf $G26_C -o /tmp/x.json; then echo ok; fi" deny
+  g26_case "26aj: a while-guarded curl does not hide -o" \
+    "while curl -sf $G26_C -o /tmp/x.json; do break; done" deny
+  g26_case "26aj: an until-guarded curl does not hide a redirect" \
+    "until curl -sf $G26_C > /tmp/x.json; do break; done" deny
+  g26_case "26aj: an if-guarded bare call is still permitted" \
+    "if curl -sf $G26_C; then echo ok; fi" permit
+  g26_case "26aj: and an if-guarded tee is still permitted" \
+    "if curl -sf $G26_C | tee $G26_CANON; then echo ok; fi" permit
+
+  # --- 26ak: APPEND MODE IS NOT A CAPTURE. Also round 2: the tee-to-canonical
+  # permit was granted for any tee stage naming the canonical file, including
+  # `tee -a`. Appending a second JSON document makes Tier 1 unparsable, so the
+  # response is lost — the same reasoning the `append` redirect rule already had.
+  g26_case "26ak: tee -a onto the canonical file is refused" \
+    "curl $G26_U | tee -a $G26_CANON | jq ." deny
+  g26_case "26ak: tee --append onto it is refused too" \
+    "curl $G26_U | tee --append $G26_CANON | jq ." deny
+  g26_case "26ak: even with nothing downstream" \
+    "curl $G26_U | tee -a $G26_CANON" deny
+  # --- 26al: ...and a redirect AFTER a canonical tee is permitted, because the
+  # body has already reached Tier 1. Keeping the capture while keeping a
+  # multi-KB body out of the transcript is a shape a maintainer plausibly types.
+  g26_case "26al: a redirect after a canonical tee is permitted" \
+    "curl $G26_U | tee $G26_CANON > /dev/null" permit
+  g26_case "26al: but not after a tee elsewhere" \
+    "curl $G26_U | tee /tmp/elsewhere.json > /dev/null" deny
+
+  # --- 26ag: CROSS-HALF PARITY. stride-hook.sh execs the .ps1 on native
+  # Windows before stdin is read, so the twin is not a convenience -- it is the
+  # only guard that exists there. These cases drive BOTH halves on the same
+  # fixture and require the same verdict and the same refusal BYTES.
+  #
+  # SKIP, never PASS, when pwsh is absent: a parity case that silently passes
+  # because it could not run is worse than no parity case.
+  if ! command -v pwsh > /dev/null 2>&1; then
+    echo "  SKIP: 26ag: cross-half parity (pwsh not available)"
+  else
+    G26_PS="$(cd "$(dirname "$HOOK_SCRIPT")" && pwd)/stride-hook.ps1"
+    g26_ps_run() {
+      jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c},cwd:"'"$g26_dir"'"}' \
+        | CLAUDE_PROJECT_DIR="$g26_dir" pwsh -NoProfile -File "$G26_PS" pre \
+          > "$g26_dir/ps.out" 2> "$g26_dir/ps.err"
+      G26_PS_RC=$?
+    }
+    # $1 label  $2 command  $3 deny|permit
+    g26_parity() {
+      g26_run "$2";    local sh_v; sh_v=$([ "$G26_RC" = "2" ] && echo deny || echo permit)
+      g26_ps_run "$2"; local ps_v; ps_v=$([ "$G26_PS_RC" = "2" ] && echo deny || echo permit)
+      assert_eq "26ag: $1 — bash" "$3" "$sh_v"
+      assert_eq "26ag: $1 — pwsh" "$3" "$ps_v"
+      if [ "$3" = "deny" ] && [ "$sh_v" = "deny" ] && [ "$ps_v" = "deny" ]; then
+        assert_eq "26ag: $1 — same refusal bytes" "same" \
+          "$(if [ "$(jq -r '.permissionDecisionReason' < "$G26_OUT" 2>/dev/null)" = \
+                  "$(jq -r '.permissionDecisionReason' < "$g26_dir/ps.out" 2>/dev/null)" ]; \
+             then echo same; else echo differs; fi)"
+      fi
+    }
+    g26_parity "-o elsewhere"        "curl -X PATCH $G26_U -o out.json"         deny
+    g26_parity "--output elsewhere"  "curl --output out.json $G26_U"            deny
+    g26_parity "-O"                  "curl -O $G26_U"                           deny
+    g26_parity "a transformer pipe"  "curl $G26_U | jq ."                       deny
+    g26_parity "a redirect"          "curl $G26_U > resp.json"                  deny
+    g26_parity "append onto canonical" "curl $G26_U >> $G26_CANON"              deny
+    # The permits matter most for parity: PowerShell's -eq is case-insensitive,
+    # so an early draft of the twin matched -o against -O and refused the very
+    # canonical-target call the bash half permits. This is the case that caught it.
+    g26_parity "-o to the canonical file" "curl -X PATCH $G26_C -o $G26_CANON"  permit
+    g26_parity "the blessed tee"     "curl -X PATCH $G26_C | tee $G26_CANON"    permit
+    g26_parity "stderr only"         "curl $G26_C 2> err.log"                   permit
+    g26_parity "a quoted payload"    "curl $G26_C -d '{\"n\":\"a > b\"}' | tee $G26_CANON" permit
+    g26_parity "a non-Stride curl"   "curl https://example.invalid/x -o /tmp/r" permit
+    g26_parity "the documented multi-line call" "$G26_ML | tee $G26_CANON"      permit
+    g26_parity "the same call redirected away"  "$G26_ML > resp.json"           deny
+    # The twin must emit the same top-level deny keys, not PowerShell's default
+    # capitalisation or a nested shape.
+    g26_ps_run "curl -X PATCH $G26_U -o out.json"
+    assert_eq "26ag: the twin emits top-level deny keys" "deny" \
+      "$(jq -r '.permissionDecision // "MISSING"' < "$g26_dir/ps.out" 2>/dev/null)"
+    assert_eq "26ag: and writes exactly one document" "1" \
+      "$(jq -s 'length' < "$g26_dir/ps.out" 2>/dev/null)"
+  fi
+
+  rm -rf "$g26_dir"
+fi
+
+# ============================================================
+# Test Group 27: held claim + unrecordable-state announcements (W2182)
+# ============================================================
+#
+# Kept as its own group rather than woven into Groups 21 and 22. Those groups
+# own fixtures that several dozen existing cases share, and the cheapest way to
+# break a suite is to reshape a fixture other cases are standing on. Everything
+# here builds its own.
+
+echo ""
+echo "=== Test Group 27: held claim and announcements (W2182) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: Test Group 27 (jq not available)"
+else
+  unset STRIDE_ALLOW_STOP STRIDE_STOP_GATE_MAX_BLOCKS CLAUDE_PROJECT_DIR
+  G27_GATE="$(cd "$(dirname "$HOOK_SCRIPT")" && pwd)/stride-stop-gate.sh"
+  G27_BASH=$(command -v bash)
+  G27_T=$(mktemp -d)
+  G27_TOKEN='NOT-A-REAL-TOKEN-g27'
+
+  # Records only the http* argument -- the URL -- and never the whole argv.
+  # The gate passes the bearer token in an -H argument, and a recorder that
+  # logged "$*" would write a live token to disk the moment anyone ran this
+  # suite against a real .stride_auth.md. The URL is all these cases assert on.
+  g27_stub() {
+    local d; d=$(mktemp -d "$G27_T/stub.XXXXXX")
+    { printf '#!/usr/bin/env bash\n'
+      printf 'for _a in "$@"; do case "$_a" in http*) printf "ARGS: %%s\\n" "$_a" >> "%s/curl.log" ;; esac; done\n' "$d"
+      printf 'printf "%%s\\n%%s" %s %s\n' "$(printf '%q' "$1")" "$(printf '%q' "$2")"
+    } > "$d/curl"; chmod +x "$d/curl"; printf '%s' "$d"
+  }
+  g27_proj() {
+    local d; d=$(mktemp -d "$G27_T/proj.XXXXXX"); mkdir -p "$d/.stride"
+    printf '# fixture\n- **API URL:** `https://api.example.invalid`\n- **API Token:** `%s`\n' \
+      "$G27_TOKEN" > "$d/.stride_auth.md"
+    printf '%s' "$d"
+  }
+  g27_cache() { printf "TASK_IDENTIFIER='%s'\nTASK_STATUS='%s'\n" "$2" "$3" > "$1/.stride-env-cache"; }
+  g27_body() {
+    printf '{"data":{"identifier":"%s","status":"%s","completed_by_id":%s,"claim_expires_at":"%s"}}' \
+      "$1" "$2" "$3" "$4"
+  }
+  g27_run() {
+    printf '{"cwd":"%s"}' "$1" | PATH="$2:$PATH" "$G27_BASH" "$G27_GATE" \
+      > "$G27_T/out" 2> "$G27_T/err"
+    G27_RC=$?; G27_OUT=$(cat "$G27_T/out"); G27_ERR=$(cat "$G27_T/err")
+  }
+  # Empty stdout IS the permit signal — block and permit share exit 0, so
+  # stdout is the only thing distinguishing them.
+  g27_verdict() {
+    if [ -z "$G27_OUT" ]; then printf 'permit'
+    else printf '%s' "$(printf '%s' "$G27_OUT" | jq -r '.decision // "permit"' 2>/dev/null || printf 'permit')"
+    fi
+  }
+  G27_FUT='2099-01-01T00:00:00Z'; G27_PAST='2000-01-01T00:00:00Z'
+
+  # --- 27a: THE BLOCK. A live claim and no completion on record. ----------
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27a: a held uncompleted claim blocks the turn end" "block" "$(g27_verdict)"
+  assert_exit "27a: and still exits 0, per the agentStop contract" 0 "$G27_RC"
+  assert_eq "27a: the reason names the held task" "yes" \
+    "$(printf '%s' "$G27_OUT" | jq -r '.reason' | grep -qF 'W2182' && echo yes || echo no)"
+  assert_eq "27a: the reason is non-blank" "yes" \
+    "$(printf '%s' "$G27_OUT" | jq -r 'if (.reason | length) > 0 then "yes" else "no" end')"
+  assert_eq "27a: exactly one document on stdout" "1" \
+    "$(printf '%s' "$G27_OUT" | jq -s 'length' 2>/dev/null)"
+  assert_eq "27a: the token never reaches stdout" "0" \
+    "$(printf '%s' "$G27_OUT" | grep -c "$G27_TOKEN" || true)"
+  # The whole point of threading a mode through the existing network leg: the
+  # gate still costs one request at worst, never two.
+  assert_eq "27a: it costs exactly one API call" "1" "$(grep -c '^ARGS:' "$S/curl.log" 2>/dev/null || echo 0)"
+  assert_eq "27a: and asks about the held task, not the queue" "yes" \
+    "$(grep -qF 'api/tasks/W2182?fields=' "$S/curl.log" && echo yes || echo no)"
+  assert_eq "27a: the budget is namespaced held:<IDENT>" "held:W2182" \
+    "$(cut -d' ' -f1 "$D/.stride/.stop-gate-blocks" 2>/dev/null)"
+  # It must not tell a session still holding a task to go claim another one.
+  assert_eq "27a: and does not tell it to claim the next task" "no" \
+    "$(printf '%s' "$G27_OUT" | jq -r '.reason' | grep -qF 'Ready column' && echo yes || echo no)"
+
+  # --- 27b-27f: each condition that means the claim is NOT live -----------
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W2182 completed null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27b: a task no longer in progress permits" "permit" "$(g27_verdict)"
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W2182 in_progress 7 "$G27_FUT")" 200); g27_run "$D" "$S"
+  # THE sanctioned terminal state: completed and awaiting review is not held.
+  assert_eq "27c: an already-completed task permits" "permit" "$(g27_verdict)"
+  assert_eq "27c: and says why" "yes" \
+    "$(printf '%s' "$G27_ERR" | grep -qF 'already been completed' && echo yes || echo no)"
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_PAST")" 200); g27_run "$D" "$S"
+  assert_eq "27d: an expired claim permits" "permit" "$(g27_verdict)"
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W9999 in_progress null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27e: an answer about a different task permits" "permit" "$(g27_verdict)"
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub '{"error":"not found"}' 404); g27_run "$D" "$S"
+  assert_eq "27f: a 404 on the held task permits" "permit" "$(g27_verdict)"
+  # 404 means opposite things on the two endpoints and must not be reported as
+  # an empty Ready queue.
+  assert_eq "27f: and not as an empty queue" "yes" \
+    "$(printf '%s' "$G27_ERR" | grep -qF 'claimed task could not be found' && echo yes || echo no)"
+
+  # --- 27g-27i: no evidence means no block, silently and with no call -----
+  D=$(g27_proj); S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27g: no env cache permits" "permit" "$(g27_verdict)"
+  assert_eq "27g: and makes no API call at all" "0" "$(grep -c '^ARGS:' "$S/curl.log" 2>/dev/null || echo 0)"
+  D=$(g27_proj); g27_cache "$D" W2182 completed
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27h: a cache not in_progress permits" "permit" "$(g27_verdict)"
+  assert_eq "27h: with no API call" "0" "$(grep -c '^ARGS:' "$S/curl.log" 2>/dev/null || echo 0)"
+  # Refused, never sanitised: this value would be interpolated into a URL.
+  D=$(g27_proj)
+  printf "TASK_IDENTIFIER='../../etc/x'\nTASK_STATUS='in_progress'\n" > "$D/.stride-env-cache"
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27i: a non-identifier-shaped cache value permits" "permit" "$(g27_verdict)"
+  assert_eq "27i: with no API call" "0" "$(grep -c '^ARGS:' "$S/curl.log" 2>/dev/null || echo 0)"
+
+  # --- 27j: MUTUAL EXCLUSION ----------------------------------------------
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  printf '{"identifier":"W2181","needs_review":true,"completed_at":"2026-01-01T00:00:00Z","session_id":"g27"}\n' \
+    > "$D/.stride/.loop-state.json"
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200); g27_run "$D" "$S"
+  assert_eq "27j: a recorded completion takes precedence over the cache" "yes" \
+    "$(printf '%s' "$G27_ERR" | grep -qi 'review' && echo yes || echo no)"
+  assert_eq "27j: so the two conditions never both run" "0" \
+    "$(grep -c '^ARGS:' "$S/curl.log" 2>/dev/null || echo 0)"
+
+  # --- 27k: the budget is bounded, so it cannot wedge a session -----------
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200)
+  g27_run "$D" "$S"; g27_run "$D" "$S"; g27_run "$D" "$S"
+  assert_eq "27k: the held-claim budget is bounded" "permit" "$(g27_verdict)"
+  # --- 27l: the escape hatch still wins -----------------------------------
+  D=$(g27_proj); g27_cache "$D" W2182 in_progress
+  S=$(g27_stub "$(g27_body W2182 in_progress null "$G27_FUT")" 200)
+  printf '{"cwd":"%s"}' "$D" | PATH="$S:$PATH" STRIDE_ALLOW_STOP=1 "$G27_BASH" "$G27_GATE" \
+    > "$G27_T/out" 2>/dev/null
+  G27_OUT=$(cat "$G27_T/out")
+  assert_eq "27l: STRIDE_ALLOW_STOP=1 permits a held claim too" "permit" "$(g27_verdict)"
+
+  # --- 27m-27p: the unrecordable-state announcements ----------------------
+  G27_HD=$(mktemp -d "$G27_T/hook.XXXXXX")
+  printf '## after_doing\n\n```bash\n```\n' > "$G27_HD/.stride.md"
+  g27_hook() {  # $1 command  $2 raw tool_response.stdout
+    jq -nc --arg c "$1" --arg r "$2" \
+      '{tool_name:"Bash",tool_input:{command:$c},tool_response:{stdout:$r},cwd:"'"$G27_HD"'"}' \
+      | CLAUDE_PROJECT_DIR="$G27_HD" bash "$HOOK_SCRIPT" post > "$G27_T/hout" 2> "$G27_T/herr"
+    G27_HERR=$(cat "$G27_T/herr")
+  }
+  G27_DONE='curl -X PATCH https://x.invalid/api/tasks/9/complete'
+  # An ABSENT body is the loudest case: the completion may have landed and the
+  # evidence is simply gone, so the gate reads a missing file and permits.
+  rm -f "$G27_HD/.stride/.last-api-response.json"
+  g27_hook "$G27_DONE" ''
+  assert_eq "27m: an absent completion body announces" "yes" \
+    "$(printf '%s' "$G27_HERR" | grep -qF 'no completion response reached this hook' && echo yes || echo no)"
+  assert_eq "27m: and names the consequence for the gate" "yes" \
+    "$(printf '%s' "$G27_HERR" | grep -qF 'Stop gate cannot tell' && echo yes || echo no)"
+  assert_eq "27m: on stderr, never stdout" "0" "$(wc -c < "$G27_T/hout" | tr -d ' ')"
+  # An unparsable body keeps its own distinct line.
+  rm -f "$G27_HD/.stride/.last-api-response.json"
+  g27_hook "$G27_DONE" '{"data":{"identifier":"W2 TRUNCA'
+  assert_eq "27n: an unparsable body keeps its own line" "yes" \
+    "$(printf '%s' "$G27_HERR" | grep -qF 'was unparsable' && echo yes || echo no)"
+  # THE ONE SILENCE WORTH KEEPING: a 422 parses, records nothing correctly, and
+  # nothing failed — so there is nothing for the gate to miss.
+  rm -f "$G27_HD/.stride/.last-api-response.json"
+  g27_hook "$G27_DONE" '{"errors":{"base":["completion is invalid"]}}'
+  assert_eq "27o: a well-formed 422 stays silent" "0" \
+    "$(printf '%s' "$G27_HERR" | grep -c 'no completion response\|was unparsable' || true)"
+  # A successful completion announces nothing and records the state.
+  rm -f "$G27_HD/.stride/.last-api-response.json"
+  g27_hook "$G27_DONE" '{"data":{"identifier":"W2182","needs_review":false}}'
+  assert_eq "27p: a successful completion still records" "W2182" \
+    "$(jq -r '.identifier' "$G27_HD/.stride/.loop-state.json" 2>/dev/null)"
+  assert_eq "27p: and announces nothing" "0" \
+    "$(printf '%s' "$G27_HERR" | grep -c 'no completion response\|was unparsable\|will not record' || true)"
+
+  rm -rf "$G27_T"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

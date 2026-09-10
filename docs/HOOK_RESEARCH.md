@@ -78,6 +78,34 @@ Currently, only `"deny"` is processed (the docs note `"allow"` and `"ask"`
 are reserved but not yet honored). Exit-code semantics are not documented as
 an alternative blocking signal — the canonical path is the stdout JSON.
 
+> **CORRECTION (2026-09-10, W2182).** The sentence immediately above is out of
+> date, and the record is corrected here rather than rewritten so the earlier
+> reasoning stays readable. Re-checked against the live hooks-configuration
+> documentation on that date:
+>
+> * **Exit `2` IS a deny** for `preToolUse` and `permissionRequest` —
+>   "For `permissionRequest` and `preToolUse`, exit `2` is treated as a deny".
+>   Any other non-zero also denies, with an error surfaced. So this port's own
+>   `exit 2` on the pre phase was correct, not a Claude Code leftover.
+> * **Timeouts fail OPEN** on every event, `preToolUse` included.
+> * The deny keys are **top-level**, not nested under `hookSpecificOutput`.
+> * The event is accepted as `preToolUse` **or** `PreToolUse`.
+> * stdin carries `toolName`/`toolArgs`, or the VS Code-compatible
+>   `tool_name`/`tool_input`.
+>
+> The W2182 guard therefore emits **both** channels — the stdout document and
+> `exit 2` — so a runtime honouring either one refuses.
+>
+> **Still unsettled, and it matters:** `github/copilot-cli#3874` (opened
+> 2026-06-20, still open, no maintainer response) reports `preToolUse` denial
+> not working *at all* — exit 2, `permissionDecision: deny` and
+> `behavior: deny` each ran the tool anyway, reported against Copilot Chat
+> Extension v1.0.65 (possibly a different surface from the CLI). Until a live
+> session settles it, treat the guard's efficacy as UNVERIFIED on this runtime,
+> exactly as the Stop gate's registration is treated above. The paragraph below
+> about the two contracts not being interchangeable remains correct in
+> substance: the *documents* differ per event even though exit 2 works on both.
+
 This contrasts with Claude Code's PreToolUse contract, which the gate uses:
 **exit 2 + structured JSON on stdout** to block. The two contracts are not
 interchangeable; a port would have to switch from `exit 2` to writing the

@@ -396,6 +396,11 @@ curl -X PATCH "$STRIDE_API_URL/api/tasks/$TASK_ID/complete" \
 hook short-circuit to the file. It is not required for correctness. On a shell
 without `tee`, use `--output "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"`
 (the response goes to the file only, not stdout) — or skip capture entirely.
+**The target has to be that canonical file (W2182).** This plugin resolves a
+response file-first, so `--output` there is a supported delivery shape and the
+`preToolUse` guard permits it — but `--output` to any *other* target, an append
+onto the canonical file, or a pipe into a transformer sends the body where
+neither tier can read it, and the guard refuses those.
 When the file is absent or the response is truncated with no capture, the hook
 falls back to a fresh, hook-initiated `GET /api/tasks/:id/after_goal_status`
 (D119), which is immune to harness truncation and needs no agent cooperation.

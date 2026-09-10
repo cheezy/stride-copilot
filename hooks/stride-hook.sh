@@ -1298,7 +1298,20 @@ record_loop_state_for_completion() {
     # body of `false` or `null` — both perfectly well-formed — would be
     # announced as unparsable, and an ABSENT body would exit 4 on no input and
     # be announced as a parse failure that never happened.
-    if [ -n "$_payload" ] && ! printf '%s' "$_payload" | jq empty > /dev/null 2>&1; then
+    if [ -z "$_payload" ]; then
+      # W2182 OVERTURNS THE SILENCE HERE, and the rationale above is what makes
+      # the case: the 422 excuse does not cover an ABSENT body. A 422 arrives
+      # WITH a well-formed body that parses and correctly records nothing --
+      # nothing failed, so nothing is said. An absent body is the opposite: the
+      # response never reached this hook at all, so the completion may well have
+      # landed server-side while no loop state exists, and the Stop gate reads a
+      # missing file as "nothing to gate on" and PERMITS. A session can then end
+      # with claimable work still in Ready and not one line saying why.
+      #
+      # Absent and empty are deliberately merged: both collapse to the empty
+      # string in the resolver, and the operator's fix is the same either way.
+      printf 'stride-hook: no completion response reached this hook; no loop state recorded, so the Stop gate cannot tell this task was completed\n' >&2
+    elif ! printf '%s' "$_payload" | jq empty > /dev/null 2>&1; then
       printf 'stride-hook: completion response was unparsable; no loop state recorded\n' >&2
     fi
     return 0
@@ -1306,8 +1319,24 @@ record_loop_state_for_completion() {
 
   _ident=$(printf '%s' "$_src" | jq -r '.data.identifier' 2>/dev/null || echo "")
   _needs=$(printf '%s' "$_src" | jq -r '.data.needs_review' 2>/dev/null || echo "")
-  loop_state_safe "$_ident" || return 0
-  case "$_needs" in true|false) ;; *) return 0 ;; esac
+  # W2182: these two are genuinely unrecordable states, so they announce rather
+  # than returning in silence. Both are DEFENSIVE -- loop_state_payload_ok has
+  # already proven a non-empty string identifier and a boolean needs_review, so
+  # reaching either means the server broke its own contract. That is why the
+  # wording differs from the absent-body line above: there is no operator action
+  # here, only a fact worth not swallowing. The noise cost is nil because
+  # neither is reachable in practice.
+  if ! loop_state_safe "$_ident"; then
+    printf 'stride-hook: the completion response carried an identifier this hook will not record; no loop state recorded\n' >&2
+    return 0
+  fi
+  case "$_needs" in
+    true|false) ;;
+    *)
+      printf 'stride-hook: the completion response carried a non-boolean needs_review; no loop state recorded\n' >&2
+      return 0
+      ;;
+  esac
 
   # The session id is the ONLY field read out of $INPUT, which also carries the
   # Bearer token in .tool_input.command — never widen this read. Copilot does
@@ -1325,8 +1354,14 @@ record_loop_state_for_completion() {
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg sid "$_sid" \
     '{identifier: $ident, needs_review: $needs, completed_at: $ts, session_id: $sid}' \
-    2>/dev/null) || return 0
-  [ -n "$_json" ] || return 0
+    2>/dev/null) || {
+    printf 'stride-hook: the loop-state record could not be assembled; no loop state recorded, so the Stop gate cannot tell this task was completed\n' >&2
+    return 0
+  }
+  if [ -z "$_json" ]; then
+    printf 'stride-hook: the loop-state record came out empty; no loop state recorded, so the Stop gate cannot tell this task was completed\n' >&2
+    return 0
+  fi
 
   write_loop_state "$_json"
   return 0
@@ -1521,6 +1556,437 @@ route_after_goal() {
   detect_after_goal_via_api || true
 }
 
+# =========================================================================
+# The stdout-preservation guard (W2182)
+# =========================================================================
+#
+# WHY, IN THIS PORT'S TERMS — and the reason its rule set is NOT stride's.
+#
+# This port resolves a Stride API response FILE-FIRST. `read_canonical_response`
+# is Tier 1 and `tool_response.stdout` is only Tier 2 (see D118 above). So the
+# question this guard asks is not "does the response stay on stdout" but "does
+# the response reach EITHER channel the resolver reads". A command that sends
+# the body to the canonical file is not hiding it from this port at all — it is
+# using the second of the two delivery shapes this repository documents, named
+# as such in `loop_state_payload_ok`'s own comment and recommended in
+# skills/stride-claiming-tasks and skills/stride-completing-tasks.
+#
+# What genuinely loses the response here is sending it somewhere NEITHER tier
+# can read: a file that is not the canonical one, /dev/null, or a transformer
+# that consumes it. Then no loop state is recorded, the Stop gate cannot see
+# that the task was completed, `changed_files` lands empty, and after_goal
+# detection falls back to a fresh API call — all of it silently.
+#
+# ACCEPTANCE CRITERION 1 IS READ ON ITS OPERATIVE WORDS, "hides the response".
+# A blanket refusal of `--output` would satisfy the criterion's letter and
+# contradict three of this port's own comments plus two of its skill files,
+# refusing the very fallback they instruct the agent to use. That is a false
+# positive against our own documentation, and it stops real work. The exemption
+# is therefore narrow and explicit: the target must be the canonical response
+# file, spelled in one of the ways this repository actually documents.
+#
+# EFFICACY IS UNVERIFIED ON THIS RUNTIME. github/copilot-cli#3874 (opened
+# 2026-06-20, still open, no maintainer response) reports that `preToolUse`
+# denial does not work at all — exit 2, `permissionDecision: deny` and
+# `behavior: deny` were all reported as running the tool anyway. That report is
+# against Copilot Chat Extension v1.0.65, which may be a different surface from
+# the CLI, and this handler follows the documented contract on both channels
+# precisely so that a runtime honouring EITHER one refuses. Nothing here may be
+# read as a claim that the guard is known to block on this runtime; settling it
+# needs a live session. This mirrors how the Stop gate records its own
+# registration as UNVERIFIED rather than asserting it.
+#
+# THE COMMAND TEXT CARRIES A BEARER TOKEN on every call this guard matches.
+# Nothing derived from it may reach a message, a log or a file: all five
+# messages are fixed strings selected by a `case`.
+
+# Marker for a target proven to be the canonical response file. Substituted in
+# BEFORE quote blanking, so it survives as an ordinary bare word afterwards.
+STRIDE_GUARD_CANON_MARK='__STRIDE_CANONICAL_RESPONSE__'
+
+# Transformers that consume the body. `tee` is deliberately absent: it passes
+# stdout through unchanged, which is why it is the blessed pipe.
+# Bytes. Well above a real completion call (a documented one is a few hundred
+# bytes of shape plus its payload) because the scan is one linear awk pass, not
+# a superlinear walk. A ceiling that a genuine completion can cross is not a
+# safety margin -- it refuses the operator's own correct command, which was
+# measured happening in a sibling port at 4,000.
+STRIDE_GUARD_MAX_SCAN=65536
+
+# Replace every documented spelling of the canonical response file with the
+# marker. LONGEST FIRST is load-bearing: reversed, the bare relative spelling
+# eats the tail of the $CLAUDE_PROJECT_DIR form and leaves a quoted fragment
+# that blanks away into a false refusal of a documented call.
+#
+# Pure bash literal replacement, never sed: no metacharacter escaping and no
+# locale dependence. Each spelling is replaced in all three wrappings, and
+# consuming a MATCHED PAIR of quotes keeps quote parity intact for the rest of
+# the line.
+_stride_guard_mark_canonical() {
+  local _t="$1" _s _m="$STRIDE_GUARD_CANON_MARK"
+  # Anti-spoof: a command that already contains the marker must not be able to
+  # borrow its meaning. Strip it first, so only OUR substitutions can create it.
+  _t="${_t//$_m/}"
+  for _s in \
+    '${CLAUDE_PROJECT_DIR:-.}/.stride/.last-api-response.json' \
+    '${CLAUDE_PROJECT_DIR}/.stride/.last-api-response.json' \
+    '$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json' \
+    '${RESPONSE_FILE}' \
+    '$RESPONSE_FILE' \
+    './.stride/.last-api-response.json' \
+    '.stride/.last-api-response.json'
+  do
+    _t="${_t//\"$_s\"/$_m}"
+    _t="${_t//\'$_s\'/$_m}"
+    _t="${_t//$_s/$_m}"
+  done
+  printf '%s' "$_t"
+}
+
+# Join backslash-newline continuations, so a command split across lines is read
+# as the one command it is. Both documented Stride calls here are multi-line.
+_stride_guard_join_continuations() {
+  printf '%s' "$1" | awk 'BEGIN{RS="\036"} {gsub(/\\\n/, " "); printf "%s", $0}'
+}
+
+# Blank quoted spans to spaces, carrying quote state ACROSS NEWLINES.
+#
+# The whole text is one record, deliberately. Per-line blanking resets the
+# state at every newline, and this port's documented completion call embeds a
+# ~35-line single-quoted `jq -n` program -- so a per-line pass reads that
+# payload as live shell syntax and refuses an ordinary completion whose notes
+# happen to contain `>`. A newline INSIDE quotes is payload; a newline outside
+# is a separator, and is preserved as one.
+#
+# Backslash escapes follow the shell's own asymmetry: inside double quotes `\"`
+# does not close the run; inside single quotes a backslash is literal.
+#
+# Length-preserving by construction -- every consumed byte emits one byte -- so
+# a caller may rely on offsets, and LC_ALL=C keeps awk and bash counting the
+# same units.
+_stride_guard_blank() {
+  LC_ALL=C printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN { RS = "\036" }
+    {
+      n = length($0); out = ""; q = ""; i = 1
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (q == "") {
+          if (c == "\\") { out = out " "; if (i + 1 <= n) { out = out " "; i += 2 } else { i += 1 }; continue }
+          if (c == "\"" || c == "'"'"'") { q = c; out = out " "; i += 1; continue }
+          out = out c; i += 1; continue
+        }
+        if (q == "\"" && c == "\\") { out = out " "; if (i + 1 <= n) { out = out " "; i += 2 } else { i += 1 }; continue }
+        if (c == q) { q = ""; out = out " "; i += 1; continue }
+        out = out " "; i += 1
+      }
+      printf "%s", out
+    }
+  ' 2>/dev/null || printf '%s' "$1"
+}
+
+# The command word of a pipeline stage: the first word that is not a leading
+# assignment or a wrapper. `tee` reached this way is a stage; the same name as
+# an ARGUMENT is not.
+# NOTE the wrapper skips, and why `*=*` alone is not enough. An ordinary
+# `RESP=$(curl ... -o /tmp/x)` fuses the assignment and the command into ONE
+# word, so a bare leading-assignment skip consumed `RESP=$(curl` whole and the
+# stage's command word came back as something that is not curl -- which skipped
+# the entire segment, the redirect rule included. Same for `( curl ... > f )`
+# and `if true; then curl ... -o f; fi`, where `(` and `then` were returned as
+# the command word. The caller now neutralises the grouping characters, and
+# these keywords are skipped here, so the curl inside a wrapper is still found.
+_stride_guard_cmd_word() {
+  local _w
+  for _w in $1; do
+    case "$_w" in
+      '') continue ;;
+      *=*) continue ;;
+      env|command|builtin|exec|nohup|time) continue ;;
+      if|then|elif|else|fi|while|until|do|done|'!') continue ;;
+      *) printf '%s' "${_w##*/}"; return 0 ;;
+    esac
+  done
+  return 0
+}
+
+# Is this text a Stride API call at all? Judged on RAW (unblanked) text: both
+# documented calls QUOTE their URL, so asking this of the blanked view answers
+# "no" for every real Stride curl and the guard would permit exactly what it
+# exists to refuse.
+_stride_guard_is_stride_call() {
+  case "$1" in
+    *"/api/tasks/"*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *curl*) return 0 ;;
+  esac
+  return 1
+}
+
+# Redirect classification, shared by the segmented and whole-text paths.
+# Emits `redirect`, `append`, or nothing.
+#
+#   refused  : >  1>  >|  &>  &>>  >&2   to a non-canonical target
+#   refused  : >> &> &>> to the CANONICAL target (append/merge corrupts the
+#              JSON document Tier 1 parses, so the response is lost anyway)
+#   permitted: 2>  2>>  2>&1            (stderr only -- the body still arrives)
+#   permitted: >  1>                    to the canonical target
+_stride_guard_redirect_kind() {
+  printf '%s' "$1" | LC_ALL=C awk -v mark="$STRIDE_GUARD_CANON_MARK" '
+    {
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        if (substr($0, i, 1) != ">") continue
+        if (substr($0, i, 3) == ">&2") { print "redirect"; exit }
+        prev = (i > 1) ? substr($0, i - 1, 1) : " "
+        if (prev == ">") continue
+        merged = (prev == "&")
+        if (!merged && prev == "2") {
+          before = (i > 2) ? substr($0, i - 2, 1) : " "
+          if (before ~ /[ \t]/ || i == 2) continue
+        }
+        op_end = i
+        if (substr($0, i + 1, 1) == ">") op_end = i + 1
+        else if (substr($0, i + 1, 1) == "|") op_end = i + 1
+        appending = (substr($0, i + 1, 1) == ">")
+        rest = substr($0, op_end + 1)
+        sub(/^[ \t]+/, "", rest)
+        target = rest
+        sub(/[ \t].*$/, "", target)
+        if (target == mark) {
+          if (appending || merged) { print "append"; exit }
+          continue
+        }
+        print "redirect"; exit
+      }
+    }
+  ' 2>/dev/null
+}
+
+# The decider. Prints one of flag|remote|pipe|redirect|append, or nothing.
+_stride_guard_reason() {
+  local _raw="$1" _marked _joined _scan _seg _stage _rest _word _first _sawcurl _target _next
+  local _whole=0 _canon_captured=0
+
+  _stride_guard_is_stride_call "$_raw" || return 0
+
+  _marked=$(_stride_guard_mark_canonical "$_raw")
+  _joined=$(_stride_guard_join_continuations "$_marked")
+
+  if [ "$(LC_ALL=C printf '%s' "$_joined" | LC_ALL=C wc -c | tr -d ' ')" -le "$STRIDE_GUARD_MAX_SCAN" ]; then
+    _scan=$(_stride_guard_blank "$_joined")
+  else
+    # Above the ceiling: stateless, and judged as ONE unit. Segmenting
+    # unblanked text shatters the command on the `;` characters inside its own
+    # payload, and a hiding flag then lands in a fragment carrying no endpoint
+    # -- a measured FALSE PERMIT in a sibling port. Raw text is a superset of
+    # the blanked text, so judging it whole can only ever over-refuse.
+    _scan="$_joined"
+    _whole=1
+  fi
+
+  # Neutralise the shell's GROUPING characters in the operator view, replacing
+  # each with a space so the substitution is LENGTH-PRESERVING and the pairing
+  # offsets still line up. Without this a curl inside a command substitution, a
+  # subshell or a brace group is invisible to the command-word scan and the whole
+  # segment is skipped -- every rule with it. Quoted spans are already blanked by
+  # this point, so a `(` or `{` surviving here is genuinely shell syntax and
+  # never payload. The raw half is untouched, so endpoint scoping is unaffected.
+  _scan=$(printf '%s' "$_scan" | LC_ALL=C tr '()`{}' '     ')
+
+  # The pairing cuts both views at shared offsets, so they MUST stay the same
+  # length. If blanking ever drifts, FAIL CLOSED by scanning the raw text as its
+  # own operator view. Do not "repair" a mismatch by padding or truncating: that
+  # shifts the very offsets the pairing depends on, so it cannot fix a problem
+  # that is about the offsets, and it converts a loud over-refusal into a silent
+  # bypass. LC_ALL=C above is what makes this branch unreachable in practice.
+  if [ "$(LC_ALL=C printf '%s' "$_scan" | LC_ALL=C wc -c)" -ne "$(LC_ALL=C printf '%s' "$_joined" | LC_ALL=C wc -c)" ]; then
+    _scan="$_joined"
+    _whole=1
+  fi
+
+  # Segment boundaries are located in the BLANKED view -- so a `;` inside a
+  # quoted payload cannot split a command -- and BOTH views are then cut at
+  # those same offsets and travel as a pair.
+  #
+  # THE PAIR IS THE POINT, and getting it wrong is a silent full bypass.
+  # Whether a segment is OURS is judged on the RAW half, because both documented
+  # calls quote their URL and blanking erases it; what the segment DOES is
+  # judged on the blanked half, so a `>` inside a JSON payload is not read as an
+  # operator. Asking the blanked half whether it names an endpoint answers "no"
+  # for every real Stride call.
+  local _segs _pair _seg_raw
+  if [ "$_whole" = "1" ]; then
+    _segs=$(printf '%s\037%s\036' "$_joined" "$_scan")
+  else
+    # Both strings reach awk through the ENVIRONMENT, never `awk -v`, which
+    # processes backslash escapes in its value -- a command containing `\n` or
+    # `\t` would arrive transformed and the offsets would no longer line up
+    # with what the blanking pass produced.
+    _segs=$(STRIDE_SP_RAW="$_joined" STRIDE_SP_BL="$_scan" LC_ALL=C awk '
+      function emit(s, e) {
+        if (e < s) return
+        printf "%s\037%s\036", substr(raw, s, e - s + 1), substr(bl, s, e - s + 1)
+      }
+      BEGIN {
+        raw = ENVIRON["STRIDE_SP_RAW"]; bl = ENVIRON["STRIDE_SP_BL"]
+        n = length(bl); start = 1; i = 1
+        while (i <= n) {
+          c = substr(bl, i, 1); c2 = substr(bl, i, 2)
+          if (c2 == "&&" || c2 == "||") { emit(start, i - 1); i += 2; start = i; continue }
+          if (c == ";" || c == "\n")    { emit(start, i - 1); i += 1; start = i; continue }
+          i++
+        }
+        emit(start, n)
+      }' 2>/dev/null)
+  fi
+
+  while IFS= read -r -d $'\036' _pair; do
+    _seg_raw="${_pair%%$'\037'*}"
+    _seg="${_pair#*$'\037'}"
+    [ -n "$_seg_raw" ] || continue
+    case "$_seg_raw" in *"/api/tasks/"*) ;; *) continue ;; esac
+
+    _sawcurl=0
+    _first=1
+    _canon_captured=0
+    _rest="$_seg"
+    while [ -n "$_rest" ]; do
+      case "$_rest" in
+        *"|"*) _stage="${_rest%%|*}"; _rest="${_rest#*|}" ;;
+        *)     _stage="$_rest";       _rest="" ;;
+      esac
+      _word=$(_stride_guard_cmd_word "$_stage")
+      if [ "$_word" = "curl" ] || { [ "$_whole" = "1" ] && case " $_stage " in *" curl "*) true ;; *) false ;; esac; }; then
+        _sawcurl=1
+        # Rule 1 -- the response is written to a file instead of printed.
+        _next=""
+        for _word in $_stage; do
+          if [ -n "$_next" ]; then _target="$_word"; _next=""
+            [ "$_target" = "$STRIDE_GUARD_CANON_MARK" ] || { printf 'flag'; return 0; }
+            _canon_captured=1
+            continue
+          fi
+          case "$_word" in
+            -O|--remote-name) printf 'remote'; return 0 ;;
+            -o|--output)      _next=1 ;;
+            --output=*)       [ "${_word#--output=}" = "$STRIDE_GUARD_CANON_MARK" ] || { printf 'flag'; return 0; }
+                              _canon_captured=1 ;;
+            --*)              continue ;;
+            -*O*)             printf 'remote'; return 0 ;;
+            -*o)              _next=1 ;;
+            -*o*)             _target="${_word#*o}"
+                              [ "$_target" = "$STRIDE_GUARD_CANON_MARK" ] || { printf 'flag'; return 0; }
+                              _canon_captured=1 ;;
+          esac
+        done
+        # A trailing -o with no target at all cannot be proven canonical.
+        [ -z "$_next" ] || { printf 'flag'; return 0; }
+        _first=0
+        continue
+      fi
+      # Rule 2 -- anything downstream of curl that is not `tee` consumes the
+      # body before either tier can read it.
+      #
+      # AN ALLOWLIST, not the nine-name denylist this started as. The denylist
+      # was the sibling port's rule and it does not survive this port's own
+      # thesis: the question is whether the response reaches a channel the
+      # resolver reads, and `| python3 -m json.tool` or `| xargs echo` take it
+      # away exactly as `| jq` does. A closed list silently permits every
+      # consumer nobody thought to name.
+      #
+      # `tee` is the one pass-through, and a tee whose target is the CANONICAL
+      # file does more than pass through: it puts the body in Tier 1. Once that
+      # has happened the response is safe whatever follows, so a transformer
+      # after it is permitted -- `curl ... | tee <canonical> | jq .` combines two
+      # shapes the skills endorse and refusing it would contradict this guard's
+      # own reasoning.
+      if [ "$_first" = "0" ] && [ "$_sawcurl" = "1" ] && [ -n "$_word" ]; then
+        if [ "$_word" = "tee" ]; then
+          case " $_stage " in
+            *" $STRIDE_GUARD_CANON_MARK "*)
+              # APPEND MODE IS NOT A CAPTURE. `tee -a <canonical>` adds a second
+              # JSON document after the first, and Tier 1 is parsed as ONE
+              # value, so the file becomes unparsable and the resolver falls
+              # through -- the response is lost exactly as the `append` redirect
+              # rule already says. Treating it as a capture would have let
+              # `curl ... | tee -a <canonical> | jq .` through.
+              case " $_stage " in
+                *" -a "*|*" --append "*|*" -a"*) printf 'append'; return 0 ;;
+              esac
+              _canon_captured=1
+              ;;
+          esac
+        elif [ "$_canon_captured" != "1" ]; then
+          printf 'pipe'; return 0
+        fi
+      fi
+      [ "$_first" = "1" ] && _first=0
+    done
+
+    [ "$_sawcurl" = "1" ] || continue
+    # Rule 3 -- a shell redirect takes the body off stdout entirely.
+    #
+    # SKIPPED once Tier 1 is already filled. `curl ... | tee <canonical> >/dev/null`
+    # is a shape a maintainer plausibly types -- keep the capture, keep a
+    # multi-KB body out of the transcript -- and the body HAS reached a channel
+    # the resolver reads, so refusing it would contradict this guard's thesis in
+    # the same way the tee-then-transformer refusal did.
+    [ "$_canon_captured" = "1" ] && continue
+    _target=$(_stride_guard_redirect_kind "$_seg")
+    [ -n "$_target" ] && { printf '%s' "$_target"; return 0; }
+  done < <(printf '%s' "$_segs")
+
+  return 0
+}
+
+# Emit the refusal and stop the call.
+#
+# Copilot's `preToolUse` deny keys are TOP-LEVEL -- verified against the live
+# hooks-configuration documentation on 2026-09-10. They are NOT nested under
+# `hookSpecificOutput` (that nesting belongs to another runtime) and they are
+# NOT the `decision`/`reason` pair the Stop gate emits (that pair belongs to
+# `agentStop`). Three shapes for three events; copying one into another is the
+# cross-port drift the fleet canon exists to prevent.
+#
+# Both channels are emitted -- the document on stdout AND exit 2 on stderr --
+# because the live docs name exit 2 a deny for `preToolUse`, and because
+# #3874 leaves it unsettled whether either is honoured. A runtime that reads
+# only one still refuses.
+_stride_guard_refuse() {
+  local _kind="$1" _msg _doc
+  case "$_kind" in
+    flag)
+      _msg='Refused by the Copilot preToolUse deny contract: this writes the Stride response to a file the plugin does not read. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- so the body has to reach one of those two, and a different -o/--output target reaches neither. Nothing then records the loop state, the Stop gate cannot see that the task was completed, changed_files lands empty and after_goal detection falls back to a fresh API call, none of it with an error. Either let the body print, pipe it through tee, or point --output at the canonical file this port documents.'
+      ;;
+    remote)
+      _msg='Refused by the Copilot preToolUse deny contract: -O/--remote-name names the output file after the URL, so it can never be the canonical response file this port reads. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- and a server-named file is neither. Nothing then records the loop state, the Stop gate cannot see that the task was completed, and after_goal detection falls back to a fresh API call, silently. Let the body print, pipe it through tee, or point --output at the canonical file.'
+      ;;
+    pipe)
+      _msg='Refused by the Copilot preToolUse deny contract: piping the Stride response into another command consumes it before the plugin reads it. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- and a consumer leaves a truncated or reshaped body in the one channel that was going to carry it, so the loop state is never recorded and the Stop gate cannot see the completion. tee is the ONLY pipe permitted here, because it passes stdout through unchanged; every other command is refused rather than matched against a list of known ones. To read a field, capture first -- tee into the canonical response file, which is also what lets a query follow -- and query the file afterwards.'
+      ;;
+    redirect)
+      _msg='Refused by the Copilot preToolUse deny contract: this redirect takes the Stride response off stdout to somewhere the plugin does not read. This port resolves a response FILE-FIRST -- .stride/.last-api-response.json is Tier 1 and the tool stdout is Tier 2 -- so redirecting elsewhere loses the body from both, the loop state is never recorded and the Stop gate cannot see that the task was completed. A stderr-only redirect (2>, 2>>, 2>&1) is fine and is not refused, because it leaves the body where the plugin reads it. Pipe through tee, or redirect to the canonical response file this port documents.'
+      ;;
+    append)
+      _msg='Refused by the Copilot preToolUse deny contract: appending to the canonical response file, or merging stderr into it, corrupts the one document the plugin parses. This port reads .stride/.last-api-response.json as a single JSON value, so a second response concatenated after the first -- or a curl progress line merged in -- makes it unparsable, the file-first resolver falls through, and the response is lost exactly as if it had never been captured. Truncate rather than append: use a single > to the canonical file, or pipe through tee.'
+      ;;
+    *) return 0 ;;
+  esac
+
+  if [ "${HAS_JQ:-false}" = "true" ]; then
+    _doc=$(printf '%s' "$_msg" | jq -Rsc '{permissionDecision:"deny",permissionDecisionReason:.}' 2>/dev/null) || _doc=""
+  fi
+  if [ -z "${_doc:-}" ]; then
+    _doc="{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"${_msg//\"/\\\"}\"}"
+  fi
+  printf '%s\n' "$_doc"
+  printf '%s\n' "$_msg" >&2
+  exit 2
+}
+
 # Exit early if no phase argument or no .stride.md. Placed AFTER the
 # capture_changed_files, finalize_after_doing, run_stride_section,
 # response_has_after_goal, and export_after_goal_env definitions so tests can
@@ -1557,6 +2023,32 @@ else
 fi
 
 [ -n "$COMMAND" ] || exit 0
+
+# --- The stdout-preservation guard (W2182) --------------------------------
+# Placed BEFORE the routing case on purpose. Routing only maps `pre` +
+# /complete to a hook name, so a claim or mark_reviewed curl exits at the
+# `[ -n "$HOOK_NAME" ]` gate below and would escape a guard placed after it --
+# yet both of those responses are exactly what the recorder needs.
+#
+# It also sits BELOW the .stride.md gate above, inheriting that reversal
+# deliberately: a project with no .stride.md captures nothing and so has no
+# response to lose, and hoisting the guard would widen its blast radius to
+# every Bash call on the machine for no gain.
+#
+# STDOUT DISCIPLINE. `run_stride_section` owns fd 1 later on this phase, so a
+# stray byte here would corrupt its document. The guard writes to fd 1 exactly
+# once, inside the refusal branch, and exits immediately -- control never
+# reaches routing. On the permit path it writes NOTHING to fd 1.
+if [ "$PHASE" = "pre" ]; then
+  # Pathname expansion off for the whole scan: word splitting is wanted, but a
+  # glob surviving quote blanking must not be expanded against whatever
+  # directory the hook happens to run in. A guard's verdict may not depend on
+  # the contents of a directory.
+  set -f
+  _stride_guard_hit=$(_stride_guard_reason "$COMMAND")
+  set +f
+  [ -n "$_stride_guard_hit" ] && _stride_guard_refuse "$_stride_guard_hit"
+fi
 
 # --- Determine which Stride hook to run ---
 # Routing:

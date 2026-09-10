@@ -399,7 +399,10 @@ curl -X POST "$STRIDE_API_URL/api/tasks/claim" \
 The capture is best-effort — on a shell without `tee`, use
 `--output "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"` (the response
 goes to the file only, not stdout, so `cat` the file if you need to read the
-claim response for the task details), or skip capture entirely (the claim path
+claim response for the task details), or skip capture entirely.
+**The target has to be that canonical file (W2182):** the `preToolUse` guard
+permits `--output` there because this plugin reads it, and refuses any other
+target, an append onto it, or a pipe into a transformer (the claim path
 still falls back to parsing the stdout, and after_goal detection on later
 completions is guaranteed by the D119 fresh call regardless).
 

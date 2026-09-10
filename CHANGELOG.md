@@ -2,6 +2,191 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.41.0] - 2026-09-10
+
+### Added — the response has to reach a channel this plugin actually reads (W2182)
+
+A `preToolUse` guard now refuses a Stride API call that sends its response
+somewhere neither tier of this plugin's resolver can see. The failure it closes
+is silent by construction: nothing records the loop state, the Stop gate cannot
+tell the task was completed, `changed_files` lands empty, and `after_goal`
+detection falls back to a fresh API call — with no error anywhere, so the first
+sign of trouble is work that quietly never left the board.
+
+**The rule set here is deliberately NOT the sibling ports'.** This plugin is
+FILE-FIRST: `read_canonical_response` is Tier 1 and the tool stdout is Tier 2.
+So `--output "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"` does not hide
+anything from us — it is the second of the two delivery shapes this repository
+documents, named as such in `loop_state_payload_ok`'s own comment and
+recommended by both the claiming and completing skills. Refusing it outright
+would have satisfied the letter of the task and contradicted three of our own
+comments plus two skill files, refusing the very fallback they instruct the
+agent to use. The criterion is read on its operative words — *hides the
+response* — and the exemption is narrow: the target must be the canonical file,
+spelled the way this repository actually documents it.
+
+Refused: `-o`/`-oX`/`-sSo`/`--output`/`--output=` to any other target including
+`/dev/null`; `-O`/`--remote-name`, which names its file after the URL and so can
+never be the canonical one; **any** pipe whose next stage is not `tee`;
+`>`/`1>`/`>|`/`&>`/`>&2` to any other target; and
+`>>`/`&>`/`&>>` **onto** the canonical file, because appending a second document
+or merging a progress line makes the one JSON value we parse unparsable — the
+response is lost just as surely. An unresolvable target (`-o "$OUT"`) is refused
+too: a refusal is recoverable, a false permit is silent.
+
+Permitted, with cases pinning each: `tee` to any target, every stderr-only
+redirect (`2>`, `2>>`, `2>&1`), `-o`/`--output`/`>` to the canonical file in any
+documented spelling, a bare call with no capture, and a `>` or `-o` sitting
+inside a quoted JSON payload.
+
+The pipe rule is an **allowlist**, which it was not in the first draft. A
+nine-name denylist carried over from the sibling port silently permitted
+`| python3 -m json.tool` and `| xargs echo` — consumers nobody had thought to
+name, taking the body away exactly as `jq` does. The guard's own question is
+whether the response reaches a channel the resolver reads, and only `tee`
+answers yes.
+
+Two corollaries earn their own permits, both of them refusals the first draft got
+wrong against its own thesis. A `tee` whose target **is** the canonical file
+fills Tier 1, so a transformer after *that* is safe — `curl … | tee <canonical> |
+jq .` combines two shapes the skills endorse. So is a redirect after such a tee:
+`curl … | tee <canonical> >/dev/null` keeps the capture while keeping a multi-KB
+body out of the transcript, and the body has already arrived.
+
+**But append mode is not a capture,** and granting that permit without checking
+for it opened a false permit in the same breath: `tee -a <canonical>` adds a
+second JSON document after the first, and Tier 1 is parsed as one value, so the
+file becomes unparsable and the resolver falls through — the response is lost on
+exactly the reasoning the `append` redirect rule already carried. `tee -a` and
+`tee --append` onto the canonical file are refused as `append`.
+
+### Fixed in review — ordinary shell shapes defeated the guard entirely
+
+Worth recording in full, because every fixture written beforehand was an
+unwrapped `curl`, and that is exactly how these reached review green. All were
+**permitted** on both halves:
+
+* `RESP=$(curl … -o /tmp/x)` and `` RESP=`curl … -o x` `` — a command
+  substitution fuses the assignment and the command into one word;
+* `( curl … > out.json )` and `{ curl … -o out.json; }` — `(` and `{` stand in
+  command position;
+* `if true; then curl … -o out.json; fi`, and then in a second round
+  `if curl -sf … -o /tmp/x; then …; fi` with its `while` and `until` forms — the
+  keyword itself was returned as the stage's command word.
+
+In each case the command-word scan never found `curl`, so the **entire segment
+was skipped** — including the `-o` and redirect rules acceptance criterion 1
+names by hand. Fixed at the root rather than per-shape: the operator view now
+neutralises the shell's grouping characters `()` `` ` `` `{}` — replaced with
+spaces, so the substitution is length-preserving and the raw/blanked pairing
+offsets still hold — and the compound keywords `if then elif else fi while until
+do done !` are skipped alongside the existing leading-assignment and wrapper
+skips.
+
+Two rounds were needed because the first fix closed the grouping-character subset
+and left the keyword-in-command-position subset live. The lesson is in the
+fixtures rather than the code: a guard tested only on the shape its author had in
+mind is tested on one shape.
+
+### The Copilot deny contract, and one thing it is not
+
+Deny keys are **top-level** — `{"permissionDecision":"deny","permissionDecisionReason":…}`
+— re-verified against the live hooks-configuration documentation on 2026-09-10.
+They are not nested under `hookSpecificOutput` (a sibling runtime's shape) and
+not the `decision`/`reason` pair this plugin's Stop gate emits (that pair is
+`agentStop`'s). Three shapes for three events.
+
+`docs/HOOK_RESEARCH.md` said exit-code semantics were undocumented as a blocking
+signal. That is now out of date: the live docs state exit `2` **is** treated as
+a deny for `preToolUse`, which means the port's existing `exit 2` on the pre
+phase was right all along. The guard emits both channels for that reason.
+
+**Efficacy is UNVERIFIED on this runtime, and the code says so.**
+`github/copilot-cli#3874` (opened 2026-06-20, still open, no maintainer
+response) reports `preToolUse` denial not working at all — exit 2,
+`permissionDecision: deny` and `behavior: deny` each ran the tool anyway. That
+report is against Copilot Chat Extension v1.0.65, possibly a different surface
+from the CLI. Emitting both channels is the hedge; no prose here or in the
+handler claims the guard is known to block.
+
+### Added — the gate refuses a turn end while a claim is open
+
+The gate previously blocked on one condition: a recorded completion never
+followed up. A turn ending **mid-task** produced no completion, so no loop
+state, so a silent permit — invisible to the only condition it had.
+
+It now blocks on two, and they are the two sides of one file test, so they are
+mutually exclusive by construction and the gate still costs at most one API
+call. The new condition reads the **existing** `.stride-env-cache` — this plugin
+already writes `TASK_IDENTIFIER` and `TASK_STATUS` there, so nothing new was
+invented — and confirms with a single projected request that the task is still
+`in_progress`, uncompleted, and inside its claim window. The budget is keyed
+`held:<IDENT>` so neither condition can spend the other's.
+
+Measured while building this: the server does **not** flip a task's status when
+its claim expires. One was observed still answering `in_progress` with
+`completed_by_id` null twelve minutes past `claim_expires_at`; reaping is lazy.
+That is why expiry is checked as its own condition rather than inferred from
+status — status alone would refuse a turn end over a task another agent is now
+free to take.
+
+### Fixed — unrecordable states announce instead of returning in silence
+
+An **absent** completion body was silent, and that was the wrong silence: unlike
+a 422, which arrives with a well-formed body that parses and correctly records
+nothing, an absent body means the response never reached the hook at all, so the
+completion may have landed while no loop state exists. Three further
+unrecordable states now announce as well (a rejected identifier, a non-boolean
+`needs_review`, a failed record assembly); the first two are defensive, since the
+payload check has already proven both. The one silence kept is the parseable
+non-success body — there, nothing failed.
+
+### Both halves, and the vendored copy
+
+The PowerShell twin carries the guard, the announcements and the held-claim
+condition, with refusal and block messages **byte-identical** to the bash half —
+`stride-hook.sh` execs it on native Windows before stdin is read, so a bash-only
+guard would have left every Windows session unguarded while looking complete.
+Two bugs worth recording. PowerShell's `-eq` is case-insensitive, so `-eq '-O'`
+also matched `-o` and refused the very `-o <canonical>` the bash half permits;
+every option comparison in that loop is now `-ceq`. And the gate's twin rendered
+`DateTime.UtcNow` without `InvariantCulture` — in a .NET custom format string `:`
+is the culture-sensitive time-separator placeholder, so on a host whose culture
+separates with `.` the timestamp became `2026-09-10T12.34.56Z`, and the ordinal
+comparison then sorted `.` below `:`, so an **expired** claim read as unexpired
+and the gate blocked a turn end it should have permitted. The sibling hook
+already passed `InvariantCulture` for the same format string. Three further
+announcements that existed only in bash were added to the twin as well.
+
+### Tests
+
+153 new assertions across two groups, plus a pwsh-gated cross-half parity block: the guard's refusals, its permits and their
+near-misses, the refusal document and its top-level keys, the token never
+reaching either stream, the multi-line and multi-byte payload cases, and the
+scan ceiling from both sides; plus the held-claim block, every condition that
+releases it, mutual exclusion, the one-API-call bound and the announcements.
+**806 assertions pass.** The suite is slower than before — each new case spawns
+the hook, which sources ~1,900 lines. One avoidable cost was removed after
+review measured it: a *permitted* `/complete` call falls through the guard into
+routing, which runs the section and the changed-files capture at roughly 44
+seconds a case. Permits whose assertion does not depend on the endpoint now use
+`/api/tasks/claim`, which routing maps to nothing on the pre phase and so exits
+straight after the guard; the `/complete` permits that do matter stay, so the real
+fall-through path is still exercised. The same conversion was needed a second time
+for the parity block, whose permits run **both** halves. Even so the suite takes
+about **25 minutes** on the development machine against roughly 47 seconds before
+this change — a real cost for a suite this port runs as a gate, recorded here
+rather than glossed. What remains is inherent to the approach: every case spawns a
+fresh hook process.
+
+The scan ceiling is **65,536 bytes**, not the 4,000 a sibling port started with.
+A completion call carries `completion_summary` and `completion_notes`, so an
+ordinary one is several KB — and above the ceiling the payload's own prose is
+read as live shell syntax, which measured as refusing the operator's correct
+command. Above the ceiling the command is judged **whole** rather than
+segmented, because segmenting unblanked text shatters it on the `;` inside its
+own payload and drops a hiding flag into a fragment with no endpoint beside it.
+
 ## [2.40.0] - 2026-09-07
 
 ### Added — a back-reference beside every anchored rule (W2137)
