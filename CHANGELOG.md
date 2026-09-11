@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed — an escaped `>` is no longer read as an operator
+
+A literal `>` handed to curl (`--data-urlencode n=a\>`) was read as shell syntax
+by both walks over the operator view, in opposite directions: the scope pass
+blanked the word after it, the redirect rule called it a redirect. The two
+cancelled, so neither was visible from outside.
+
+**No verdict in this port changed** — the new 26an cases pin the shapes as they
+already behaved, not a behaviour change. It is still worth having, for two
+reasons. A cancellation between two bugs is not something to depend on; and this
+port's redirect rule carries an `append` verdict of its own for the canonical
+response file, so a `>` it misreads is a character that can reach that decision.
+The sibling `stride` port had the same pair **not** cancel, where it was a
+measured false permit.
+
+Fixed once, upstream of both walks and in both halves, counting the backslash run
+so `\>` (a literal `>`) is told apart from `\\>` (an escaped backslash before a
+real operator). Length-preserving, so the pairing offsets still line up.
+
 ## [2.41.0] - 2026-09-10
 
 ### Added — the response has to reach a channel this plugin actually reads (W2182)

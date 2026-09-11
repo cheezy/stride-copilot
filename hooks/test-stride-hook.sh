@@ -6532,6 +6532,33 @@ else
   fi
 
 
+  # --- 26an: AN ESCAPED `>` IS NOT AN OPERATOR ----------------------------
+  # A literal `>` handed to curl (`--data-urlencode n=a\>`) was read as syntax by
+  # both walks over the operator view, in opposite directions: the scope pass
+  # blanked the word after it, the redirect rule called it a redirect. No verdict
+  # here changed when the neutralisation landed -- the two errors had been
+  # cancelling -- and they are pinned because that cancellation is not something
+  # to depend on. In the sibling `stride` port the same pair did NOT cancel and
+  # was a measured false permit.
+  g26_case "26an: an escaped > cannot hide a real redirect" \
+    "curl --data-urlencode n=a\\> $G26_U > r.json" deny
+  g26_case "26an: an escaped > alone is not a redirect" \
+    "curl --data-urlencode n=a\\> $G26_C | tee r.json" permit
+  g26_case "26an: and does not cost the call its scope" \
+    "curl --data-urlencode n=a\\> $G26_U -o r.json" deny
+  g26_case "26an: an escaped BACKSLASH leaves the > an operator" \
+    "curl $G26_U --data-urlencode n=a\\\\> r.json" deny
+  if command -v pwsh > /dev/null 2>&1; then
+    g26_parity "escaped > hides no redirect" \
+      "curl --data-urlencode n=a\\> $G26_U > r.json" deny
+    g26_parity "escaped > alone is not a redirect" \
+      "curl --data-urlencode n=a\\> $G26_C | tee r.json" permit
+    g26_parity "escaped BACKSLASH leaves an operator" \
+      "curl $G26_U --data-urlencode n=a\\\\> r.json" deny
+  else
+    echo "  SKIP: 26an: twin parity for the escaped-> neutralisation (pwsh not available)"
+  fi
+
   # --- 26am: CROSS-PORT RECONCILIATION (W2184) ----------------------------
   # A matrix driving all three hardened guards over one corpus found two defects
   # here and one over-refusal. Pinned, because the matrix was throwaway.

@@ -160,6 +160,37 @@ function Get-StrideGuardCmdWord {
     return ''
 }
 
+function Get-StrideGuardEscapedGtBlanked {
+    # A `>` the shell never reads as an operator, neutralised so no walk reads it
+    # as one either. `--data-urlencode n=a\>` hands curl a LITERAL `>` and
+    # redirects nothing; the scope walk used to blank the word after it (the URL,
+    # when it stands there) and the redirect rule used to call it a redirect.
+    #
+    # ODD/EVEN is the distinction a `-replace` cannot make: `\>` is a literal
+    # `>`, while `\\>` is an escaped BACKSLASH followed by a real operator. Only
+    # an odd run of backslashes escapes the `>`, so the run has to be counted.
+    #
+    # Length-preserving, like every other pass over this view: the escaping
+    # backslash and the `>` become two spaces, so the raw/blanked pairing offsets
+    # still line up. Quote state is untouched -- a backslash is blanked only when
+    # a `>` follows it, never when a quote does.
+    param([string]$Text)
+    $out = [System.Text.StringBuilder]::new($Text)
+    $n = $Text.Length
+    $i = 0
+    while ($i -lt $n) {
+        if ($Text[$i] -ne '\') { $i++; continue }
+        $k = 0
+        while ($i + $k -lt $n -and $Text[$i + $k] -eq '\') { $k++ }
+        if (($k % 2) -eq 1 -and $i + $k -lt $n -and $Text[$i + $k] -eq '>') {
+            $out[$i + $k - 1] = ' '
+            $out[$i + $k]     = ' '
+        }
+        $i = $i + $k
+    }
+    return $out.ToString()
+}
+
 function Get-StrideGuardRedirectKind {
     param([string]$Segment)
     $n = $Segment.Length
@@ -212,6 +243,10 @@ function Get-StrideGuardReason {
     # pairing offsets still line up. Quoted spans are already blanked, so a `(`
     # or `{` surviving here is genuinely shell syntax and never payload.
     $scan = ($scan -replace '[()`{}]', ' ')
+    # And an escaped `>`, which needs a backslash-run count rather than a
+    # -replace. One pass here serves both consumers: the scope test and the
+    # redirect rule. The bash half cuts at the same place.
+    $scan = Get-StrideGuardEscapedGtBlanked -Text $scan
     if ($scan.Length -ne $joined.Length) { $scan = $joined; $whole = $true }
 
     # Boundaries located in the BLANKED view so a separator inside a quoted
