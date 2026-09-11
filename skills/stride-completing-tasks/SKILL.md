@@ -392,6 +392,8 @@ curl -X PATCH "$STRIDE_API_URL/api/tasks/$TASK_ID/complete" \
   | tee "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"
 ```
 
+<!-- canon:stdout-preservation-guard v1 -->
+
 **Best-effort, not the guarantee.** The capture is a *fast path*: it lets the
 hook short-circuit to the file. It is not required for correctness. On a shell
 without `tee`, use `--output "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"`
@@ -406,6 +408,11 @@ falls back to a fresh, hook-initiated `GET /api/tasks/:id/after_goal_status`
 (D119), which is immune to harness truncation and needs no agent cooperation.
 Do **not** treat the grace-window worker as the push mechanism — it only flips
 the goal to Done; the `## after_goal` section is what performs any push.
+
+**Canon-governed — entry `stdout-preservation-guard` in `stride/docs/port-canon.md`.**
+Edit what this states and two version numbers move with it, both before release:
+the canon entry's, and the one on this file's
+`<!-- canon:stdout-preservation-guard ... -->` anchor, which opens the block above.
 
 The resulting request body has this shape (illustrative — populated values
 match the `--arg` / `--argjson` substitutions above):
