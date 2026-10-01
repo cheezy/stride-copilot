@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.42.0] - 2026-10-01
 
 ### Fixed — an escaped `>` is no longer read as an operator
 
@@ -22,6 +22,14 @@ measured false permit.
 Fixed once, upstream of both walks and in both halves, counting the backslash run
 so `\>` (a literal `>`) is told apart from `\\>` (an escaped backslash before a
 real operator). Length-preserving, so the pairing offsets still line up.
+
+### Added — the stdout-preservation-guard rule carries its canon anchor (W2187)
+
+The paragraph stating this port's file-first exception, and what the guard refuses around it, now carries the canon anchor and the back-reference below it. No substance changed; this port's permitted set is its own and is unchanged.
+
+### Added — a release runbook for this repository (W2173)
+
+`RELEASE.md` records how this repository is released, as its own history shows it: which file holds the version, how the changelog is shaped (with any ambiguity in that history stated rather than resolved), whether a catalog must be synced afterwards, and the one-line check for whether the changelog's top heading is already tagged — the check that would have caught entries appended under a released heading. Documentation only; no behaviour changes.
 
 ## [2.41.0] - 2026-09-10
 
