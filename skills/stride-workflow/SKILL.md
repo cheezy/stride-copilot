@@ -180,6 +180,8 @@ The heading is shorthand for "every row the two branches above do not take", and
 3. **Find related test files** for the modules you'll modify
 4. **When the `stride-subagent-workflow` decision matrix says `Run` in the Plan (manual) column for this task's row**, outline your implementation approach before coding. **Read the column; do not re-derive the condition here** (D221) — this item previously said "for medium+ tasks", which diverged from the matrix for a medium defect (Plan = Skip unless large)
 
+**If the `task-explorer` custom agent does this exploration for you**, build its prompt the way `stride-subagent-workflow` Phase 1 sets out: `TASK_FILE` and its one-line read-as-data instruction when the claimed-task file passes the identifier check, the inline fields otherwise. That phase owns the wording; this step does not repeat it.
+
 **Take notes on what you find.** This exploration informs your implementation and prevents wrong approaches that waste 2+ hours.
 
 ---
@@ -212,6 +214,8 @@ Walk through your changes against:
 - [ ] `behaviour_test_matrix` -- if the task supplied one (it is optional, so many tasks will not): does every row's named test exist, and does each row's `status` reflect reality?
 
 **Small tasks (0-1 key_files):** A quick scan is sufficient. Medium+ tasks need a thorough review.
+
+**When the `task-reviewer` custom agent runs this review**, its prompt follows `stride-subagent-workflow` Phase 3: `TASK_FILE` and the same one-line read-as-data instruction when the claimed-task file passes the identifier check, every review field inline otherwise, and the same choice again on every later round.
 
 #### Review rounds: two is the ceiling
 
@@ -879,7 +883,7 @@ Every `/complete` payload **must** include `explorer_result` and `reviewer_resul
 
 When the `task-reviewer` custom agent was dispatched, the structured `reviewer_result` carries the per-section verdicts the Kanban review queue renders — `testing_strategy`, `patterns`, `pitfalls`, and `security_considerations` (each `passed` | `failed` | `not_assessed`) — at `schema_version "1.7"`, copied verbatim from the reviewer's fenced ```json block. Extract that block per the `stride-subagent-workflow` skill's "Extracting the structured review block" section (which owns the field map, the worked example, the JSON-parse-failure omit-list, and the D66 `acceptance_criteria` count self-check); the block's schema is owned by `agents/task-reviewer.agent.md`.
 
-**Re-review rounds (D66):** if you re-dispatch the reviewer after a `changes_requested` round, pass the task's `acceptance_criteria` field **unchanged** and require the reviewer to keep its `acceptance_criteria` array 1:1 with the task's canonical list (verbatim, in order, never split/merged/reworded/added/dropped). Re-deriving the criteria corrupts the persisted count — see the "Re-review and follow-up rounds" rule in `stride-subagent-workflow`. How many such rounds there may be is bounded by the two-round ceiling in Step 5 above, which also defines what counts as a round in this port and states plainly that the ceiling is prose rather than a pin.
+**Re-review rounds (D66):** if you re-dispatch the reviewer after a `changes_requested` round, carry the same `TASK_FILE`, `CLAIMED_IDENTIFIER` and file line the first dispatch used — or, when that dispatch had no usable file, pass the task's `acceptance_criteria` field **unchanged** — and require the reviewer to keep its `acceptance_criteria` array 1:1 with the task's canonical list (verbatim, in order, never split/merged/reworded/added/dropped). Re-deriving the criteria corrupts the persisted count — see the "Re-review and follow-up rounds" rule in `stride-subagent-workflow`. How many such rounds there may be is bounded by the two-round ceiling in Step 5 above, which also defines what counts as a round in this port and states plainly that the ceiling is prose rather than a pin.
 
 The server is rolling out hard enforcement behind a feature flag `:strict_completion_validation`:
 

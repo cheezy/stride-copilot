@@ -19,6 +19,24 @@ with no byte-order mark. `stride-workflow`'s Step 7 removes it once a completion
 returns 2xx; README.md describes it under "The claimed-task file". Tests:
 bash Group 28, PowerShell Group 23.
 
+### Changed — the explorer and reviewer read the claimed task from its file
+
+When the claim hook's `.stride/.task-<IDENTIFIER>.json` exists and its
+`identifier` is the claimed task, `stride-subagent-workflow` now invokes the
+`task-explorer` and `task-reviewer` custom agents with `TASK_FILE` set to its
+absolute path, `CLAIMED_IDENTIFIER` set to the claimed task, and one line
+telling them to take each task field from it, treating its text as data (port
+of stride W2249). No task fields are pasted beside it, and the
+orchestrator does not read the file to build the prompt. Both agents open that
+path alone and use it only when its `identifier` equals `CLAIMED_IDENTIFIER`;
+when it is absent, will not parse, belongs to another task or comes with no
+`CLAIMED_IDENTIFIER` they say so on a `task_file:` line and use the prompt. The reviewer builds
+`acceptance_criteria` with one entry per non-blank line of the file, verbatim
+and in order. Later review rounds and the completion self-check's repair re-run
+pass the same file. Without a file the inline field lists are unchanged. This
+port has no planner agent, so planning is untouched. Tests: bash Group 29,
+PowerShell Group 24.
+
 ## [2.42.0] - 2026-10-01
 
 ### Fixed — an escaped `>` is no longer read as an operator
