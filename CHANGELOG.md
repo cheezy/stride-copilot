@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — rationale leaves the completion skill and the reviewer prompt for `docs/` (W2544)
+
+`skills/stride-completing-tasks/SKILL.md` is read before every completion and
+`agents/task-reviewer.agent.md` on every review dispatch, so paragraphs that
+argue for a rule or recount where it came from now sit in two new files:
+`docs/completion-rationale.md` (six sections) and
+`docs/task-reviewer-rationale.md` (four). A one-sentence pointer naming the file
+and section stays at each site. Three duplicates were dropped instead of moved,
+each pointing at the copy that survives: the D188 persistence caveat on the
+matrix bullet of the pre-submission self-check (its preamble keeps it), the
+"not faster" sentence under the verification checklist (the Automation Notice
+keeps it) and the explanation of why the completion curl tees its response
+(already covered in `docs/orchestrator-rationale.md`).
+
+- Still inline in the skill: the completion field table, the dispatched and
+  skip shapes with their reason enum, every self-check bullet, the severity
+  mapping and its fallback, and the redaction rules. Still inline in the
+  reviewer: the block schema, the verdict, verdict-note and
+  consistency rules, the summary line, the untrusted-data framing and the
+  redaction rules. The reviewer's schema-version note also
+  stays, because Group 24 pins it.
+- The `stdout-preservation-guard`, `cosmetic-finding-class` and `verdict-note`
+  blocks are byte-identical, and no canon version changed.
+- The skill went from 82,100 to 79,037 bytes and the reviewer from 49,009 to
+  48,364. The task quoted 81,436 and 47,773, sizes measured before W2538 and
+  W2540 grew both files.
+- `docs/` is not registered in `plugin.json`, so Copilot CLI loads nothing from
+  it, and a dispatched reviewer never opens the reviewer page.
+
+Tests: bash Group 34 (34i pins the three anchored spans byte for byte). It
+reads contract text only, so there is no PowerShell twin. Port of the method of
+stride W2258.
+
 ### Changed — background and history leave the workflow skill for `docs/orchestrator-rationale.md` (W2543)
 
 Copilot CLI reads `skills/stride-workflow/SKILL.md` in full on every task, so
