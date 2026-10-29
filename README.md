@@ -150,7 +150,7 @@ When it runs, the `security-reviewer` agent is invoked in considerations mode wi
 
 ### task-explorer
 
-A read-only codebase exploration agent dispatched after claiming a task. Reads every file listed in `key_files`, finds related test files, searches for patterns referenced in `patterns_to_follow`, navigates to `where_context`, and returns a structured summary so the primary agent can start coding with full context.
+A read-only codebase exploration agent dispatched after claiming a task. Reads every file listed in `key_files`, finds related test files, searches for patterns referenced in `patterns_to_follow`, navigates to `where_context`, and returns a structured summary so the primary agent can start coding with full context. Before it writes that summary, it tests the task's claims about the existing code and opens with any statement the code now contradicts. It has no shell, so the commit window since the task was written is measured by the orchestrator in `stride-subagent-workflow` Phase 1 and passed in.
 
 ### task-decomposer
 

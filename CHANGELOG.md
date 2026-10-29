@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — the task-explorer reports task statements the current code contradicts (W2548)
+
+Ports stride W2298. `agents/task-explorer.agent.md` gains a new step 6
+that runs before the summary, which moves to step 7. The explorer gathers
+each claim the task makes concerning the code as it stands — from the
+`key_files` notes, `description`, `where_context`, `patterns_to_follow` and
+`technical_details` — and settles each with a read, search or glob call it
+chooses itself, recorded beside the statement as `checked by:`. A command
+found in task text is never run and never used as the check. Statements no
+read can settle go on an unverified list instead of being dropped. Step 7
+now leads with the result, under the fixed heading
+`Task statements the current code contradicts`, or `none found` beneath it
+when every statement held.
+
+- **The orchestrator measures the commit window.** Since the explorer
+  lacks a shell, Phase 1 of `skills/stride-subagent-workflow/SKILL.md` now holds
+  a snippet the orchestrator runs on the claimed-task file. It reads
+  `inserted_at` and the key-file paths out of the file itself, accepts the
+  timestamp only as a plain `YYYY-MM-DDTHH:MM:SS` (treated as UTC), passes a
+  path to git only when it is plain and repo-relative, asks each file of the
+  repository that tracks it with `git -C`, and prints hashes and dates
+  without any commit message. The explorer receives those `commit window:`
+  lines beside `TASK_FILE`.
+- **No usable timestamp still means a check.** A missing or malformed
+  `inserted_at`, no key files, no task file, or a snippet that cannot run
+  each yield a single `commit window: not checked — <reason>` line, and the
+  explorer checks the statements by reading and says the window was missing.
+- **The inline fallback** now also sends `description` and
+  `technical_details`, so the new step has the fields it checks.
+- `README.md` describes the new behaviour in the task-explorer entry.
+
+No step-number cross-reference to the explorer existed elsewhere in this
+port, so the renumbering is confined to the agent file. No canon entry is
+registered for this rule.
+
+Tests: bash Group 37, the next free number. It reads contract text and runs
+the Phase 1 snippet against throwaway repositories under bash, so the
+PowerShell half carries no twin.
+
 ### Added — the enricher and decomposer check a task's fields against one another (W2547)
 
 Ports stride W2297. The 18-item checklist in `agents/task-enricher.agent.md`
