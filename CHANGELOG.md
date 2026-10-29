@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — break-it evidence for new and changed tests (W2550)
+
+Ports stride W2294. A test that stays green while the code it guards is
+broken proves nothing, and only the implementer can show otherwise: the
+`task-reviewer` custom agent holds read, search and glob and never runs a
+test.
+
+- **The procedure.** The new `skills/stride-workflow/test-non-vacuity.md`,
+  reached from one Step 4 bullet, has the implementer break each test the
+  diff adds or changes, watch it fail, undo the edit by hand and watch it
+  pass. A diff with no new or changed test, or one that only reformats a
+  test, owes nothing.
+- **The restore is proved, not trusted.** The tree is hashed before the
+  first break and again after the last, over status, the diffs and the
+  untracked files' contents, because status alone cannot see a break left
+  in a file that was already modified. The hashes must match before the
+  reviewer is invoked, and no restore may use `git checkout`, `restore`,
+  `stash` or `reset`.
+- **Text pins are counted by occurrence.** `grep -oF … | wc -l` rather than
+  `grep -c`, so a phrase that appears twice on one line is caught before a
+  one-site break leaves its test green.
+- **Unbreakable tests say why.** A test whose break would reach outside the
+  repository gets a one-line `not_broken_reason`; "slow" or "obvious" does
+  not qualify.
+- **The hand-off.** `stride-subagent-workflow` Phase 3 sends the results as
+  `break_it` — `test`, `break`, `failed_when_broken`,
+  `passes_when_restored` — beside `review_round` and never inside its
+  `fixes[]`. This port has no `commit_pending`, so `break_it` is declared
+  as its own optional orchestrator-asserted input in the reviewer.
+- **The enforcement.** A new **Break-it Evidence** part of reviewer step 4
+  raises an Important `testing` issue for a missing entry, a break that
+  misses the asserted behaviour, booleans that are not both `true`, or an
+  empty `not_broken_reason`, and wants fresh entries for tests a later
+  round's fixes touched. The Step 5 self-review checklist gains a matching
+  box, and `README.md` describes both halves.
+- **Nothing a parser reads changes.** No block key is added and
+  `schema_version` stays `"1.7"`.
+
+The procedure is a sibling file because the whole of `skills/` ships with
+the plugin and inlining it would breach Group 33c's ceiling on the workflow
+skill; whether Copilot CLI opens the sibling on its own has not been
+observed, which is why Step 4 names it by file. The enforcement part sits
+after the matrix part of step 4 rather than among its bullets, so Group 38
+is unchanged. To stay under Group 34c's 49,009-byte ceiling the reviewer
+dropped restated clauses and reasons — a restated fail-closed sentence,
+the enricher aside, a sentinel rationale among them — without dropping a
+rule; it ends at 48,932 bytes. No canon entry is registered for this rule.
+
+Tests: bash Group 39, the next free number. It reads contract text only,
+so the PowerShell half carries no twin.
+
 ### Changed — the task-reviewer pairs every `testing_strategy` item with a covering test (W2549)
 
 Ports stride W2293. Step 4 of `agents/task-reviewer.agent.md` used to ask
