@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Step 0 says when the installed plugin is behind the catalog
+
+New `hooks/check-plugin-current.sh` and its PowerShell twin
+`hooks/check-plugin-current.ps1` (port of stride W2251) compare the `version`
+in the `plugin.json` one directory above the script's own `hooks/` folder with
+the `stride-copilot` entry of the published stride-copilot-marketplace catalog.
+When the installed copy is lower they print one line naming both versions and
+`copilot plugin update stride-copilot`; in every other case they print nothing.
+Versions compare part by part as integers, and anything that is not plain
+dotted digits — a pre-release, a `v` prefix, `latest` — counts as unknown and
+stays silent. Both always exit 0. The catalog fetch is anonymous, HTTPS-only,
+follows no redirect, treats an HTTP error reply (4xx/5xx) as no catalog and is bounded at 3
+seconds; only the first `stride-copilot` entry is read, and only a string that
+matched the digits-and-dots pattern is ever printed. `stride-workflow` Step 0 gains item 4,
+which finds the plugin root (Copilot CLI documents no plugin-root variable for
+skills, so it checks the skill's own location, then the install directories the
+Copilot CLI plugin reference lists), runs the script once, relays any line once
+and carries on, and skips the item without comment when no single root can be
+located. The install directories come from Copilot CLI's documentation, not
+from a live install. README.md mentions the warning under "Plugin Management".
+Tests: bash Group 30, PowerShell Group 25 (the goal planned PowerShell Group
+24, which W2538 had already taken).
+
 ### Added — the claim hook keeps a copy of the claimed task
 
 After a claim that can prove the response is its own task, both hook halves

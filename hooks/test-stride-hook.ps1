@@ -4592,6 +4592,287 @@ if (-not ((Test-Path $G24Wf) -and (Test-Path $G24Sub) -and (Test-Path $G24Ct) -a
 }
 
 # ============================================================
+# Test Group 25: Step 0 says when the install is behind the catalog (W2539)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 30; labels 30a.. match it, as Group
+# 24 reuses bash Group 29's labels. The goal planned this as Group 24, which
+# W2538 had already taken, so it is the next free number. check-plugin-current.ps1
+# finds plugin.json from its own location, so each case copies it into a fixture
+# plugin root (<root>\hooks\ beside <root>\plugin.json) and dot-sources the copy,
+# which defines the functions without running the check. Get-StridePinBody (or,
+# for the fetch cases, Invoke-StridePinRequest) is then replaced in a child
+# scope, so no case reaches the network. Bash's 30r (curl or jq missing from
+# PATH) has no counterpart: this half calls no external program.
+Write-Host ""
+Write-Host "=== Test Group 25: stale-install warning at Step 0 (W2539) ==="
+
+$g25Src = Join-Path $ScriptDir 'check-plugin-current.ps1'
+$g25Dir = Join-Path $TmpDir 'g25'
+$g25Update = 'copilot plugin update stride-copilot'
+$g25Url = 'https://raw.githubusercontent.com/cheezy/stride-copilot-marketplace/main/.github/plugin/marketplace.json'
+function Get-G25Warn {
+    param([string]$Installed, [string]$Published)
+    return "stride-copilot $Installed is installed, but stride-copilot-marketplace now pins $Published. Update it with: $g25Update"
+}
+$g25Warn = Get-G25Warn '2.41.0' '2.42.0'
+
+# New-G25Root <name> [manifest-json] -> path of the script copy in a fixture
+# plugin root; with no manifest argument the root has no plugin.json at all.
+function New-G25Root {
+    param([string]$Name, [string]$Manifest = $null)
+    $root = Join-Path (Join-Path $g25Dir 'root') $Name
+    $hooks = Join-Path $root 'hooks'
+    New-Item -ItemType Directory -Path $hooks -Force | Out-Null
+    Copy-Item -LiteralPath $g25Src -Destination (Join-Path $hooks 'check-plugin-current.ps1') -Force
+    $m = Join-Path $root 'plugin.json'
+    Remove-Item -LiteralPath $m -Force -ErrorAction SilentlyContinue
+    if ($PSBoundParameters.ContainsKey('Manifest')) { [System.IO.File]::WriteAllText($m, $Manifest) }
+    return (Join-Path $hooks 'check-plugin-current.ps1')
+}
+function New-G25Ver {
+    param([string]$Version)
+    return (New-G25Root ("v-" + $Version) ('{"name":"stride-copilot","version":"' + $Version + '","hooks":"hooks/hooks.json"}'))
+}
+function New-G25Catalog {
+    param([string]$Version)
+    return ('{"name":"stride-copilot-marketplace","metadata":{"version":"9.9.9"},"plugins":[{"name":"stride-copilot-ideation","version":"9.9.9"},{"name":"stride-copilot","version":"' + $Version + '","source":"cheezy/stride-copilot"},{"name":"stride-copilot-security-review","version":"9.9.9"}]}')
+}
+# Run the check from a dot-sourced copy, in a child scope, with a fixture body.
+function Invoke-G25Check {
+    param([string]$Copy, [string]$Body)
+    $out = & {
+        . $Copy
+        $script:G25Body = $Body
+        function Get-StridePinBody { return $script:G25Body }
+        Invoke-StridePluginCheck $script:StrideCopilotPluginRoot
+    }
+    return (@($out) -join "`n")
+}
+
+if (Test-Path -LiteralPath $g25Src) {
+    # --- matrix row 0 / 6: an older install prints one line ---
+    $out = Invoke-G25Check (New-G25Ver '2.41.0') (New-G25Catalog '2.42.0')
+    Assert-Eq "30a: older install prints the warning line" $g25Warn $out
+    Assert-Eq "30a: exactly one line" '1' ([string]@($out -split "`n").Count)
+    Assert-Contains "30a: the line names the update command" $g25Update $out
+
+    # --- matrix row 5: equal and newer installs stay silent ---
+    $cat = New-G25Catalog '2.42.0'
+    Assert-Eq "30b: equal versions print nothing" '' (Invoke-G25Check (New-G25Ver '2.42.0') $cat)
+    Assert-Eq "30c: newer install prints nothing" '' (Invoke-G25Check (New-G25Ver '2.43.0') $cat)
+
+    # --- matrix row 1: numeric, not string, comparison ---
+    Assert-Eq "30d: 2.9.0 installed vs a 2.10.0 pin warns" (Get-G25Warn '2.9.0' '2.10.0') (Invoke-G25Check (New-G25Ver '2.9.0') (New-G25Catalog '2.10.0'))
+    Assert-Eq "30e: 2.10.0 installed vs a 2.9.0 pin is silent (2.10.0 is newer)" '' (Invoke-G25Check (New-G25Ver '2.10.0') (New-G25Catalog '2.9.0'))
+    Assert-Eq "30e: a missing part counts as 0 (2.42 vs 2.42.0)" '' (Invoke-G25Check (New-G25Ver '2.42') $cat)
+    Assert-Eq "30e: an extra non-zero part is newer (2.42.0.1)" '' (Invoke-G25Check (New-G25Ver '2.42.0.1') $cat)
+    Assert-Eq "30e: a leading zero compares as a number (2.042.0 = 2.42.0)" '' (Invoke-G25Check (New-G25Ver '2.042.0') $cat)
+
+    # --- matrix row 2: unreachable or unparsable catalog ---
+    $old = New-G25Ver '2.41.0'
+    Assert-Eq "30f: an unreachable catalog (empty body) prints nothing" '' (Invoke-G25Check $old '')
+    Assert-Eq "30h: an HTML body prints nothing" '' (Invoke-G25Check $old '<html>rate limited</html>')
+    Assert-Eq "30h: a truncated catalog prints nothing" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.4')
+
+    # --- edge case: the catalog has no stride-copilot entry ---
+    Assert-Eq "30i: no stride-copilot entry prints nothing (decoys ignored)" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot-lite","version":"9.9.9"},{"name":"Stride-Copilot","version":"9.9.9"}]}')
+    Assert-Eq "30i: an entry with no version prints nothing" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot"}]}')
+    Assert-Eq "30i: only the first stride-copilot entry counts (a later duplicate is ignored)" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot"},{"name":"stride-copilot","version":"2.42.0"}]}')
+    Assert-Eq "30i: the first stride-copilot entry wins over a later one" $g25Warn (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.42.0"},{"name":"stride-copilot","version":"1.0.0"}]}')
+    Assert-Eq "30i: an empty plugins list prints nothing (metadata.version unused)" '' (Invoke-G25Check $old '{"metadata":{"version":"9.9.9"},"plugins":[]}')
+
+    # --- wrong catalog shapes are not walked ---
+    Assert-Eq "30j: plugins as an object is not walked" '' (Invoke-G25Check $old '{"plugins":{"x":{"name":"stride-copilot","version":"2.42.0"}}}')
+    Assert-Eq "30j: plugins as a single entry object is not walked" '' (Invoke-G25Check $old '{"plugins":{"name":"stride-copilot","version":"2.42.0"}}')
+    Assert-Eq "30j: a top-level array is not the catalog" '' (Invoke-G25Check $old '[{"plugins":[{"name":"stride-copilot","version":"2.42.0"}]}]')
+    Assert-Eq "30j: a bare entry object is not the catalog" '' (Invoke-G25Check $old '{"name":"stride-copilot","version":"2.42.0"}')
+    # PS7 must not unroll a one-element plugins array into a bare object
+    Assert-Eq "30j: a one-element plugins array still warns" $g25Warn (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.42.0"}]}')
+
+    # --- security_considerations: catalog text never reaches the terminal raw ---
+    Assert-Eq "30k: a prose pin is never printed" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.43.0 and more"}]}')
+    Assert-Eq "30k: a command-shaped pin prints nothing" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"$(Get-Date)"}]}')
+    Assert-Eq "30k: an escape-sequence pin prints nothing" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"\u001b[31m2.43.0"}]}')
+    Assert-Eq "30k: a numeric (non-string) pin prints nothing" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":2.43}]}')
+    Assert-Eq "30k: a pin ending in a newline still yields the one line" $g25Warn (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.42.0\n"}]}')
+    Assert-Eq "30k: an interior newline is not a version" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.42\n.0"}]}')
+    Assert-Eq "30k: a trailing CR is not a version" '' (Invoke-G25Check $old '{"plugins":[{"name":"stride-copilot","version":"2.42.0\r"}]}')
+
+    # --- matrix row 2: an unreadable installed manifest is silent ---
+    Assert-Eq "30l: no plugin.json beside hooks\ prints nothing" '' (Invoke-G25Check (New-G25Root 'nomanifest') $cat)
+    Assert-Eq "30m: a numeric manifest version prints nothing" '' (Invoke-G25Check (New-G25Root 'numver' '{"name":"stride-copilot","version":2.41}') $cat)
+    Assert-Eq "30m: a manifest with no version prints nothing" '' (Invoke-G25Check (New-G25Root 'nover' '{"name":"stride-copilot"}') $cat)
+    Assert-Eq "30m: an array manifest prints nothing" '' (Invoke-G25Check (New-G25Root 'arrver' '[{"name":"stride-copilot","version":"2.41.0"}]') $cat)
+    Assert-Eq "30m: another plugin's manifest is not read as ours" '' (Invoke-G25Check (New-G25Root 'other' '{"name":"stride-copilot-lite","version":"0.1.0"}') $cat)
+    Assert-Eq "30m: an unparsable manifest prints nothing" '' (Invoke-G25Check (New-G25Root 'broken' '{"name":"stride-copilot","version":') $cat)
+    Assert-Eq "30m: an installed version ending in a newline still warns" $g25Warn (Invoke-G25Check (New-G25Root 'v-nl' '{"name":"stride-copilot","version":"2.41.0\n"}') $cat)
+    if (-not $IsWindows) {
+        $locked = New-G25Ver '2.40.0'
+        $lockedManifest = Join-Path (Split-Path -Parent (Split-Path -Parent $locked)) 'plugin.json'
+        & chmod 000 $lockedManifest 2>$null
+        $lockedOut = Invoke-G25Check $locked $cat
+        & chmod 644 $lockedManifest 2>$null
+        Assert-Eq "30m: an unreadable plugin.json prints nothing" '' $lockedOut
+    }
+
+    # --- matrix row 3: not plain dotted digits means unknown, and silent ---
+    Assert-Eq "30n: a pre-release install is unknown" '' (Invoke-G25Check (New-G25Ver '2.41.0-rc.1') $cat)
+    Assert-Eq "30n: a v-prefixed install is unknown" '' (Invoke-G25Check (New-G25Ver 'v2.41.0') $cat)
+    Assert-Eq "30n: 'latest' is unknown" '' (Invoke-G25Check (New-G25Ver 'latest') $cat)
+    Assert-Eq "30n: build metadata is unknown" '' (Invoke-G25Check (New-G25Ver '2.41.0+build') $cat)
+    Assert-Eq "30n: an empty part is unknown" '' (Invoke-G25Check (New-G25Ver '2..41') $cat)
+    Assert-Eq "30n: a pre-release pin is unknown" '' (Invoke-G25Check $old (New-G25Catalog '2.43.0-rc.1'))
+    Assert-Eq "30p: a part too long to compare is silent" '' (Invoke-G25Check $old (New-G25Catalog '2.1234567890123456789.0'))
+
+    # --- self-location: the root is the directory above the copy's hooks\ ---
+    $g25Root = & { . $old; $script:StrideCopilotPluginRoot }
+    Assert-Eq "30s: the plugin root is found from the script's own location" (Join-Path (Join-Path $g25Dir 'root') 'v-2.41.0') $g25Root
+
+    # --- Get-StridePinBody over its seam: Invoke-StridePinRequest shadowed ---
+    function Invoke-G25Fetch {
+        param([string]$Copy, [scriptblock]$Req)
+        $out = & {
+            . $Copy
+            ${function:Invoke-StridePinRequest} = $Req
+            Invoke-StridePluginCheck $script:StrideCopilotPluginRoot
+        }
+        return (@($out) -join "`n")
+    }
+    $script:G25Catalog = $cat
+    Assert-Eq "30q: a catalog returned by the request is read" $g25Warn (Invoke-G25Fetch $old { [string]$script:G25Catalog })
+    Assert-Eq "30q: a throwing request is caught into silence" '' (Invoke-G25Fetch $old { throw 'simulated network failure' })
+
+    # --- the real Invoke-StridePinRequest against a local listener. The URL is
+    # re-pointed only inside the dot-sourced copy's scope; the script itself
+    # cannot take one. ---
+    function Start-G25Listener {
+        param([int]$Port, [int]$Code, [string]$Body, [int]$StallSeconds = 0, [string]$Location = '')
+        $job = Start-Job -ArgumentList $Port, $Code, $Body, $StallSeconds, $Location -ScriptBlock {
+            param($Port, $Code, $Body, $StallSeconds, $Location)
+            $l = [System.Net.HttpListener]::new()
+            $l.Prefixes.Add("http://localhost:$Port/")
+            try {
+                $l.Start()
+                $ctx = $l.GetContext()
+                # record whether the request carried an Authorization header
+                $auth = [string]$ctx.Request.Headers['Authorization']
+                $ctx.Response.StatusCode = $Code
+                if ($Location) { $ctx.Response.RedirectLocation = $Location }
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($Body)
+                if ($StallSeconds -gt 0) {
+                    $ctx.Response.ContentLength64 = $bytes.Length + 4096
+                    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                    $ctx.Response.OutputStream.Flush()
+                    Start-Sleep -Seconds $StallSeconds
+                } else {
+                    $ctx.Response.ContentLength64 = $bytes.Length
+                    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+                $ctx.Response.Close()
+                "auth=[$auth]"
+            } catch {
+            } finally {
+                if ($l.IsListening) { $l.Stop() }
+            }
+        }
+        $null = Wait-ForListener -Port $Port
+        return $job
+    }
+    function Invoke-G25Local {
+        param([int]$Port)
+        return (& {
+            . $old
+            $script:StrideCopilotPinUrl = "http://localhost:$Port/"
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $body = Get-StridePinBody
+            $sw.Stop()
+            [pscustomobject]@{ Body = [string]$body; Ms = $sw.ElapsedMilliseconds }
+        })
+    }
+    $g25Port = Get-Random -Minimum 41000 -Maximum 49000
+    $job = Start-G25Listener -Port $g25Port -Code 200 -Body $script:G25Catalog
+    $r = Invoke-G25Local -Port $g25Port
+    $g25Seen = [string](@(Receive-Job $job -Wait -ErrorAction SilentlyContinue) -join '')
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Assert-Eq "30q: a 200 response body is returned as text" $script:G25Catalog $r.Body
+    Assert-Eq "30q: the request carries no Authorization header" 'auth=[]' $g25Seen
+    $g25Port++
+    $job = Start-G25Listener -Port $g25Port -Code 500 -Body $script:G25Catalog
+    $r = Invoke-G25Local -Port $g25Port
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Assert-Eq "30q: a non-success status yields nothing" '' $r.Body
+    $g25Port++
+    # the redirect target is live and serves a catalog, so following it would show
+    $job2 = Start-G25Listener -Port ($g25Port + 100) -Code 200 -Body $script:G25Catalog
+    $job = Start-G25Listener -Port $g25Port -Code 302 -Body '' -Location "http://localhost:$($g25Port + 100)/"
+    $r = Invoke-G25Local -Port $g25Port
+    Remove-Job $job, $job2 -Force -ErrorAction SilentlyContinue
+    Assert-Eq "30q: a redirect is not followed" '' $r.Body
+    $g25Port++
+    $job = Start-G25Listener -Port $g25Port -Code 200 -Body '{"plugins":[{"name":"stride' -StallSeconds 20
+    $r = Invoke-G25Local -Port $g25Port
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Assert-Eq "30q: a body that stalls after the headers yields nothing" '' $r.Body
+    Assert-Eq "30q: and gives up within the 3-second budget" 'True' ([string]($r.Ms -lt 6000))
+
+    # --- source pins ---
+    $g25Text = [System.IO.File]::ReadAllText($g25Src)
+    Assert-Contains "30u: reads the published catalog" "'$g25Url'" $g25Text
+    Assert-Contains "30u: the whole request shares one 3-second budget" '$client.Timeout = [TimeSpan]::FromSeconds(3)' $g25Text
+    Assert-NotContains "30u: never returns at the headers" 'ResponseHeadersRead' $g25Text
+    Assert-Contains "30u: never follows a redirect" '$handler.AllowAutoRedirect = $false' $g25Text
+    Assert-Contains "30u: sends no default credentials" '$handler.UseDefaultCredentials = $false' $g25Text
+    Assert-Contains "30u: the pattern admits digits and dots only, anchored at the true end" "'^[0-9]+(\.[0-9]+)*\z'" $g25Text
+    $g25Code = (@($g25Text -split "`n") | Where-Object { -not $_.TrimStart().StartsWith('#') }) -join "`n"
+    Assert-NotContains "30u: no code line sets an Authorization header" 'Authorization' $g25Code
+    Assert-NotContains "30u: never evaluates fetched text" 'Invoke-Expression' $g25Text
+
+    # --- a real child process: no manifest, an ignored argument, exit 0 ---
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = (Get-Process -Id $PID).Path
+    $psi.Arguments = "-NoProfile -File `"$(New-G25Root 'child')`" ignored-argument"
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $g25Stdout = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    Assert-Eq "30t: run as a script with no manifest, it prints nothing" '' $g25Stdout.Trim()
+    Assert-Exit "30t: and exits 0" 0 $proc.ExitCode
+} else {
+    Write-Host "  SKIP: Test Group 25 needs hooks/check-plugin-current.ps1"
+}
+
+# --- matrix row 5: Step 0 wiring and the README (files read as UTF-8) ---
+$g25Wf = Join-Path (Join-Path (Join-Path (Split-Path -Parent $ScriptDir) 'skills') 'stride-workflow') 'SKILL.md'
+$g25Readme = Join-Path (Split-Path -Parent $ScriptDir) 'README.md'
+if ((Test-Path -LiteralPath $g25Wf) -and (Test-Path -LiteralPath $g25Readme)) {
+    $g25WfText = [System.IO.File]::ReadAllText($g25Wf, [System.Text.Encoding]::UTF8)
+    $g25Step0 = [regex]::Match($g25WfText, '(?s)## Step 0:.*?## Step 1:').Value
+    $g25Item4 = [regex]::Match($g25Step0, '(?ms)^4\. \*\*.*?^\*\*This step runs once per session').Value
+    Assert-Eq "30v: Step 0 has an item 4" 'True' ([string]($g25Item4.Length -gt 0))
+    Assert-Eq "30v: and no item 5" '0' ([string][regex]::Matches($g25Step0, '(?m)^5\. \*\*').Count)
+    Assert-Contains "30v: item 4 runs the bash script" 'bash "<root>/hooks/check-plugin-current.sh"' $g25Item4
+    Assert-Contains "30v: item 4 names the PowerShell twin" 'hooks/check-plugin-current.ps1' $g25Item4
+    Assert-Contains "30v: item 4 identifies the root by its manifest" 'a `plugin.json` whose `name` is `stride-copilot`' $g25Item4
+    Assert-Contains "30v: item 4 skips rather than guesses" '**If none does, or more than one does, skip this item and say nothing about it**' $g25Item4
+    Assert-Contains "30v: item 4 relays the line once" 'show the user that exact line one time' $g25Item4
+    Assert-Contains "30v: item 4 never waits" 'carry on without waiting for a reply' $g25Item4
+    Assert-Contains "30v: item 4 never runs the update" 'leave `copilot plugin update` for the user to run' $g25Item4
+    Assert-Contains "30v: item 4 names the documented marketplace install directory" '~/.copilot/installed-plugins/stride-copilot-marketplace/stride-copilot' $g25Item4
+    Assert-Contains "30v: item 4 names the documented direct install directory" '~/.copilot/installed-plugins/_direct/' $g25Item4
+    Assert-NotContains "30v: item 4 borrows no Claude Code path" '.claude/plugins' $g25Item4
+    $g25ReadmeText = [System.IO.File]::ReadAllText($g25Readme, [System.Text.Encoding]::UTF8)
+    $g25Pm = [regex]::Match($g25ReadmeText, '(?ms)^### Plugin Management\r?\n(.*?)^### ').Groups[1].Value
+    Assert-Contains "30x: README names the script under Plugin Management" 'hooks/check-plugin-current.sh' $g25Pm
+    Assert-Contains "30x: README gives the update command there" ('`' + $g25Update + '`') $g25Pm
+    Assert-Contains "30x: README says it never blocks" 'It never blocks the workflow' $g25Pm
+} else {
+    Write-Host "  SKIP: Test Group 25 wiring (SKILL.md or README.md not found)"
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

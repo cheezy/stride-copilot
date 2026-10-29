@@ -7208,6 +7208,312 @@ else
 fi
 
 # ============================================================
+# Test Group 30: Step 0 says when the install is behind the catalog (W2539)
+# ============================================================
+# Port of stride W2251. check-plugin-current.sh reads plugin.json from the
+# directory above its own hooks/ folder, so each case copies the script into a
+# fixture plugin root (<root>/hooks/ beside <root>/plugin.json). A stub curl
+# placed first on PATH logs its arguments and serves a fixture catalog body, so
+# no case reaches the network and the catalog URL stays a constant in the
+# script. Mirrored by PowerShell Group 25 (labels 30a.. there too).
+echo ""
+echo "=== Test Group 30: stale-install warning at Step 0 (W2539) ==="
+
+G30_SRC="$SCRIPT_DIR/check-plugin-current.sh"
+G30_DIR="$TMPDIR_TEST/g30"
+G30_UPDATE='copilot plugin update stride-copilot'
+G30_URL='https://raw.githubusercontent.com/cheezy/stride-copilot-marketplace/main/.github/plugin/marketplace.json'
+mkdir -p "$G30_DIR/stub"
+cat > "$G30_DIR/stub/curl" <<'G30STUB'
+#!/usr/bin/env bash
+printf 'ARGS: %s\n' "$*" >> "$G30_CURL_LOG"
+[ -f "$G30_BODY_FILE" ] && cat "$G30_BODY_FILE"
+exit "${G30_CURL_EXIT:-0}"
+G30STUB
+chmod +x "$G30_DIR/stub/curl"
+
+# g30_root <name> [manifest-json] -> path of the script copy inside a fixture
+# plugin root; with no manifest argument the root has no plugin.json at all.
+g30_root() {
+  mkdir -p "$G30_DIR/root/$1/hooks"
+  cp "$G30_SRC" "$G30_DIR/root/$1/hooks/check-plugin-current.sh"
+  rm -f "$G30_DIR/root/$1/plugin.json"
+  if [ "$#" -ge 2 ]; then printf '%s' "$2" > "$G30_DIR/root/$1/plugin.json"; fi
+  printf '%s' "$G30_DIR/root/$1/hooks/check-plugin-current.sh"
+}
+# g30_ver <version> -> a fixture root whose manifest carries that version
+g30_ver() {
+  g30_root "v-$1" "{\"name\":\"stride-copilot\",\"version\":\"$1\",\"hooks\":\"hooks/hooks.json\"}"
+}
+# g30_catalog <version> -> a catalog shaped like the real one, decoys either side
+g30_catalog() {
+  printf '{"name":"stride-copilot-marketplace","metadata":{"version":"9.9.9"},"plugins":[{"name":"stride-copilot-ideation","version":"9.9.9"},{"name":"stride-copilot","version":"%s","source":"cheezy/stride-copilot"},{"name":"stride-copilot-security-review","version":"9.9.9"}]}' "$1" > "$G30_DIR/body"
+}
+# g30_body <json> -> write a literal catalog body
+g30_body() { printf '%s' "$1" > "$G30_DIR/body"; }
+# g30_run <script> [curl-exit] [extra args...] -> sets G30_OUT, G30_ERR, G30_RC
+g30_run() {
+  _g30_script="$1"; _g30_exit="${2:-0}"
+  shift; [ "$#" -gt 0 ] && shift
+  : > "$G30_DIR/curl.log"
+  G30_OUT=$(G30_CURL_LOG="$G30_DIR/curl.log" G30_BODY_FILE="$G30_DIR/body" G30_CURL_EXIT="$_g30_exit" \
+    PATH="$G30_DIR/stub:$PATH" bash "$_g30_script" "$@" 2> "$G30_DIR/stderr")
+  G30_RC=$?
+  G30_ERR="$(cat "$G30_DIR/stderr")"
+}
+g30_warn() {
+  printf 'stride-copilot %s is installed, but stride-copilot-marketplace now pins %s. Update it with: %s' "$1" "$2" "$G30_UPDATE"
+}
+G30_WARN="$(g30_warn 2.41.0 2.42.0)"
+
+if [ -f "$G30_SRC" ] && command -v jq > /dev/null 2>&1; then
+  # --- matrix row 0: an older install prints one line and exits 0 ---
+  g30_catalog "2.42.0"
+  g30_run "$(g30_ver 2.41.0)"
+  assert_exit "30a: older install exits 0" 0 "$G30_RC"
+  assert_eq "30a: older install prints the warning line" "$G30_WARN" "$G30_OUT"
+  assert_eq "30a: exactly one line" "1" "$(printf '%s\n' "$G30_OUT" | grep -c '')"
+  assert_eq "30a: nothing on stderr" "" "$G30_ERR"
+  assert_contains "30a: the line names the update command" "$G30_UPDATE" "$G30_OUT"
+
+  # --- matrix row 5: equal and newer installs stay silent ---
+  g30_run "$(g30_ver 2.42.0)"
+  assert_eq "30b: equal versions print nothing" "" "$G30_OUT"
+  assert_exit "30b: equal versions exit 0" 0 "$G30_RC"
+  g30_run "$(g30_ver 2.43.0)"
+  assert_eq "30c: newer install prints nothing" "" "$G30_OUT"
+  assert_exit "30c: newer install exits 0" 0 "$G30_RC"
+
+  # --- matrix row 1: numeric, not string, comparison ---
+  g30_catalog "2.10.0"
+  g30_run "$(g30_ver 2.9.0)"
+  assert_eq "30d: 2.9.0 installed vs a 2.10.0 pin warns" "$(g30_warn 2.9.0 2.10.0)" "$G30_OUT"
+  g30_catalog "2.9.0"
+  g30_run "$(g30_ver 2.10.0)"
+  assert_eq "30e: 2.10.0 installed vs a 2.9.0 pin is silent (2.10.0 is newer)" "" "$G30_OUT"
+  g30_catalog "2.42.0"
+  g30_run "$(g30_ver 2.42)"
+  assert_eq "30e: a missing part counts as 0 (2.42 vs 2.42.0)" "" "$G30_OUT"
+  g30_run "$(g30_ver 2.42.0.1)"
+  assert_eq "30e: an extra non-zero part is newer (2.42.0.1)" "" "$G30_OUT"
+  g30_run "$(g30_ver 2.042.0)"
+  assert_eq "30e: a leading zero compares as a number (2.042.0 = 2.42.0)" "" "$G30_OUT"
+
+  # --- matrix row 2: no network, unreachable or unparsable catalog ---
+  g30_catalog "2.42.0"
+  g30_run "$(g30_ver 2.41.0)" 6
+  assert_eq "30f: a host that cannot be resolved prints nothing" "" "$G30_OUT"
+  assert_exit "30f: and exits 0" 0 "$G30_RC"
+  rm -f "$G30_DIR/body"
+  g30_run "$(g30_ver 2.41.0)" 28
+  assert_eq "30f: a timed-out fetch prints nothing" "" "$G30_OUT"
+  assert_exit "30f: a timed-out fetch exits 0" 0 "$G30_RC"
+  g30_catalog "2.42.0"
+  g30_run "$(g30_ver 2.41.0)" 22
+  assert_eq "30f: a failing curl is silent even when its body would warn" "" "$G30_OUT"
+  rm -f "$G30_DIR/body"
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30g: an empty body prints nothing" "" "$G30_OUT"
+  g30_body '<html>rate limited</html>'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30h: an HTML body prints nothing" "" "$G30_OUT"
+  assert_exit "30h: an HTML body exits 0" 0 "$G30_RC"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"2.4'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30h: a truncated catalog prints nothing" "" "$G30_OUT"
+  assert_eq "30h: and nothing on stderr" "" "$G30_ERR"
+
+  # --- edge case: the catalog has no stride-copilot entry ---
+  g30_body '{"plugins":[{"name":"stride-copilot-lite","version":"9.9.9"},{"name":"Stride-Copilot","version":"9.9.9"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30i: no stride-copilot entry prints nothing (decoys ignored)" "" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30i: an entry with no version prints nothing" "" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot"},{"name":"stride-copilot","version":"2.42.0"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30i: only the first stride-copilot entry counts (a later duplicate is ignored)" "" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"2.42.0"},{"name":"stride-copilot","version":"1.0.0"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30i: the first stride-copilot entry wins over a later one" "$G30_WARN" "$G30_OUT"
+  g30_body '{"metadata":{"version":"9.9.9"},"plugins":[]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30i: an empty plugins list prints nothing (metadata.version unused)" "" "$G30_OUT"
+
+  # --- wrong catalog shapes are not walked ---
+  g30_body '{"plugins":{"x":{"name":"stride-copilot","version":"2.42.0"}}}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30j: plugins as an object is not walked" "" "$G30_OUT"
+  g30_body '[{"plugins":[{"name":"stride-copilot","version":"2.42.0"}]}]'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30j: a top-level array is not the catalog" "" "$G30_OUT"
+  g30_body '{"name":"stride-copilot","version":"2.42.0"}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30j: a bare entry object is not the catalog" "" "$G30_OUT"
+
+  # --- security_considerations: catalog text never reaches the terminal raw ---
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"2.43.0 and more"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: a prose pin is never printed" "" "$G30_OUT"
+  printf '{"plugins":[{"name":"stride-copilot","version":"$(touch %s/pwned)"}]}' "$G30_DIR" > "$G30_DIR/body"
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: a command-shaped pin prints nothing" "" "$G30_OUT"
+  assert_eq "30k: and is never executed" "no" "$([ -e "$G30_DIR/pwned" ] && echo yes || echo no)"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"\u001b[31m2.43.0"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: an escape-sequence pin prints nothing" "" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":2.43}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: a numeric (non-string) pin prints nothing" "" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"2.42.0\n"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: a pin ending in a newline still yields the one line" "$G30_WARN" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"2.42\n.0"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: an interior newline is not a version" "" "$G30_OUT"
+  g30_body '{"plugins":[{"name":"stride-copilot","version":"2.42.0\r"}]}'
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30k: a trailing CR is not a version" "" "$G30_OUT"
+
+  # --- matrix row 2: an unreadable installed manifest is silent ---
+  g30_catalog "2.42.0"
+  g30_run "$(g30_root nomanifest)"
+  assert_eq "30l: no plugin.json beside hooks/ prints nothing" "" "$G30_OUT"
+  assert_exit "30l: no plugin.json exits 0" 0 "$G30_RC"
+  assert_eq "30l: no plugin.json -> no fetch is attempted" "" "$(cat "$G30_DIR/curl.log")"
+  g30_run "$(g30_root numver '{"name":"stride-copilot","version":2.41}')"
+  assert_eq "30m: a numeric manifest version prints nothing" "" "$G30_OUT"
+  g30_run "$(g30_root nover '{"name":"stride-copilot"}')"
+  assert_eq "30m: a manifest with no version prints nothing" "" "$G30_OUT"
+  g30_run "$(g30_root arrver '[{"name":"stride-copilot","version":"2.41.0"}]')"
+  assert_eq "30m: an array manifest prints nothing" "" "$G30_OUT"
+  g30_run "$(g30_root other '{"name":"stride-copilot-lite","version":"0.1.0"}')"
+  assert_eq "30m: another plugin's manifest is not read as ours" "" "$G30_OUT"
+  g30_run "$(g30_root broken '{"name":"stride-copilot","version":')"
+  assert_eq "30m: an unparsable manifest prints nothing" "" "$G30_OUT"
+  assert_exit "30m: an unparsable manifest exits 0" 0 "$G30_RC"
+  if [ "$(id -u)" != "0" ]; then
+    G30_LOCKED="$(g30_ver 2.40.0)"
+    chmod 000 "$G30_DIR/root/v-2.40.0/plugin.json"
+    g30_run "$G30_LOCKED"
+    chmod 644 "$G30_DIR/root/v-2.40.0/plugin.json"
+    assert_eq "30m: an unreadable plugin.json prints nothing" "" "$G30_OUT"
+    assert_exit "30m: an unreadable plugin.json exits 0" 0 "$G30_RC"
+  fi
+
+  # --- matrix row 3: not plain dotted digits means unknown, and silent ---
+  g30_run "$(g30_ver 2.41.0-rc.1)"
+  assert_eq "30n: a pre-release install is unknown" "" "$G30_OUT"
+  g30_run "$(g30_ver v2.41.0)"
+  assert_eq "30n: a v-prefixed install is unknown" "" "$G30_OUT"
+  g30_run "$(g30_ver latest)"
+  assert_eq "30n: 'latest' is unknown" "" "$G30_OUT"
+  g30_run "$(g30_ver 2.41.0+build)"
+  assert_eq "30n: build metadata is unknown" "" "$G30_OUT"
+  g30_run "$(g30_ver 2..41)"
+  assert_eq "30n: an empty part is unknown" "" "$G30_OUT"
+  g30_catalog "2.43.0-rc.1"
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30n: a pre-release pin is unknown" "" "$G30_OUT"
+  g30_catalog "2.1234567890123456789.0"
+  g30_run "$(g30_ver 2.41.0)"
+  assert_eq "30p: a part too long to compare is silent" "" "$G30_OUT"
+  assert_exit "30p: and exits 0" 0 "$G30_RC"
+  assert_eq "30p: and nothing on stderr" "" "$G30_ERR"
+
+  # --- security_considerations: one bounded, anonymous HTTPS fetch ---
+  g30_catalog "2.42.0"
+  g30_run "$(g30_ver 2.41.0)"
+  G30_ARGS="$(cat "$G30_DIR/curl.log")"
+  assert_eq "30q: reads the published catalog URL, exactly" "1" "$(grep -cF -- " $G30_URL" "$G30_DIR/curl.log")"
+  assert_eq "30q: and the URL is the last argument" "1" "$(grep -c "marketplace\.json\$" "$G30_DIR/curl.log")"
+  assert_contains "30q: HTTPS only" "proto =https" "$G30_ARGS"
+  assert_eq "30q: an HTTP error status (4xx/5xx) fails the fetch (curl --fail)" "1" "$(grep -cE '^ARGS: -q -fsS ' "$G30_DIR/curl.log")"
+  assert_eq "30q: -q comes first, so no ~/.curlrc is read" "1" "$(grep -c '^ARGS: -q ' "$G30_DIR/curl.log")"
+  assert_contains "30q: short connect timeout" "--connect-timeout 2 " "$G30_ARGS"
+  assert_contains "30q: short overall timeout" "--max-time 3 " "$G30_ARGS"
+  assert_eq "30q: exactly one fetch" "1" "$(grep -c '^ARGS:' "$G30_DIR/curl.log")"
+  assert_eq "30q: sends no Authorization header" "0" "$(grep -ciF 'authorization' "$G30_DIR/curl.log")"
+  assert_eq "30q: sends no extra header at all" "0" "$(grep -cE '(^| )-H( |$)|--header' "$G30_DIR/curl.log")"
+  assert_eq "30q: sends no user or cookie" "0" "$(grep -cE '(^| )(-u|-b|--user|--cookie|--netrc)( |$)' "$G30_DIR/curl.log")"
+  assert_eq "30q: follows no redirect" "0" "$(grep -cE '(^| )-L( |$)|--location' "$G30_DIR/curl.log")"
+
+  # --- missing tools (a minimal PATH holding only what each case keeps) ---
+  G30_BASH="$(command -v bash)"
+  mkdir -p "$G30_DIR/nocurl" "$G30_DIR/nojq"
+  ln -sf "$(command -v jq)" "$G30_DIR/nocurl/jq"
+  ln -sf "$G30_DIR/stub/curl" "$G30_DIR/nojq/curl"
+  # The stub itself needs bash and cat; without them a fetch could never be
+  # logged and the no-fetch assert below would pass vacuously.
+  ln -sf "$G30_BASH" "$G30_DIR/nojq/bash"
+  ln -sf "$(command -v cat)" "$G30_DIR/nojq/cat"
+  G30_OLD="$(g30_ver 2.41.0)"
+  : > "$G30_DIR/curl.log"
+  G30_OUT=$(PATH="$G30_DIR/nocurl" "$G30_BASH" "$G30_OLD" 2>&1); G30_RC=$?
+  assert_eq "30r: curl absent -> nothing" "" "$G30_OUT"
+  assert_exit "30r: curl absent exits 0" 0 "$G30_RC"
+  G30_OUT=$(G30_CURL_LOG="$G30_DIR/curl.log" G30_BODY_FILE="$G30_DIR/body" \
+    PATH="$G30_DIR/nojq" "$G30_BASH" "$G30_OLD" 2>&1); G30_RC=$?
+  assert_eq "30r: jq absent -> nothing" "" "$G30_OUT"
+  assert_exit "30r: jq absent exits 0" 0 "$G30_RC"
+  assert_eq "30r: jq absent -> no fetch is attempted" "" "$(cat "$G30_DIR/curl.log")"
+
+  # --- self-location: the manifest comes from the script's path, never an argument ---
+  G30_OUT=$(cd "$G30_DIR/root/v-2.41.0/hooks" && G30_CURL_LOG="$G30_DIR/curl.log" G30_BODY_FILE="$G30_DIR/body" \
+    PATH="$G30_DIR/stub:$PATH" bash check-plugin-current.sh 2>&1)
+  assert_eq "30s: run by bare name from its own directory" "$G30_WARN" "$G30_OUT"
+  G30_OUT=$(cd "$G30_DIR/root/v-2.41.0" && G30_CURL_LOG="$G30_DIR/curl.log" G30_BODY_FILE="$G30_DIR/body" \
+    PATH="$G30_DIR/stub:$PATH" bash hooks/check-plugin-current.sh 2>&1)
+  assert_eq "30s: run by a relative path" "$G30_WARN" "$G30_OUT"
+  g30_run "$(g30_ver 2.42.0)" 0 "$G30_DIR/root/v-2.41.0"
+  assert_eq "30s: a root passed as an argument is ignored" "" "$G30_OUT"
+
+  # --- source pins ---
+  assert_eq "30u: the script never evals or sources" "0" "$(grep -cE '(^|[^a-z_])(eval|source)[[:space:]]' "$G30_SRC")"
+  assert_eq "30u: the repo copy is executable" "yes" "$([ -x "$G30_SRC" ] && echo yes || echo no)"
+  assert_eq "30u: the repo's plugin.json sits beside hooks/ with a dotted-digits version" "yes" \
+    "$(jq -r '.version' "$SCRIPT_DIR/../plugin.json" 2> /dev/null | grep -qE '^[0-9]+(\.[0-9]+)*$' && echo yes || echo no)"
+  assert_contains "30u: the pattern admits digits and dots only" "VERSION_RE='^[0-9]+(\.[0-9]+)*\$'" "$(cat "$G30_SRC")"
+else
+  echo "  SKIP: Test Group 30 needs hooks/check-plugin-current.sh and jq"
+fi
+
+# --- matrix row 5: Step 0 wiring in the workflow skill, and the README ---
+G30_WF="$SCRIPT_DIR/../skills/stride-workflow/SKILL.md"
+G30_README="$SCRIPT_DIR/../README.md"
+if [ -f "$G30_WF" ] && [ -f "$G30_README" ]; then
+  G30_STEP0="$(awk '/^## Step 0:/{f=1} /^## Step 1:/{f=0} f' "$G30_WF")"
+  G30_ITEM4="$(awk '/^## Step 0:/{s=1} /^## Step 1:/{s=0} s && /^4\. \*\*/{f=1} s && f && /^\*\*This step runs once per session/{f=0} s && f' "$G30_WF")"
+  assert_eq "30v: Step 0 slice is not empty" "yes" "$([ -n "$G30_STEP0" ] && echo yes || echo no)"
+  assert_eq "30v: Step 0 has exactly one item 4" "1" "$(printf '%s\n' "$G30_STEP0" | grep -c '^4\. \*\*')"
+  assert_eq "30v: and no item 5" "0" "$(printf '%s\n' "$G30_STEP0" | grep -c '^5\. \*\*')"
+  assert_contains "30v: item 4 runs the bash script" 'bash "<root>/hooks/check-plugin-current.sh"' "$G30_ITEM4"
+  assert_contains "30v: item 4 names the PowerShell twin" 'hooks/check-plugin-current.ps1' "$G30_ITEM4"
+  assert_contains "30v: item 4 is informational" '**Installed-version check — tell the user once, never wait on it.**' "$G30_ITEM4"
+  assert_contains "30v: item 4 identifies the root by its manifest" 'a `plugin.json` whose `name` is `stride-copilot`' "$G30_ITEM4"
+  assert_contains "30v: item 4 names the documented marketplace install directory" '~/.copilot/installed-plugins/stride-copilot-marketplace/stride-copilot' "$G30_ITEM4"
+  assert_contains "30v: item 4 names the documented direct install directory" '~/.copilot/installed-plugins/_direct/' "$G30_ITEM4"
+  assert_contains "30v: item 4 skips rather than guesses" '**If none does, or more than one does, skip this item and say nothing about it**' "$G30_ITEM4"
+  assert_contains "30v: item 4 relays the line once" 'show the user that exact line one time' "$G30_ITEM4"
+  assert_contains "30v: item 4 never waits" 'carry on without waiting for a reply' "$G30_ITEM4"
+  assert_contains "30v: item 4 never runs the update" 'leave `copilot plugin update` for the user to run' "$G30_ITEM4"
+  assert_eq "30v: item 4 borrows no Claude Code path" "0" "$(grep -cE '\.claude/plugins|CLAUDE_PLUGIN_ROOT' <<< "$G30_ITEM4")"
+  G30_L3="$(printf '%s\n' "$G30_STEP0" | grep -n '^3\. \*\*' | head -1 | cut -d: -f1)"
+  G30_L4="$(printf '%s\n' "$G30_STEP0" | grep -n '^4\. \*\*' | head -1 | cut -d: -f1)"
+  G30_LO="$(printf '%s\n' "$G30_STEP0" | grep -n '^\*\*This step runs once per session' | head -1 | cut -d: -f1)"
+  assert_eq "30w: item 4 follows the .gitignore item" "yes" \
+    "$([ -n "$G30_L3" ] && [ -n "$G30_L4" ] && [ "$G30_L3" -lt "$G30_L4" ] && echo yes || echo no)"
+  assert_eq "30w: and precedes the once-per-session line" "yes" \
+    "$([ -n "$G30_L4" ] && [ -n "$G30_LO" ] && [ "$G30_L4" -lt "$G30_LO" ] && echo yes || echo no)"
+  G30_PM="$(awk '/^### Plugin Management/{f=1; next} /^### /{f=0} f' "$G30_README")"
+  assert_contains "30x: README names the script under Plugin Management" 'hooks/check-plugin-current.sh' "$G30_PM"
+  assert_contains "30x: README gives the update command there" "\`$G30_UPDATE\`" "$G30_PM"
+  assert_contains "30x: README says it never blocks" 'It never blocks the workflow' "$G30_PM"
+else
+  echo "  SKIP: Test Group 30 wiring (SKILL.md or README.md not found)"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

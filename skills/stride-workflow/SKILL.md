@@ -95,6 +95,12 @@ Whether you arrive here from a creation intent or the build loop, **a claim fail
 
    **This is a statement, not a question — never wait on an answer, and never edit their `.gitignore` yourself.** Say it once, briefly, and only when something is actually missing; then carry on. Nothing here blocks. And note a line added after the fact is inert for a path git already tracks — an artifact already committed needs `git rm --cached` too, which is why "before the first session" matters.
 
+4. **Installed-version check — tell the user once, never wait on it.** Every skill and custom agent in this plugin is loaded from the copy Copilot CLI installed, and every claim sends the same `skills_version`, so nothing on the server notices when that copy has fallen behind a published release. `hooks/check-plugin-current.sh` (Windows: `hooks/check-plugin-current.ps1`) compares the two. First find the plugin root: the directory holding a `plugin.json` whose `name` is `stride-copilot`, with that script under its `hooks/`. Copilot CLI documents no plugin-root variable that a skill can read, so look in these places:
+   - two directories above the `skills/stride-workflow/` folder this file was loaded from, when you know that path;
+   - otherwise the install directories the Copilot CLI plugin reference lists — `~/.copilot/installed-plugins/stride-copilot-marketplace/stride-copilot` for a marketplace install, or a folder under `~/.copilot/installed-plugins/_direct/` for a direct one.
+
+   Accept a root only when exactly one candidate qualifies. **If none does, or more than one does, skip this item and say nothing about it** — the script reports the version of whichever copy it sits in, so a guessed root would give a confident answer about the wrong install. With a root in hand, run `bash "<root>/hooks/check-plugin-current.sh"` once (or `pwsh -NoProfile -File "<root>\hooks\check-plugin-current.ps1"`); it takes no arguments and always exits 0. When it prints a line, show the user that exact line one time, as information. When it prints nothing, the install is current or a version could not be read, and there is nothing to say. Either way, carry on without waiting for a reply, and leave `copilot plugin update` for the user to run.
+
 **This step runs once per session, not once per task.**
 
 ---
