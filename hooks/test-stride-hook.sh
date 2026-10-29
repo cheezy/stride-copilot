@@ -8590,8 +8590,8 @@ else
   done
   # Older release notes quote anchors by name, so only this task's entry is read.
   G36_CHL_ENTRY="$(awk '/^### .*\(W2547\)$/{f=1;print;next} f&&/^##/{exit} f' "$G36_CHL")"
-  assert_eq "36h: CHANGELOG.md has one W2547 entry under [Unreleased]" "1" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G36_CHL" | grep -c '^### .*(W2547)$')"
+  assert_eq "36h: CHANGELOG.md has one W2547 entry under [2.43.0]" "1" \
+    "$(awk '/^## \[2\.43\.0\]/{f=1;next} f&&/^## \[/{exit} f' "$G36_CHL" | grep -c '^### .*(W2547)$')"
   assert_eq "36h: the W2547 changelog entry holds no canon anchor" "0" "$(g36_occ '<!-- canon:' "$G36_CHL_ENTRY")"
   assert_eq "36h: the W2547 changelog entry names its test group once" "1" "$(g36_occ 'Tests: bash Group 36' "$G36_CHL_ENTRY")"
   G36_NEW="$G36_ENR_PASS$G36_DEC_S7$(grep -hF -- '**Cross-field consistency pass.**' "$G36_CT" "$G36_CG" "$G36_EN" || true)"
@@ -8880,8 +8880,8 @@ else
     assert_eq "37h: $G37_T holds no canon anchor" "0" "$(g37_occ '<!-- canon:' "${!G37_V}")"
   done
   assert_eq "37h: README.md holds no canon anchor" "0" "$(g37_occ '<!-- canon:' "$(cat "$G37_RDM")")"
-  assert_eq "37h: CHANGELOG.md has one W2548 entry under [Unreleased]" "1" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G37_CHL" | grep -c '^### .*(W2548)$')"
+  assert_eq "37h: CHANGELOG.md has one W2548 entry under [2.43.0]" "1" \
+    "$(awk '/^## \[2\.43\.0\]/{f=1;next} f&&/^## \[/{exit} f' "$G37_CHL" | grep -c '^### .*(W2548)$')"
   assert_eq "37h: the W2548 changelog entry names its test group once" "1" "$(g37_occ 'Tests: bash Group 37' "$G37_CHL_ENTRY")"
   G37_NEW="$G37_EX_S6$G37_EX_S7$G37_EX_CON$G37_P1_WIN$G37_P1_FB"
   for G37_BAD in 'stride:task-' 'agents/task-explorer.md' 'verified_by' 'read_file' 'grep_search' 'list_directory' 'Branch C'; do
@@ -9023,8 +9023,8 @@ else
   assert_eq "38f: the W2549 changelog entry holds no canon anchor" "0" "$(g38_occ '<!-- canon:' "$G38_CHL_ENTRY")"
   assert_contains "38f: README describes the pairing" \
     'pairs every `unit_tests`, `integration_tests` and `edge_cases` item in `testing_strategy` with a test that asserts it' "$(cat "$G38_RDM")"
-  assert_eq "38f: CHANGELOG.md has one W2549 entry under [Unreleased]" "1" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G38_CHL" | grep -c '^### .*(W2549)$')"
+  assert_eq "38f: CHANGELOG.md has one W2549 entry under [2.43.0]" "1" \
+    "$(awk '/^## \[2\.43\.0\]/{f=1;next} f&&/^## \[/{exit} f' "$G38_CHL" | grep -c '^### .*(W2549)$')"
   assert_eq "38f: the W2549 changelog entry names its test group once" "1" "$(g38_occ 'Tests: bash Group 38' "$G38_CHL_ENTRY")"
 fi
 
@@ -9280,8 +9280,8 @@ else
     "$(g39_occ 'audits the `break_it` record showing that each test the diff adds or changes went red when broken (a missing or toothless entry is an Important testing issue),' "$(cat "$G39_RDM")")"
   assert_eq "39k: README's workflow entry names the procedure" "1" \
     "$(g39_occ 'Step 4 sends every new or changed test through `skills/stride-workflow/test-non-vacuity.md`' "$(cat "$G39_RDM")")"
-  assert_eq "39k: the W2550 entry sits under [Unreleased]" "1" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G39_CHL" | grep -c '^### .*(W2550)$')"
+  assert_eq "39k: the W2550 entry sits under [2.43.0]" "1" \
+    "$(awk '/^## \[2\.43\.0\]/{f=1;next} f&&/^## \[/{exit} f' "$G39_CHL" | grep -c '^### .*(W2550)$')"
   assert_eq "39k: CHANGELOG.md has one W2550 entry" "1" "$(grep -c '^### .*(W2550)$' "$G39_CHL")"
   assert_eq "39k: the W2550 changelog entry names its test group once" "1" "$(g39_occ 'Tests: bash Group 39' "$G39_CHL_ENTRY")"
 fi
@@ -9431,8 +9431,8 @@ else
   # --- 40h: README and CHANGELOG
   assert_eq "40h: README's reviewer entry describes the statement check" "1" \
     "$(g40_occ 'checks each factual statement the diff adds — a count, path, identifier, line reference, version or claim about what code does — with its own read, search and glob calls (a contradicted statement is an Important `code_quality` issue; one no call can settle is recorded as unverifiable),' "$(cat "$G40_RDM")")"
-  assert_eq "40h: the W2551 entry sits under [Unreleased]" "1" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G40_CHL" | grep -c '^### .*(W2551)$')"
+  assert_eq "40h: the W2551 entry sits under [2.43.0]" "1" \
+    "$(awk '/^## \[2\.43\.0\]/{f=1;next} f&&/^## \[/{exit} f' "$G40_CHL" | grep -c '^### .*(W2551)$')"
   assert_eq "40h: CHANGELOG.md has one W2551 entry" "1" "$(grep -c '^### .*(W2551)$' "$G40_CHL")"
   assert_eq "40h: the entry records the census hand-off as not ported" "1" \
     "$(g40_occ "Not ported: stride's hand-off that re-runs \`claims_verified_by\` commands." "$G40_CHL_ENTRY")"
@@ -9586,13 +9586,78 @@ else
   # --- 41i: README and CHANGELOG
   assert_eq "41i: README's reviewer entry describes the twin check" "1" \
     "$(g41_occ 'flags a declared counterpart the diff left unchanged — a hook'"'"'s `.sh` or `.ps1` half, a file named in a keep-in-sync or mirror sentence, or a file sharing a canon anchor — as an Important `code_quality` issue naming both files, found with its own glob and search calls,' "$(cat "$G41_RDM")")"
-  assert_eq "41i: the first entry under [Unreleased] is W2552's" "yes" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^### /{print; exit}' "$G41_CHL" | grep -q '(W2552)$' && echo yes || echo no)"
+  assert_eq "41i: the first entry under [2.43.0] is W2552's" "yes" \
+    "$(awk '/^## \[2\.43\.0\]/{f=1;next} f&&/^### /{print; exit}' "$G41_CHL" | grep -q '(W2552)$' && echo yes || echo no)"
   assert_eq "41i: CHANGELOG.md has one W2552 entry" "1" "$(grep -c '^### .*(W2552)$' "$G41_CHL")"
   assert_eq "41i: the entry says the lookup reads the working tree" "1" "$(g41_occ "**Working tree, not git's index.**" "$G41_CHL_ENTRY")"
   assert_eq "41i: README.md holds no canon anchor" "0" "$(g41_occ '<!-- canon:' "$(cat "$G41_RDM")")"
   assert_eq "41i: the W2552 changelog entry holds no canon anchor" "0" "$(g41_occ '<!-- canon:' "$G41_CHL_ENTRY")"
   assert_eq "41i: the W2552 changelog entry names its test group once" "1" "$(g41_occ 'Tests: bash Group 41' "$G41_CHL_ENTRY")"
+fi
+
+# ============================================================
+# Test Group 42: a tagged changelog heading never gains entries (W2553)
+# ============================================================
+# RELEASE.md's top-heading check is a manual step: before anything is added
+# to the changelog, the newest numbered heading is looked up in the tags,
+# and a tagged heading is closed. The lite ports once appended to a released
+# heading and had to move the entries; the 2.43.0 fold (W2553) was the
+# opposite case, folding work into a heading that was stamped but never
+# tagged. g42_drift turns the rule into a check: for the newest numbered
+# heading it prints "untagged" when no vX.Y.Z tag exists, "same" when the
+# tag exists and the heading's `### ` entries match the tagged copy, and
+# "grown" when entries were added under the heading after it was tagged.
+# 42a-42c prove each answer on a throwaway fixture repository; 42d runs it on
+# this checkout, and is skipped where this tree is not its own git
+# repository (the vendored catalog copy), since its tags are the catalog's.
+# It reads CHANGELOG.md and git tags only, so the PowerShell half carries no
+# twin. Group 42 was the next free number.
+echo ""
+echo "=== Test Group 42: a tagged changelog heading never gains entries (W2553) ==="
+
+g42_entries() { # $1 = version; reads a changelog on stdin
+  awk -v h="## [$1]" 'index($0, h) == 1 {f = 1; next} f && /^## \[/ {exit} f && /^### / {print}'
+}
+g42_drift() { # $1 = repository root
+  local top now was
+  top="$(awk 'match($0, /^## \[[0-9][0-9.]*\]/) {print substr($0, 5, RLENGTH - 5); exit}' "$1/CHANGELOG.md")"
+  [ -n "$top" ] || { echo "no-heading"; return; }
+  if [ -z "$(git -C "$1" tag -l "v$top")" ]; then echo "untagged"; return; fi
+  was="$(git -C "$1" show "v$top:CHANGELOG.md" 2>/dev/null)" || { echo "unknown"; return; }
+  now="$(g42_entries "$top" < "$1/CHANGELOG.md")"
+  if [ "$now" = "$(g42_entries "$top" <<< "$was")" ]; then echo "same"; else echo "grown"; fi
+}
+
+G42_FIX="$TMPDIR_TEST/g42"
+mkdir -p "$G42_FIX"
+(
+  cd "$G42_FIX" || exit 1
+  git init -q
+  git config user.email "test@test.local"
+  git config user.name "Test"
+  git config commit.gpgsign false
+  git config tag.gpgsign false
+  printf '# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n\n### Added — one (W1)\n\nText.\n\n## [0.9.0] - 2025-12-01\n\n### Added — old (W0)\n' > CHANGELOG.md
+  git add CHANGELOG.md > /dev/null
+  git commit -q -m "1.0.0"
+  git tag v1.0.0
+) > /dev/null 2>&1
+assert_eq "42a: a tagged heading left as it was reads same" "same" "$(g42_drift "$G42_FIX")"
+awk '{print} /^Text\.$/ && !d {print ""; print "### Added — late (W2)"; d = 1}' "$G42_FIX/CHANGELOG.md" > "$G42_FIX/c.tmp" && mv "$G42_FIX/c.tmp" "$G42_FIX/CHANGELOG.md"
+assert_eq "42b: an entry added under the tagged heading reads grown" "grown" "$(g42_drift "$G42_FIX")"
+git -C "$G42_FIX" show v1.0.0:CHANGELOG.md \
+  | awk '/^## \[1\.0\.0\]/ && !d {print "## [1.1.0] - 2026-02-01"; print ""; print "### Added — late (W2)"; print ""; d = 1} {print}' \
+  > "$G42_FIX/CHANGELOG.md"
+assert_eq "42c: an entry under a new untagged heading reads untagged" "untagged" "$(g42_drift "$G42_FIX")"
+
+G42_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+G42_TOP="$(git -C "$G42_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ ! -f "$G42_ROOT/CHANGELOG.md" ] || [ -z "$G42_TOP" ] || [ "$(cd "$G42_TOP" && pwd -P)" != "$G42_ROOT" ]; then
+  echo "  SKIP: 42d (this tree is not its own git repository)"
+else
+  G42_SELF="$(g42_drift "$G42_ROOT")"
+  assert_eq "42d: this checkout's newest heading has not grown since its tag" "yes" \
+    "$( [ "$G42_SELF" != "grown" ] && echo yes || echo "no ($G42_SELF)")"
 fi
 
 # ============================================================

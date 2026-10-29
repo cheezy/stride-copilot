@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.43.0] - 2026-10-29
+
+This release carries two stride batches into this plugin at once. The first
+is G446–G448, in eight port commits (W2537–W2544). The second is G455's
+rework gates, in seven port commits (W2546–W2552), which landed after the
+2.43.0 heading was stamped but before it was tagged, so they ship under the
+same version rather than a new one. The G455 entries come first, then the
+G446–G448 entries, and the end of the entry lists, for each batch, the items
+this port cannot take or takes another way, each with its reason.
+
+When the G455 entries moved here from `[Unreleased]`, six bash assertions
+that looked for them there (36h, 37h, 38f, 39k, 40h and 41i) were pointed at
+the `[2.43.0]` heading instead; what each asserts is otherwise unchanged.
+`plugin.json` keeps the 2.43.0 it was given when the heading was first
+stamped.
+
+RELEASE.md's top-heading check also gains a test. Bash Group 42, the next
+free number, finds the newest numbered heading and, when its `vX.Y.Z` tag
+exists, compares that heading's entries with the tagged copy of the
+changelog, so an entry added under a released heading goes red. A throwaway
+fixture repository proves the untagged, unchanged and grown cases, and the
+check runs on this checkout too, skipped where the tree is not its own git
+repository. It reads the changelog and git tags only, so the PowerShell half
+carries no twin.
+
 ### Added — the task-reviewer flags untouched twins and mirror files (W2552)
 
 Ports stride W2296. Step 6 of `agents/task-reviewer.agent.md` gains a
@@ -55,7 +80,7 @@ the summary line, and the two schema-citation clauses. The file ends at
 Tests: bash Group 41, the next free number. It reads contract text only,
 so the PowerShell half carries no twin. Group 40's Statement Verification
 slice now stops at the Twin Check heading, and 40h asks only that the
-W2551 entry sit under `[Unreleased]`, since it is no longer first.
+W2551 entry sit under `[2.43.0]`, since it is no longer first.
 
 ### Added — the task-reviewer checks the factual statements a diff adds (W2551)
 
@@ -98,7 +123,7 @@ bytes. No canon entry is registered for this rule.
 
 Tests: bash Group 40, the next free number. It reads contract text only,
 so the PowerShell half carries no twin. Group 39k now asks only that the
-W2550 entry sit under `[Unreleased]`, since it is no longer first.
+W2550 entry sit under `[2.43.0]`, since it is no longer first.
 
 ### Added — break-it evidence for new and changed tests (W2550)
 
@@ -293,12 +318,6 @@ skill called the matrix optional and the decomposer never mentioned it.
 
 Tests: bash Group 35, the next free number. It reads contract text only, so
 the PowerShell half carries no twin.
-
-## [2.43.0] - 2026-10-29
-
-This release carries stride's G446–G448 batch into this plugin at once: the
-eight port commits since 2.42.0 (W2537–W2544), plus a list at the end of the
-items this port cannot take, each with its reason.
 
 ### Changed — rationale leaves the completion skill and the reviewer prompt for `docs/` (W2544)
 
@@ -509,6 +528,31 @@ plus the case 24r needle in bash Group 24 and PowerShell Group 21.
 - **W2259, measuring the effect — not ported, and no saving is claimed.** That
   measurement covered `stride` on Claude Code only. Nothing was measured on
   Copilot CLI, so this release makes no token or time claim.
+
+### Not ported from G455 — listed so "not applicable" reads differently from "missed"
+
+- **W2295, the claims-census hand-off — not applicable.** This port keeps no
+  claims census and has no `claims_verified_by` field, so the reviewer has no
+  recorded census command to re-run; Statement Verification works from the
+  diff and the project alone (W2551 above).
+- **W2298, `verified_by` and an explorer shell — carried another way.** The
+  task-explorer holds `read`, `search` and `glob` and no shell. It names the
+  call that settled each statement as `checked by:`, and its commit history
+  comes from the orchestrator, which measures the commit window in
+  `skills/stride-subagent-workflow/SKILL.md` and passes it in as
+  `commit window:` lines. With no task file the orchestrator sends
+  `commit window: not checked — no task file`; when no line arrives at all
+  the explorer writes `commit window: not checked — none supplied`. Either
+  way that history moves to the unverified list and the files are still read
+  (W2548 above).
+- **W2295 and W2296, checks stride runs through a shell — read-only tools
+  instead.** The task-reviewer's tools are `read`, `search` and `glob`. A
+  statement only git history or a program's output could settle is recorded
+  as unverifiable and raises no issue, and counterparts are found in the
+  working tree with `glob` and `search`, not in git's index (W2551 and W2552
+  above).
+- **No canon entry.** G455 registers none, so none of these rules carries an
+  anchor here.
 
 ## [2.42.0] - 2026-10-01
 
