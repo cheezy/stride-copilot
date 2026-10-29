@@ -8234,6 +8234,171 @@ else
 fi
 
 # ============================================================
+# Test Group 35: a behaviour_test_matrix by default at creation (W2546)
+# ============================================================
+# Ports stride W2292. skills/stride-creating-tasks/SKILL.md,
+# skills/stride-creating-goals/SKILL.md (every nested task) and
+# agents/task-decomposer.agent.md (every child) now author a seven-category
+# matrix as soon as testing_strategy lists a unit or integration test, the
+# default agents/task-enricher.agent.md already followed. Each site states the
+# manual-only rule, the one-sentence omission reason, that a row's test_name
+# comes from testing_strategy, the no-secrets rule and the unchanged server
+# rule; the decomposer adds that a credential-shaped string from a project file
+# never reaches a row.
+#
+# Every pin counts occurrences of a fixed string (not matching lines) in a
+# named slice or in a whole file. The rule slices are the creating-tasks
+# "### behaviour_test_matrix" section up to "### security_considerations", the
+# creating-goals nested-task paragraphs up to "Minimal nested tasks", and the
+# decomposer's Step 5 up to Step 6; 35d runs the same rule needles against all
+# three, so dropping a rule from any one site turns that site's pin red. Other
+# pins read the checklist line, the decomposer's Step 6, the creating-tasks
+# example (its testing_strategy through its matrix), or a whole file — the
+# old-wording pins and a few one-off phrases. Group 35 was the next free number. It
+# reads contract text only, so the PowerShell half carries no twin. Not
+# covered: whether a live decomposer emits matching matrices; the task's
+# manual check exercises that.
+echo ""
+echo "=== Test Group 35: a behaviour_test_matrix by default at creation (W2546) ==="
+
+G35_ROOT="$SCRIPT_DIR/.."
+G35_CT="$G35_ROOT/skills/stride-creating-tasks/SKILL.md"
+G35_CG="$G35_ROOT/skills/stride-creating-goals/SKILL.md"
+G35_DEC="$G35_ROOT/agents/task-decomposer.agent.md"
+G35_ENR="$G35_ROOT/agents/task-enricher.agent.md"
+
+if [ ! -f "$G35_CT" ] || [ ! -f "$G35_CG" ] || [ ! -f "$G35_DEC" ] || [ ! -f "$G35_ENR" ]; then
+  echo "  SKIP: Test Group 35 (a creating skill, the decomposer or the enricher not found relative to $SCRIPT_DIR)"
+else
+  # Occurrences of a fixed string in a text, not matching lines.
+  g35_occ() {
+    if [ -z "$1" ]; then echo "empty-needle"; return; fi
+    { grep -oF -- "$1" <<<"$2" || true; } | wc -l | tr -d ' '
+  }
+
+  G35_CT_ALL="$(cat "$G35_CT")"
+  G35_CG_ALL="$(cat "$G35_CG")"
+  G35_DEC_ALL="$(cat "$G35_DEC")"
+  G35_CT_CHK="$(grep -F -- '- [ ] `behaviour_test_matrix` - ' "$G35_CT" || true)"
+  G35_CT_SEC="$(awk '/^### behaviour_test_matrix$/{f=1} /^### security_considerations/{f=0} f' "$G35_CT")"
+  G35_CG_SEC="$(awk '/^Nested tasks take the flat-task `behaviour_test_matrix` default/{f=1} /^\*\*Minimal nested tasks fail the same way/{f=0} f' "$G35_CG")"
+  G35_DEC_S5="$(awk '/^### Step 5: Full Specification per Task/{f=1} /^### Step 6: Output Assembly/{f=0} f' "$G35_DEC")"
+  G35_DEC_S6="$(awk '/^### Step 6: Output Assembly/{f=1} /^## Task Sizing Heuristics/{f=0} f' "$G35_DEC")"
+  # The Complete Task Object example: its testing_strategy through its technical_details.
+  G35_CT_EX="$(awk '/^  "testing_strategy": \{/{f=1} /^  "technical_details": \{/{if(f){exit}} f' "$G35_CT")"
+
+  # --- 35a: every slice is non-empty and stops where it should
+  assert_eq "35a: one creating-tasks checklist line names the matrix" "1" "$(printf '%s\n' "$G35_CT_CHK" | grep -c .)"
+  assert_eq "35a: the creating-tasks section keeps its WRONG/RIGHT examples" "1" \
+    "$(g35_occ '❌ WRONG (strings — must be row objects):' "$G35_CT_SEC")"
+  assert_eq "35a: the creating-tasks section stops before security_considerations" "0" \
+    "$(g35_occ '❌ WRONG (single string):' "$G35_CT_SEC")"
+  assert_eq "35a: the creating-goals slice keeps the row-shape bullets" "1" \
+    "$(g35_occ 'is one of the **7 fixed categories**' "$G35_CG_SEC")"
+  assert_eq "35a: the creating-goals slice stops before Minimal nested tasks" "0" \
+    "$(g35_occ 'Minimal nested tasks fail the same way' "$G35_CG_SEC")"
+  assert_eq "35a: the decomposer Step 5 slice holds its field table" "1" "$(g35_occ '| `technical_details` | No |' "$G35_DEC_S5")"
+  assert_eq "35a: the decomposer Step 5 slice stops before Step 6" "0" "$(g35_occ 'Output Assembly' "$G35_DEC_S5")"
+  assert_eq "35a: the example slice holds the example matrix" "1" "$(g35_occ '"behaviour_test_matrix": [' "$G35_CT_EX")"
+  assert_eq "35a: the example slice stops before technical_details" "0" "$(g35_occ '"technical_details": {' "$G35_CT_EX")"
+  assert_eq "35a: the decomposer Step 6 slice holds the batch format" "1" \
+    "$(g35_occ '**Batch format (POST /api/tasks/batch):**' "$G35_DEC_S6")"
+  assert_eq "35a: the decomposer Step 6 slice stops before Task Sizing Heuristics" "0" \
+    "$(g35_occ 'Linear chain (most common)' "$G35_DEC_S6")"
+
+  # --- 35b (matrix row 0): creating-tasks makes the matrix the default
+  assert_eq "35b: the checklist line says authored by default" "1" \
+    "$(g35_occ '**authored by default**: seven categories as soon as `testing_strategy` lists any unit or integration test' "$G35_CT_CHK")"
+  assert_eq "35b: the example note says a testable task gets one by default" "1" \
+    "$(g35_occ '`behaviour_test_matrix` is optional to the API yet authored by default for any testable task' "$G35_CT_ALL")"
+  assert_eq "35b: the field table says a testable task gets it by default" "1" \
+    "$(g35_occ '| Not to the API, but authored by default for a testable task; once non-empty, all 7 categories must appear |' "$G35_CT_ALL")"
+  assert_eq "35b: the section points at the enricher's matching default" "1" \
+    "$(g35_occ '`agents/task-enricher.agent.md` follows the same default.' "$G35_CT_SEC")"
+  for G35_GONE in '**OPTIONAL** array of behaviour/test rows' 'omitting it is always fine' \
+                  'nothing concrete to record' '`behaviour_test_matrix` and `technical_details` are both optional' \
+                  'No (but if non-empty, all 7 categories must appear)'; do
+    assert_eq "35b: the old optional wording '$G35_GONE' left creating-tasks" "0" "$(g35_occ "$G35_GONE" "$G35_CT_ALL")"
+  done
+
+  # --- 35c (matrix row 5): creating-goals and the decomposer carry the default to every child
+  assert_eq "35c: nested tasks take the flat-task default" "1" \
+    "$(g35_occ 'Nested tasks take the flat-task `behaviour_test_matrix` default unchanged' "$G35_CG_SEC")"
+  assert_eq "35c: the goal description never stands in for a nested matrix" "1" \
+    "$(g35_occ "The goal's \`description\` is never a stand-in for a nested task's matrix." "$G35_CG_SEC")"
+  for G35_GONE in 'MAY also carry an optional `behaviour_test_matrix`' 'Omitting it on a nested task is always fine' \
+                  'Populate it per nested task only where'; do
+    assert_eq "35c: the old optional wording '$G35_GONE' left creating-goals" "0" "$(g35_occ "$G35_GONE" "$G35_CG_ALL")"
+  done
+  assert_eq "35c: the decomposer field table lists the matrix as By default" "1" \
+    "$(g35_occ '| `behaviour_test_matrix` | By default |' "$G35_DEC_S5")"
+  assert_eq "35c: the decomposer applies the default to every child" "1" \
+    "$(g35_occ 'Every child you emit follows the flat-task rule `agents/task-enricher.agent.md` already follows' "$G35_DEC_S5")"
+  assert_eq "35c: the decomposer defers row shape to creating-tasks" "1" \
+    "$(g35_occ 'if this paragraph and that skill ever disagree, the skill wins.' "$G35_DEC_S5")"
+  assert_eq "35c: the Step 6 template shows a matrix key" "1" "$(g35_occ '"behaviour_test_matrix": [' "$G35_DEC_S6")"
+  assert_eq "35c: Step 6 says its one-row matrix would be rejected as partial" "1" \
+    "$(g35_occ 'sent as-is it would be rejected as partial' "$G35_DEC_S6")"
+  assert_eq "35c: the worked example says it leaves the matrix out for length" "1" \
+    "$(g35_occ 'leave out `behaviour_test_matrix` only to keep the example short' "$G35_DEC_ALL")"
+
+  # --- 35d (matrix rows 0, 1, 2): every site states the same rules
+  for G35_SITE in CT CG DEC; do
+    case "$G35_SITE" in
+      CT) G35_TXT="$G35_CT_SEC"; G35_LABEL="creating-tasks" ;;
+      CG) G35_TXT="$G35_CG_SEC"; G35_LABEL="creating-goals" ;;
+      DEC) G35_TXT="$G35_DEC_S5"; G35_LABEL="decomposer" ;;
+    esac
+    for G35_RULE in \
+      '**Default: a matrix with all seven categories, or none.**' \
+      'names even one unit or integration test' \
+      'waive that row and keep the rest' \
+      '**Manual-only strategy.**' \
+      "with \`\"manual\"\` as every row's \`type\` and one of the \`manual_tests\` strings copied into its \`test_name\`" \
+      'If they only re-read docs, copy or config, skip the matrix and record why.' \
+      '**An omission is explained in one sentence.**' \
+      'has no testable behaviour at all' \
+      '`No behaviour_test_matrix: docs-only change, nothing to test.`' \
+      '**`test_name` values come out of `testing_strategy`.**' \
+      'Put it in `testing_strategy` first, then point the row at it.' \
+      'never a replacement for it' \
+      '**Nothing changed on the server.**' \
+      'An absent or empty matrix still validates and still never renders as an empty pill' \
+      'What the API does reject, with a 422, is a matrix that is present but partial.' \
+      'never record secrets or credentials in `behaviour`, `test_name`, or `na_reason`'; do
+      assert_eq "35d: $G35_LABEL states: ${G35_RULE:0:60}" "1" "$(g35_occ "$G35_RULE" "$G35_TXT")"
+    done
+  done
+
+  # --- 35e: the decomposer never copies a credential-shaped string into a row
+  assert_eq "35e: the decomposer carries the no-secrets heading" "1" "$(g35_occ '**Row text holds no secrets.**' "$G35_DEC_S5")"
+  assert_eq "35e: a credential-shaped string from a project file never reaches a row" "1" \
+    "$(g35_occ 'a credential-shaped string seen while exploring never travels into a row' "$G35_DEC_S5")"
+
+  # --- 35f: the example's row test names are testing_strategy entries
+  G35_NAMES="$(printf '%s\n' "$G35_CT_EX" | sed -n 's/^ *"test_name": "\(test\/.*\)",$/\1/p')"
+  assert_eq "35f: the example matrix names six real tests" "6" "$(printf '%s\n' "$G35_NAMES" | grep -c .)"
+  # A testing_strategy entry is a line holding only a quoted string, indented
+  # six spaces; strip that framing and compare each name as a fixed string.
+  G35_ENTRIES="$(printf '%s\n' "$G35_CT_EX" | sed -n 's/^      "\(.*\)",\{0,1\}$/\1/p')"
+  G35_UNLISTED=""
+  while IFS= read -r G35_N; do
+    [ -n "$G35_N" ] || continue
+    G35_HITS="$(printf '%s\n' "$G35_ENTRIES" | { grep -cxF -- "$G35_N" || true; })"
+    [ "$G35_HITS" = "1" ] || G35_UNLISTED="$G35_UNLISTED[$G35_N]"
+  done <<< "$G35_NAMES"
+  assert_eq "35f: every example test_name is listed once in its testing_strategy" "" "$G35_UNLISTED"
+
+  # --- 35g: no canon anchor, and the enricher's own default is untouched
+  for G35_F in "$G35_CT" "$G35_CG" "$G35_DEC" "$G35_ENR"; do
+    assert_eq "35g: $(basename "$(dirname "$G35_F")")/$(basename "$G35_F") carries no canon anchor" "0" \
+      "$(g35_occ '<!-- canon:' "$(cat "$G35_F")")"
+  done
+  assert_eq "35g: the enricher keeps its default lead" "1" \
+    "$(g35_occ '**Emit it by default — all seven categories or nothing.**' "$(cat "$G35_ENR")")"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

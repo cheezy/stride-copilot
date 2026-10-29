@@ -150,8 +150,21 @@ Every decomposed task MUST include all fields required by the stride-creating-ta
 | `patterns_to_follow` | Yes | Newline-separated string |
 | `pitfalls` | Yes | Array of strings |
 | `technical_details` | No | Optional free-form object of additional technical context; any keys; NOT one of the five review_queue-scored fields |
+| `behaviour_test_matrix` | By default | Seven categories as soon as the child's `testing_strategy` lists any unit or integration test; skipped only when the child has no testable behaviour, a one-sentence reason going in its `description`; NOT one of the five review_queue-scored fields |
 
 A decomposed task MAY also carry an optional free-form `technical_details` object (any keys — data shapes, gotchas, decisions, or reference links surfaced during scope analysis). It is never required and is **not** one of the five review_queue-scored fields, so leaving it as `{}` or omitting it is fine. Because it is free-form, never record secrets (tokens, passwords, credentials) in it.
+
+**Default: a matrix with all seven categories, or none.** Every child you emit follows the flat-task rule `agents/task-enricher.agent.md` already follows: once a child's `testing_strategy` names even one unit or integration test, author a full `behaviour_test_matrix` on that child — seven rows at minimum, one per fixed category, where each row points at a real test or carries an `na_reason` waiver. When the change has nothing to say about a category, waive that row and keep the rest — dropping the whole field for that is wrong, and so is inventing a filler row to occupy the slot. The row shape (`category`, `behaviour`, `test_name`, `type`, `status`, `na_reason`, `position`, and the seven exact category strings) belongs to `stride-creating-tasks`; if this paragraph and that skill ever disagree, the skill wins.
+
+**Manual-only strategy.** Suppose a child's `testing_strategy` lists `manual_tests` and nothing else. If those checks drive behaviour the change introduces or modifies, still author the matrix, with `"manual"` as every row's `type` and one of the `manual_tests` strings copied into its `test_name`. If they only re-read docs, copy or config, skip the matrix and record why.
+
+**An omission is explained in one sentence.** A child skips the matrix only when it has no testable behaviour at all — a change that touches nothing but docs, copy or config. Put a single sentence in that child's `description` naming the omission, such as `No behaviour_test_matrix: docs-only change, nothing to test.` A reader who finds no matrix and no sentence will assume someone forgot.
+
+**`test_name` values come out of `testing_strategy`.** Any row naming a test must name one that the same child's `testing_strategy` carries, which keeps the two specifications in step; a waived row cites no test and relies on its `na_reason`. Missing a test a row needs? Put it in `testing_strategy` first, then point the row at it. The matrix is an addition to `testing_strategy` — still one of the five review_queue-scored fields — and never a replacement for it.
+
+**Nothing changed on the server.** An absent or empty matrix still validates and still never renders as an empty pill, since it lies outside the five review_queue-scored fields; the default above binds the author, not the API. What the API does reject, with a 422, is a matrix that is present but partial.
+
+**Row text holds no secrets.** Rows are stored and later rendered, so never record secrets or credentials in `behaviour`, `test_name`, or `na_reason`. Scope analysis opens real project files, and a `.env`, a config file or a fixture can hold a key, a token or a connection string: a credential-shaped string seen while exploring never travels into a row — describe the behaviour instead (for example "rejects an expired API token"). Keep raw HTML out of row text as well.
 
 ### Step 6: Output Assembly
 
@@ -190,7 +203,10 @@ The goal goes under the `task` root key; `agent_name` rides at the top level bes
         "security_considerations": ["..."],
         "acceptance_criteria": "...",
         "patterns_to_follow": "...",
-        "pitfalls": ["..."]
+        "pitfalls": ["..."],
+        "behaviour_test_matrix": [
+          {"category": "Happy path", "behaviour": "...", "test_name": "one of this child's unit_tests entries", "type": "unit", "status": "planned", "position": 0}
+        ]
       },
       {
         "title": "Implement context module functions",
@@ -201,6 +217,8 @@ The goal goes under the `task` root key; `agent_name` rides at the top level bes
   }
 }
 ```
+
+The template's `behaviour_test_matrix` shows a single row to stay readable; sent as-is it would be rejected as partial. A real child carries a row for each of the seven categories, waiving with `na_reason` any the change does not touch.
 
 **Batch format (POST /api/tasks/batch):**
 
@@ -299,6 +317,8 @@ Migration → Context → LiveView → Template
 ```
 
 ### Output (decomposed goal with 4 tasks):
+
+The children below leave out `behaviour_test_matrix` only to keep the example short. In a real decomposition every testable child gets the full matrix Step 5 describes.
 
 ```json
 {

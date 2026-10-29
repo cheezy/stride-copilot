@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed — a `behaviour_test_matrix` by default when tasks are written (W2546)
+
+Ports stride W2292. `skills/stride-creating-tasks/SKILL.md`,
+`skills/stride-creating-goals/SKILL.md` (for every nested task) and
+`agents/task-decomposer.agent.md` (for every child) now author a
+seven-category `behaviour_test_matrix` as soon as a task's `testing_strategy`
+lists any unit or integration test. That is the default
+`agents/task-enricher.agent.md` already followed; until now the creating-tasks
+skill called the matrix optional and the decomposer never mentioned it.
+
+- Each of the three sites states the same rules: waive a category the change
+  does not touch rather than drop the field; a manual-only strategy gets
+  `"manual"` rows when its checks exercise behaviour; a task with no testable
+  behaviour leaves the matrix out and says why in one sentence of its
+  `description`; every row's `test_name` is a `testing_strategy` entry, and
+  the matrix never replaces `testing_strategy`; row text carries no secrets.
+- The decomposer also says a credential-shaped string seen in a project file
+  never goes into a row, shows a matrix in its Step 6 template (marked as one
+  row, which the API would reject as partial), and notes that its worked
+  example omits matrices for length.
+- The server rule is restated unchanged: an absent or empty matrix is valid
+  and never an empty pill, and a partial one is rejected with a 422.
+- The creating-tasks Complete Task Object now lists in `testing_strategy`
+  the exact test names its matrix rows use, so the example obeys the new
+  `test_name` rule.
+- The enricher is untouched, and no canon anchor is added.
+
+Tests: bash Group 35, the next free number. It reads contract text only, so
+the PowerShell half carries no twin.
+
 ## [2.43.0] - 2026-10-29
 
 This release carries stride's G446–G448 batch into this plugin at once: the

@@ -112,7 +112,7 @@ Use BEFORE calling `POST /api/tasks` to create any Stride task or defect.
 
 - [ ] `estimated_files` - Helps set expectations: `"1-2"`, `"3-5"`, or `"5+"`
 - [ ] `required_capabilities` - Array of agent skills needed
-- [ ] `behaviour_test_matrix` - **OPTIONAL** array of behaviour/test rows; omitting it is always fine and never an empty pill — see [behaviour_test_matrix](#behaviour_test_matrix)
+- [ ] `behaviour_test_matrix` - **authored by default**: seven categories as soon as `testing_strategy` lists any unit or integration test; skipped only when the task has no testable behaviour, a one-sentence reason going in its `description` — see [behaviour_test_matrix](#behaviour_test_matrix)
 
 ## Field Type Validations (CRITICAL)
 
@@ -216,12 +216,14 @@ The task object below is what goes inside that `task` key.
   ],
   "testing_strategy": {
     "unit_tests": [
-      "Test theme preference update",
-      "Test default theme is light"
+      "test/kanban_web/live/user_live/settings_test.exs — \"persists the selected theme\"",
+      "test/kanban_web/live/user_live/settings_test.exs — \"falls back to light on an unknown theme\"",
+      "test/kanban_web/live/user_live/settings_test.exs — \"keeps the theme when the update fails\"",
+      "test/kanban_web/live/user_live/settings_test.exs — \"renders light when no preference is set\"",
+      "test/kanban/accounts_test.exs — \"round-trips the theme preference\""
     ],
     "integration_tests": [
-      "Test theme persistence across page loads",
-      "Test theme applies to all pages"
+      "test/kanban_web/live/user_live/settings_test.exs — \"applies the stored theme on mount\""
     ],
     "manual_tests": [
       "Visual verification of dark mode styles",
@@ -309,7 +311,7 @@ The task object below is what goes inside that `task` key.
 }
 ```
 
-`behaviour_test_matrix` and `technical_details` are both optional — see the Embedded Object Formats section below. Neither is one of the five review_queue-scored fields, so omitting either never produces an empty pill. The matrix above shows all **seven** fixed categories because that is the rule once the array is non-empty: an absent or empty matrix is fine, but a partial one is rejected.
+`technical_details` is optional; `behaviour_test_matrix` is optional to the API yet authored by default for any testable task — see the Embedded Object Formats section below. Neither is one of the five review_queue-scored fields, so omitting either never produces an empty pill. The matrix above shows all **seven** fixed categories because that is the rule once the array is non-empty: an absent or empty matrix is fine, but a partial one is rejected.
 
 `created_by_agent` records **which agent created the task** so the `/agents` activity feed attributes the `created` row to that agent instead of an uninformative `?` avatar. Set it to **the plugin's own agent name — the exact same value you send as `agent_name` on claim and complete** (here, `"GitHub Copilot"`). Use the plain agent name, never the `ai_agent:<model>` token form, so one agent stays one roster identity. `created_by_agent` is accepted **only on create** (`POST /api/tasks` and `POST /api/tasks/batch`); it is **forbidden on `PATCH`**, so it cannot be backfilled later — stamp it at creation time.
 
@@ -451,7 +453,7 @@ Use these exact values — any other value will be rejected.
 | `dependencies` | array | Task identifiers `["W45", "W46"]` | No |
 | `pitfalls` | array | Strings `["Don't do X", "Avoid Y"]` | No |
 | `technical_details` | object | Free-form JSON object of any additional technical info | No |
-| `behaviour_test_matrix` | array | Row objects: `category` (one of the 7 fixed categories), `behaviour`, `test_name`, `type` (`"unit"`/`"integration"`/`"manual"` or a `/`-joined combo), `status` (`"planned"`/`"passing"`/`"failing"`/`"not_applicable"`), `na_reason`, `position` | No (but if non-empty, all 7 categories must appear) |
+| `behaviour_test_matrix` | array | Row objects: `category` (one of the 7 fixed categories), `behaviour`, `test_name`, `type` (`"unit"`/`"integration"`/`"manual"` or a `/`-joined combo), `status` (`"planned"`/`"passing"`/`"failing"`/`"not_applicable"`), `na_reason`, `position` | Not to the API, but authored by default for a testable task; once non-empty, all 7 categories must appear |
 
 ## Embedded Object Formats — WRONG vs RIGHT
 
@@ -527,7 +529,15 @@ Use these exact values — any other value will be rejected.
 
 ### behaviour_test_matrix
 
-**Optional field.** Omit it entirely when you have nothing concrete to record — it is **not** one of the five review_queue-scored fields, so an absent matrix is never an empty pill. The rules below apply only once you do supply it.
+**Default: a matrix with all seven categories, or none.** Once `testing_strategy` names even one unit or integration test, author a full `behaviour_test_matrix` alongside it: seven rows at minimum, one per fixed category, where each row points at a real test or carries an `na_reason` waiver. Expect to do this for most tasks; `agents/task-enricher.agent.md` follows the same default. When the change has nothing to say about a category, waive that row and keep the rest — dropping the whole field for that is wrong, and so is inventing a filler row to occupy the slot.
+
+**Manual-only strategy.** Suppose `testing_strategy` lists `manual_tests` and nothing else. If those checks drive behaviour the change introduces or modifies, still author the matrix, with `"manual"` as every row's `type` and one of the `manual_tests` strings copied into its `test_name`. If they only re-read docs, copy or config, skip the matrix and record why.
+
+**An omission is explained in one sentence.** A task skips the matrix only when it has no testable behaviour at all — a change that touches nothing but docs, copy or config. Put a single sentence in that task's `description` naming the omission, such as `No behaviour_test_matrix: docs-only change, nothing to test.` A reader who finds no matrix and no sentence will assume someone forgot.
+
+**`test_name` values come out of `testing_strategy`.** Any row naming a test must name one that `testing_strategy` carries, which keeps the two specifications in step; a waived row cites no test and relies on its `na_reason`. Missing a test a row needs? Put it in `testing_strategy` first, then point the row at it. The matrix is an addition to `testing_strategy` — still one of the five review_queue-scored fields — and never a replacement for it. The Complete Task Object above shows this: each of its matrix rows names a string its `testing_strategy` lists.
+
+**Nothing changed on the server.** An absent or empty matrix still validates and still never renders as an empty pill, since it lies outside the five review_queue-scored fields; the default above binds the author, not the API. What the API does reject, with a 422, is a matrix that is present but partial. The rules below govern every matrix you author.
 
 ```json
 ❌ WRONG (strings — must be row objects):
