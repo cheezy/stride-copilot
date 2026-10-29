@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — the task-reviewer pairs every `testing_strategy` item with a covering test (W2549)
+
+Ports stride W2293. Step 4 of `agents/task-reviewer.agent.md` used to ask
+whether the diff carried "appropriate tests". It now takes each
+`unit_tests`, `integration_tests` and `edge_cases` item of the task's
+`testing_strategy` on its own and names the test that covers it as
+`file:line`, whether that test is new in the diff or already in the suite.
+
+- **A name is not coverage.** A test covers an item only when it checks
+  the behaviour the item describes, and the reviewer judges that by
+  reading; it still runs nothing.
+- **A gap is an issue.** An item with no covering test becomes an
+  Important `category: "testing"` issue naming the item, and the
+  `testing_strategy` verdict fails. New behaviour that no item lists and no
+  test exercises is still an Important testing issue.
+- **The matrix and the pairing agree.** A Verified `behaviour_test_matrix`
+  row is the pairing for its item. An item whose row came out Missing or
+  Mismatch already has that row's issue, so it gets no second one.
+- **`manual_tests` are left out,** with a one-line note, since a person
+  performs them.
+- **Nothing a parser reads changes.** The pairings sit in the prose report,
+  after the acceptance-criteria and project-checks tables (step 8 now says
+  so); the JSON block keeps its keys, `schema_version` stays `"1.7"`, and
+  the one-line summary line keeps its form.
+- `README.md` describes the pairing in the task-reviewer entry.
+
+The wording is short because bash Group 34c keeps the reviewer under its
+49,009-byte starting size; the file ends at 49,000 bytes. No canon entry
+is registered for this rule.
+
+Tests: bash Group 38, the next free number. It reads contract text only,
+so the PowerShell half carries no twin.
+
 ### Added — the task-explorer reports task statements the current code contradicts (W2548)
 
 Ports stride W2298. `agents/task-explorer.agent.md` gains a new step 6
