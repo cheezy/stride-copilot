@@ -2,7 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.43.0] - 2026-10-29
+
+This release carries stride's G446–G448 batch into this plugin at once: the
+eight port commits since 2.42.0 (W2537–W2544), plus a list at the end of the
+items this port cannot take, each with its reason.
 
 ### Changed — rationale leaves the completion skill and the reviewer prompt for `docs/` (W2544)
 
@@ -106,7 +110,7 @@ half nor `hooks/hooks.json` changes. Not applicable on this port:
 Tests: bash Group 31, PowerShell Group 26 (the goal planned only the bash
 number; 26 is the next free PowerShell group).
 
-### Added — Step 0 says when the installed plugin is behind the catalog
+### Added — Step 0 says when the installed plugin is behind the catalog (W2539)
 
 New `hooks/check-plugin-current.sh` and its PowerShell twin
 `hooks/check-plugin-current.ps1` (port of stride W2251) compare the `version`
@@ -129,7 +133,7 @@ from a live install. README.md mentions the warning under "Plugin Management".
 Tests: bash Group 30, PowerShell Group 25 (the goal planned PowerShell Group
 24, which W2538 had already taken).
 
-### Added — the claim hook keeps a copy of the claimed task
+### Added — the claim hook keeps a copy of the claimed task (W2537)
 
 After a claim that can prove the response is its own task, both hook halves
 now store the response's `data` object in `.stride/.task-<IDENTIFIER>.json`
@@ -144,7 +148,7 @@ with no byte-order mark. `stride-workflow`'s Step 7 removes it once a completion
 returns 2xx; README.md describes it under "The claimed-task file". Tests:
 bash Group 28, PowerShell Group 23.
 
-### Changed — the explorer and reviewer read the claimed task from its file
+### Changed — the explorer and reviewer read the claimed task from its file (W2538)
 
 When the claim hook's `.stride/.task-<IDENTIFIER>.json` exists and its
 `identifier` is the claimed task, `stride-subagent-workflow` now invokes the
@@ -162,7 +166,7 @@ pass the same file. Without a file the inline field lists are unchanged. This
 port has no planner agent, so planning is untouched. Tests: bash Group 29,
 PowerShell Group 24.
 
-### Changed — round two of review has to be earned
+### Changed — round two of review has to be earned (W2540)
 
 Port of stride W2252. Two review rounds is still the cap, but the second one now
 runs only when round one gives it a reason: a fix that edited a code path, a
@@ -189,6 +193,30 @@ elided form the 2.40.0 entry already uses. The all-cosmetic bullet's
 `changes_requested` clause now defers to the triggers rather than ordering a
 re-dispatch. Tests: bash Group 23 and PowerShell Group 20, rewritten in place,
 plus the case 24r needle in bash Group 24 and PowerShell Group 21.
+
+### Not ported from G446–G448 — listed so "not applicable" reads differently from "missed"
+
+- **W2250, dispatcher mode on by default — not applicable.** This port has no
+  `task-runner` agent, so there is nothing to dispatch a task to; the workflow
+  runs every task inline, as before.
+- **W2252, round two of review must be earned — ported, but followed, not
+  enforced.** The triggers are prose the session applies to itself: this port
+  has no `round_cap_ok` predicate, path classifier, fix-base snapshot or round
+  counter that could refuse a round (W2540 above).
+- **W2254, reading `key_files` while the explorer runs — not applicable.**
+  Whether a Copilot CLI agent invocation releases the turn is unmeasured, so
+  Phase 1 waits for the explorer instead (W2541 above).
+- **W2255, the held-claim stop permit while a stride agent runs — not
+  applicable.** The documented `agentStop` input lists no running agents, so
+  the Stop gate has nothing to read.
+- **W2255's 30-minute bound on that permit — not applicable.** There is no
+  permit for it to bound.
+- **W2256, the dispatcher size-gate fetch — not ported.** It belongs to
+  dispatcher mode, which this port does not have; the slim discovery call and
+  the full-body enrichment check are ported (W2542 above).
+- **W2259, measuring the effect — not ported, and no saving is claimed.** That
+  measurement covered `stride` on Claude Code only. Nothing was measured on
+  Copilot CLI, so this release makes no token or time claim.
 
 ## [2.42.0] - 2026-10-01
 
