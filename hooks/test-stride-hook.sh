@@ -8399,6 +8399,208 @@ else
 fi
 
 # ============================================================
+# Test Group 36: the cross-field consistency pass (W2547)
+# ============================================================
+# Ports stride W2297. Six checks that set a task's fields against one another
+# now follow the 18-item checklist in agents/task-enricher.agent.md (the
+# checklist itself must keep its 18 items), and agents/task-decomposer.agent.md
+# closes with a Step 7 that applies the same six to each child. A doubt the
+# pass cannot settle stops neither agent: the enricher writes it into
+# technical_details.open_questions, which its Phase-2-only rule now exempts,
+# and the decomposer writes a sentence opening with "Open question:" into
+# the child's description. Each of the three creation skills points at the pass in a
+# single line.
+#
+# Pins count occurrences of a fixed string inside a named slice, so a rule
+# that is deleted and a rule that is pasted twice both go red. Slices: the
+# enricher's checklist, its pass, its technical_details section and two of its
+# output notes, and the decomposer's Step 6 and Step 7. 36f also pins the two
+# facts the new prose leans on: each agent's front matter grants only read,
+# search and glob, and the reviewer treats every criterion line as one
+# requirement. Group 36 was the next free number. It reads contract text only,
+# so the PowerShell half carries no twin. Not covered: whether a live agent
+# actually applies the pass; the task's manual check exercises that.
+echo ""
+echo "=== Test Group 36: the cross-field consistency pass (W2547) ==="
+
+G36_ROOT="$SCRIPT_DIR/.."
+G36_ENR="$G36_ROOT/agents/task-enricher.agent.md"
+G36_DEC="$G36_ROOT/agents/task-decomposer.agent.md"
+G36_REV="$G36_ROOT/agents/task-reviewer.agent.md"
+G36_CT="$G36_ROOT/skills/stride-creating-tasks/SKILL.md"
+G36_CG="$G36_ROOT/skills/stride-creating-goals/SKILL.md"
+G36_EN="$G36_ROOT/skills/stride-enriching-tasks/SKILL.md"
+G36_CHL="$G36_ROOT/CHANGELOG.md"
+
+if [ ! -f "$G36_ENR" ] || [ ! -f "$G36_DEC" ] || [ ! -f "$G36_REV" ] || [ ! -f "$G36_CT" ] \
+   || [ ! -f "$G36_CG" ] || [ ! -f "$G36_EN" ] || [ ! -f "$G36_CHL" ]; then
+  echo "  SKIP: Test Group 36 (an agent, a creation skill or CHANGELOG.md not found relative to $SCRIPT_DIR)"
+else
+  # Occurrences of a fixed string in a text, not matching lines.
+  g36_occ() {
+    if [ -z "$1" ]; then echo "empty-needle"; return; fi
+    { grep -oF -- "$1" <<<"$2" || true; } | wc -l | tr -d ' '
+  }
+  # The YAML front matter between the opening and closing --- lines.
+  g36_front() { awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$1"; }
+
+  G36_ENR_ALL="$(cat "$G36_ENR")"
+  G36_DEC_ALL="$(cat "$G36_DEC")"
+  G36_ENR_SUM="$(grep -F -- '4. **Phase 4 — Assemble and Validate**' "$G36_ENR" || true)"
+  G36_ENR_TD="$(awk '/^### Optional: Capture Technical Details/{f=1} /^## Phase 3/{f=0} f' "$G36_ENR")"
+  G36_ENR_CHK="$(awk '/^\*\*Pre-submission checklist \(18 items\):\*\*$/{f=1} /^### Cross-Field Consistency Pass/{f=0} f' "$G36_ENR")"
+  G36_ENR_PASS="$(awk '/^### Cross-Field Consistency Pass/{f=1} /^## Handling Defect Tasks/{f=0} f' "$G36_ENR")"
+  G36_ENR_OUT="$(grep -F -- '`technical_details` is optional and free-form — emit it only when' "$G36_ENR" || true)"
+  G36_ENR_REM="$(grep -F -- '- `technical_details`: Optional free-form object' "$G36_ENR" || true)"
+  G36_DEC_S6="$(awk '/^### Step 6: Output Assembly/{f=1} /^### Step 7: /{f=0} f' "$G36_DEC")"
+  G36_DEC_S7="$(awk '/^### Step 7: /{f=1} /^## Task Sizing Heuristics/{f=0} f' "$G36_DEC")"
+
+  # --- 36a: every slice holds text and ends at its boundary
+  for G36_S in ENR_SUM ENR_TD ENR_CHK ENR_PASS ENR_OUT ENR_REM DEC_S6 DEC_S7; do
+    G36_V="G36_$G36_S"
+    assert_eq "36a: slice $G36_S holds text" "yes" "$([ -n "${!G36_V}" ] && echo yes || echo no)"
+  done
+  assert_eq "36a: the enricher carries a single pass heading" "1" "$(g36_occ '### Cross-Field Consistency Pass' "$G36_ENR_ALL")"
+  assert_eq "36a: the checklist keeps exactly 18 boxes" "18" "$(printf '%s\n' "$G36_ENR_CHK" | grep -c '^- \[ \]')"
+  assert_eq "36a: the checklist's first box is still the human-input one" "1" \
+    "$(g36_occ '- [ ] `title`, `type`, and `description` are preserved from human input' "$G36_ENR_CHK")"
+  assert_eq "36a: the checklist's last box is still the all-18 one" "1" \
+    "$(g36_occ '- [ ] All 18 items above were considered for this task' "$G36_ENR_CHK")"
+  assert_eq "36a: no checklist box sits inside the pass" "0" "$(printf '%s\n' "$G36_ENR_PASS" | grep -c '^- \[ \]')"
+  assert_eq "36a: the pass slice ends before the defect section" "0" "$(g36_occ 'Defect enrichment follows' "$G36_ENR_PASS")"
+  assert_eq "36a: the decomposer carries a single Step 7" "1" "$(printf '%s\n' "$G36_DEC_ALL" | grep -c '^### Step 7: ')"
+  assert_eq "36a: nothing follows Step 7 as a further step" "0" "$(printf '%s\n' "$G36_DEC_ALL" | grep -c '^### Step [89]')"
+  assert_eq "36a: Step 6 keeps its goals-root-key warning" "1" "$(g36_occ 'Batch endpoint root key is' "$G36_DEC_S6")"
+  assert_eq "36a: the Step 7 slice stops short of the size heuristics" "0" "$(g36_occ '| Size | Hours |' "$G36_DEC_S7")"
+
+  # --- 36b (matrix row 0) and 36c (matrix row 5): both agents carry the six checks
+  for G36_SITE in ENR DEC; do
+    case "$G36_SITE" in
+      ENR) G36_TXT="$G36_ENR_PASS"; G36_LABEL="enricher"; G36_GAP='or note the mismatch as an open question' ;;
+      DEC) G36_TXT="$G36_DEC_S7"; G36_LABEL="decomposer"; G36_GAP='or the mismatch is noted as an open question' ;;
+    esac
+    G36_N=0
+    for G36_TITLE in 'Verification scope.' 'No contradiction.' 'Prescribed patterns tested.' \
+                     'Precedence stated.' 'One line per criterion.' 'External contracts named.'; do
+      G36_N=$((G36_N + 1))
+      assert_eq "36b/c: $G36_LABEL check $G36_N is present and numbered" "1" "$(g36_occ "$G36_N. **$G36_TITLE**" "$G36_TXT")"
+    done
+    for G36_RULE in \
+      "$G36_GAP" \
+      'which takes priority (check 4)' \
+      'fix whichever side you authored' \
+      'Removing one side never settles a contradiction.' \
+      '`agents/task-reviewer.agent.md` parses each line of `acceptance_criteria` as a separate requirement' \
+      'grades a criterion broken across two lines as two' \
+      'Rejoin it onto one line, or rewrite it as two criteria that each stand alone.' \
+      'each cited by the `file:line` where you saw it'; do
+      assert_eq "36b/c: $G36_LABEL says: ${G36_RULE:0:60}" "1" "$(g36_occ "$G36_RULE" "$G36_TXT")"
+    done
+  done
+  assert_eq "36b: the enricher applies the checks to every task" "1" "$(g36_occ 'Apply all six checks to every task' "$G36_ENR_PASS")"
+  assert_eq "36b: the pass starts only after the last of the 18 items" "1" \
+    "$(g36_occ 'start it only after the last of the 18 items has been considered' "$G36_ENR_PASS")"
+  assert_eq "36b: the phase overview runs the checklist first, then the pass" "1" \
+    "$(g36_occ 'run the 18-item checklist followed by the cross-field consistency pass' "$G36_ENR_SUM")"
+  assert_eq "36b: the enricher names the decomposer's twin pass" "1" \
+    "$(g36_occ 'Step 7 of `agents/task-decomposer.agent.md` holds the matching pass' "$G36_ENR_PASS")"
+  assert_eq "36c: the decomposer applies the checks to every child" "1" "$(g36_occ 'Apply all six checks to every child.' "$G36_DEC_S7")"
+  assert_eq "36c: the decomposer names the enricher's twin pass" "1" \
+    "$(g36_occ 'Phase 4 of `agents/task-enricher.agent.md` runs the same six checks' "$G36_DEC_S7")"
+
+  # --- 36d (matrix row 2): an unsettled check blocks nothing and is written where each agent says
+  assert_eq "36d: an unsettled check never holds up the enricher's JSON" "1" \
+    "$(g36_occ 'A check you cannot settle never holds up the JSON' "$G36_ENR_PASS")"
+  assert_eq "36d: the enricher parks the doubt under technical_details.open_questions" "1" \
+    "$(g36_occ 'add it as a one-sentence entry to `technical_details.open_questions`' "$G36_ENR_PASS")"
+  assert_eq "36d: the Phase-2-only rule exempts open_questions" "1" \
+    "$(g36_occ 'One key is exempt: `open_questions`, which the Phase 4 cross-field consistency pass writes' "$G36_ENR_TD")"
+  assert_eq "36d: the output note lets open_questions alone justify technical_details" "1" \
+    "$(g36_occ 'kept as one-sentence strings under `open_questions`' "$G36_ENR_OUT")"
+  assert_eq "36d: the type reminder makes the same allowance" "1" \
+    "$(g36_occ 'and the Phase 4 pass added no `open_questions`' "$G36_ENR_REM")"
+  assert_eq "36d: an unsettled check never holds up the decomposer's output" "1" \
+    "$(g36_occ 'A check you cannot settle never holds up the output' "$G36_DEC_S7")"
+  assert_eq "36d: the decomposer writes an Open question: sentence into the child" "1" \
+    "$(g36_occ "add one sentence to that child's \`description\`, beginning \`Open question:\`" "$G36_DEC_S7")"
+  for G36_SITE in ENR DEC; do
+    case "$G36_SITE" in
+      ENR) G36_TXT="$G36_ENR_PASS"; G36_LABEL="enricher" ;;
+      DEC) G36_TXT="$G36_DEC_S7"; G36_LABEL="decomposer" ;;
+    esac
+    for G36_RULE in \
+      'With no verification steps, check 1 has nothing to compare, and the remaining five still run.' \
+      'Two pitfalls that disagree fall under check 4: neither is deleted' \
+      'A prescribed pattern that has no edge case listed against it earns an open question.'; do
+      assert_eq "36d: $G36_LABEL says: ${G36_RULE:0:60}" "1" "$(g36_occ "$G36_RULE" "$G36_TXT")"
+    done
+  done
+
+  # --- 36e: the human's own title, type and description stay as written
+  assert_eq "36e: the enricher pass leaves the human fields alone" "1" \
+    "$(g36_occ "the pass leaves the human's own \`title\`, \`type\` and \`description\` exactly as written" "$G36_ENR_PASS")"
+  assert_eq "36e: the enricher's preserve-verbatim rule still stands" "1" \
+    "$(g36_occ '**The fields `title`, `type`, and `description` are human-provided and MUST be preserved exactly as given. Enrichment never modifies these fields.**' "$G36_ENR_ALL")"
+  assert_eq "36e: the decomposer pass leaves the human fields alone" "1" \
+    "$(g36_occ "The pass leaves the human's own \`title\`, \`type\` and \`description\` exactly as written" "$G36_DEC_S7")"
+  assert_eq "36e: Step 7 cites a Large task splitting heading that exists" "1" \
+    "$(printf '%s\n' "$G36_DEC_ALL" | grep -c '^### Large task splitting')"
+
+  # --- 36f: check 3 only reads, check 6 copies no secret, and the facts behind both
+  for G36_SITE in ENR DEC; do
+    case "$G36_SITE" in
+      ENR) G36_TXT="$G36_ENR_PASS"; G36_LABEL="enricher"; G36_FM="$(g36_front "$G36_ENR")" ;;
+      DEC) G36_TXT="$G36_DEC_S7"; G36_LABEL="decomposer"; G36_FM="$(g36_front "$G36_DEC")" ;;
+    esac
+    assert_eq "36f: the $G36_LABEL judges a prescribed pattern by reading alone" "1" "$(g36_occ 'by reading alone' "$G36_TXT")"
+    assert_eq "36f: the $G36_LABEL forbids running the prescribed command" "1" \
+      "$(g36_occ 'never execute the prescribed command, or anything else with a side effect' "$G36_TXT")"
+    assert_eq "36f: the $G36_LABEL names its three read-only tools" "1" "$(g36_occ 'only the read, search and glob tools' "$G36_TXT")"
+    assert_eq "36f: the $G36_LABEL front matter grants exactly those tools" "1" \
+      "$(g36_occ 'tools: ["read", "search", "glob"]' "$G36_FM")"
+    assert_eq "36f: the $G36_LABEL keeps secrets out of what it writes" "1" \
+      "$(g36_occ 'secret, token or internal host name encountered during exploration stays out of the' "$G36_TXT")"
+  done
+  assert_eq "36f: the reviewer prompt still parses criteria line by line" "1" \
+    "$(g36_occ 'Parse each line of `acceptance_criteria` as a separate requirement' "$(cat "$G36_REV")")"
+
+  # --- 36g (matrix row 6): one single-line pointer per creation skill, in its section
+  for G36_SITE in CT CG EN; do
+    case "$G36_SITE" in
+      CT) G36_F="$G36_CT"; G36_SL="$(awk '/^\*\*Recommended fields:\*\*$/{f=1} /^## Field Type Validations/{f=0} f' "$G36_CT")"
+          G36_TARGET='Phase 4 of `agents/task-enricher.agent.md`' ;;
+      CG) G36_F="$G36_CG"; G36_SL="$(awk '/^\*\*Minimal nested tasks fail the same way/{f=1} /^## Consuming Provided Context/{f=0} f' "$G36_CG")"
+          G36_TARGET='Step 7 of `agents/task-decomposer.agent.md`' ;;
+      EN) G36_F="$G36_EN"; G36_SL="$(awk '/^### Phase 4: Assemble and Validate/{f=1} /^## API Integration/{f=0} f' "$G36_EN")"
+          G36_TARGET='Phase 4 of `agents/task-enricher.agent.md`' ;;
+    esac
+    G36_LABEL="$(basename "$(dirname "$G36_F")")"
+    G36_LINE="$(grep -F -- '**Cross-field consistency pass.**' "$G36_F" || true)"
+    assert_eq "36g: $G36_LABEL holds one pointer, opening its own line" "1" \
+      "$(printf '%s\n' "$G36_LINE" | grep -c '^\*\*Cross-field consistency pass\.\*\*')"
+    assert_eq "36g: $G36_LABEL's pointer is in the section it belongs to" "1" "$(g36_occ '**Cross-field consistency pass.**' "$G36_SL")"
+    assert_eq "36g: $G36_LABEL's pointer says where the pass is written" "1" "$(g36_occ "$G36_TARGET" "$G36_LINE")"
+    assert_eq "36g: $G36_LABEL's pointer names the six comparisons" "1" "$(g36_occ 'six comparisons between fields' "$G36_LINE")"
+  done
+
+  # --- 36h: port hygiene — no canon anchor, and none of stride's own names
+  for G36_F in "$G36_ENR" "$G36_DEC" "$G36_CT" "$G36_CG" "$G36_EN"; do
+    assert_eq "36h: $(basename "$(dirname "$G36_F")")/$(basename "$G36_F") holds no canon anchor" "0" \
+      "$(g36_occ '<!-- canon:' "$(cat "$G36_F")")"
+  done
+  # Older release notes quote anchors by name, so only this task's entry is read.
+  G36_CHL_ENTRY="$(awk '/^### .*\(W2547\)$/{f=1;print;next} f&&/^##/{exit} f' "$G36_CHL")"
+  assert_eq "36h: CHANGELOG.md has one W2547 entry under [Unreleased]" "1" \
+    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G36_CHL" | grep -c '^### .*(W2547)$')"
+  assert_eq "36h: the W2547 changelog entry holds no canon anchor" "0" "$(g36_occ '<!-- canon:' "$G36_CHL_ENTRY")"
+  assert_eq "36h: the W2547 changelog entry names its test group once" "1" "$(g36_occ 'Tests: bash Group 36' "$G36_CHL_ENTRY")"
+  G36_NEW="$G36_ENR_PASS$G36_DEC_S7$(grep -hF -- '**Cross-field consistency pass.**' "$G36_CT" "$G36_CG" "$G36_EN" || true)"
+  for G36_BAD in 'stride:task-' 'agents/task-enricher.md' 'agents/task-decomposer.md' 'agents/task-reviewer.md'; do
+    assert_eq "36h: the ported text never says '$G36_BAD'" "0" "$(g36_occ "$G36_BAD" "$G36_NEW")"
+  done
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

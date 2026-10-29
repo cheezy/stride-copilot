@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — the enricher and decomposer check a task's fields against one another (W2547)
+
+Ports stride W2297. The 18-item checklist in `agents/task-enricher.agent.md`
+is unchanged; after it comes a new cross-field consistency pass, and
+`agents/task-decomposer.agent.md` closes with a new Step 7 that applies the
+same pass to each child. Where the checklist looks at one field at a time,
+the pass looks for disagreements between fields, in six checks:
+
+- **Verification scope** — a step narrower than the criterion it proves is
+  widened to match, or the mismatch is noted as an open question.
+- **No contradiction** — `what` and `patterns_to_follow` are set against the
+  pitfalls and security considerations, and the agent fixes the side it
+  authored.
+- **Prescribed patterns tested** — a regex or command the task tells the
+  implementer to use is judged, by reading alone, against the edge cases the
+  task lists. Both agents hold only the read, search and glob tools, and the
+  prompt forbids running the command or anything else with a side effect.
+- **Precedence stated** — instructions that could pull opposite ways name a
+  winner; dropping one side is never the fix.
+- **One line per criterion** — `agents/task-reviewer.agent.md` grades each
+  line of `acceptance_criteria` as its own requirement, so a wrapped
+  criterion is rejoined or split into two whole ones.
+- **External contracts named** — outside rules the change must honour are
+  listed with a `file:line` citation, and no secret, token or internal host
+  name is copied in.
+
+Nothing the pass cannot decide stops either agent. The enricher writes each
+such doubt as one sentence in `technical_details.open_questions`, and its
+Phase-2-only rule for `technical_details` and its output notes now say that
+key is exempt; the decomposer puts a sentence that opens with
+`Open question:` into that child's `description`. The human's own `title`,
+`type` and `description` stay exactly as written. A one-line pointer to the
+pass, for tasks written without the custom agents, lands in
+`skills/stride-creating-tasks/SKILL.md`,
+`skills/stride-creating-goals/SKILL.md` and
+`skills/stride-enriching-tasks/SKILL.md`. No canon entry is registered for
+this rule.
+
+Tests: bash Group 36, the next free number. It reads contract text only, so
+the PowerShell half carries no twin.
+
 ### Changed — a `behaviour_test_matrix` by default when tasks are written (W2546)
 
 Ports stride W2292. `skills/stride-creating-tasks/SKILL.md`,

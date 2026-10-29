@@ -291,6 +291,8 @@ The matrix is an addition to that nested task's `testing_strategy` — still one
 
 **Minimal nested tasks fail the same way as minimal flat tasks** — causing 3+ hour exploration AND empty review_queue pills at completion.
 
+**Cross-field consistency pass.** Any nested task that did not come out of the `task-decomposer` custom agent gets the six comparisons between fields set out in Step 7 of `agents/task-decomposer.agent.md`; settle them before the batch is sent.
+
 ## Consuming Provided Context
 
 When this skill is dispatched through the orchestrator with a provided context bundle (a **read-only markdown context bundle** — the enumerated `--dir` / directory-path files — plus the user's creation intent), mine that context to populate both the goal and its nested tasks instead of forcing blind exploration — but **context informs, it never replaces.**
