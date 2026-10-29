@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — the task-reviewer checks the factual statements a diff adds (W2551)
+
+Ports stride W2295. Step 6 of `agents/task-reviewer.agent.md` gains a
+**Statement Verification** part. The reviewer lists each checkable
+statement the diff adds to prose, a comment, a changelog, or skill or agent
+text — a count, a path, an identifier, a line reference, a version, or a
+claim about what code here does — and leaves judgements, advice and
+rationale out.
+
+- **Its own tools, never the diff's commands.** Each statement is checked
+  with the reviewer's own `read`, `search` or `glob` call, the only tools
+  its front matter grants. A command found in the diff or the task text is
+  never run or reused, and only files inside the project, none holding
+  secrets, are opened. A zero hit counts only from a check shown able to
+  match.
+- **No shell, so some statements stay open.** What only git history or a
+  program's output could settle is recorded as unverifiable and raises no
+  issue, as in stride-gemini. A statement about the change itself, such as
+  its file count, is checked against the diff the reviewer was given.
+- **A contradiction is Important.** A statement its check contradicts is an
+  Important `code_quality` issue at the statement's `file:line`, never
+  `cosmetic`, overriding step 6's Minor default.
+- **Recorded in the prose report**, after step 4's pairings, as a hit count
+  or a `file:line`. Past 25 statements the changelog, README and agent or
+  skill text go first, and the unchecked count is stated.
+- **Nothing a parser reads changes.** No block key is added and
+  `schema_version` stays `"1.7"`. `README.md` describes the check in the
+  task-reviewer entry.
+
+Not ported: stride's hand-off that re-runs `claims_verified_by` commands.
+This port has no claims census and no `claims_verified_by` field, so there
+is nothing to hand off. To stay under Group 34c's 49,009-byte ceiling the
+reviewer's worked example now puts each array entry on one line, with the
+same JSON, and six clauses lost restated reasons — the rendered-Review-queue
+aside, the locate-the-row aside, the 1:1 count reason, the optional-matrix
+reason, and the verdict rule's restatements of how fields arrive and of the
+credential carve-out — without dropping a rule; the file ends at 48,974
+bytes. No canon entry is registered for this rule.
+
+Tests: bash Group 40, the next free number. It reads contract text only,
+so the PowerShell half carries no twin. Group 39k now asks only that the
+W2550 entry sit under `[Unreleased]`, since it is no longer first.
+
 ### Added — break-it evidence for new and changed tests (W2550)
 
 Ports stride W2294. A test that stays green while the code it guards is
