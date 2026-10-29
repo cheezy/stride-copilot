@@ -9328,7 +9328,7 @@ else
   G40_ALL="$(cat "$G40_RV")"
   G40_FM="$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$G40_RV")"
   G40_S6="$(awk '/^6\. \*\*General Code Quality\*\*:$/{f=1} /^7\. \*\*/{f=0} f' "$G40_RV")"
-  G40_SV="$(awk '/^   \*\*Statement Verification\*\* \(every diff\): /{f=1} /^7\. \*\*/{f=0} f' "$G40_RV")"
+  G40_SV="$(awk '/^   \*\*Statement Verification\*\* \(every diff\): /{f=1} /^7\. \*\*|^   \*\*Twin Check\*\*/{f=0} f' "$G40_RV")"
   G40_FIELDS="$(awk '/The JSON object has these top-level fields/{f=1;next} /^```json$/{f=0} f' "$G40_RV")"
   G40_EXAMPLE="$(awk '/^```json$/{f=1;next} f&&/^```$/{exit} f' "$G40_RV")"
   G40_CHL_ENTRY="$(awk '/^### .*\(W2551\)$/{f=1;print;next} f&&/^##/{exit} f' "$G40_CHL")"
@@ -9431,12 +9431,168 @@ else
   # --- 40h: README and CHANGELOG
   assert_eq "40h: README's reviewer entry describes the statement check" "1" \
     "$(g40_occ 'checks each factual statement the diff adds — a count, path, identifier, line reference, version or claim about what code does — with its own read, search and glob calls (a contradicted statement is an Important `code_quality` issue; one no call can settle is recorded as unverifiable),' "$(cat "$G40_RDM")")"
-  assert_eq "40h: the first entry under [Unreleased] is W2551's" "yes" \
-    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^### /{print; exit}' "$G40_CHL" | grep -q '(W2551)$' && echo yes || echo no)"
+  assert_eq "40h: the W2551 entry sits under [Unreleased]" "1" \
+    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^## \[/{exit} f' "$G40_CHL" | grep -c '^### .*(W2551)$')"
   assert_eq "40h: CHANGELOG.md has one W2551 entry" "1" "$(grep -c '^### .*(W2551)$' "$G40_CHL")"
   assert_eq "40h: the entry records the census hand-off as not ported" "1" \
     "$(g40_occ "Not ported: stride's hand-off that re-runs \`claims_verified_by\` commands." "$G40_CHL_ENTRY")"
   assert_eq "40h: the W2551 changelog entry names its test group once" "1" "$(g40_occ 'Tests: bash Group 40' "$G40_CHL_ENTRY")"
+fi
+
+# ============================================================
+# Test Group 41: the reviewer flags untouched twins and mirror files (W2552)
+# ============================================================
+# Ports stride W2296. Step 6 of agents/task-reviewer.agent.md gains a Twin
+# Check part after Statement Verification: for each touched file the
+# reviewer finds its declared counterparts (a .sh/.ps1 half, a file named in
+# a keep-in-sync or mirror sentence, a file sharing a canon anchor) with its
+# own glob and search calls, records each call in the prose report, raises a
+# dangling mirror sentence and an unchanged counterpart as Important
+# code_quality issues, and raises nothing when there is no counterpart or the
+# task says why it needs no change. With no shell the lookup reads the
+# working tree, not git's index. Group 41 was the next free number.
+#
+# Every phrase pin counts a fixed string inside a named slice and wants
+# exactly 1, so a deleted rule and a pasted duplicate both go red. 41g
+# re-reads the block contract; 41h proves the clauses tightened to keep the
+# reviewer under Group 34c's ceiling still state their rule. Contract text
+# only, so the PowerShell half carries no twin. Not covered: whether a live
+# reviewer names the .ps1 twin of a bash-only hook diff (matrix row 5); the
+# task's manual review exercises that.
+echo ""
+echo "=== Test Group 41: the reviewer flags untouched twins and mirror files (W2552) ==="
+
+G41_ROOT="$SCRIPT_DIR/.."
+G41_RV="$G41_ROOT/agents/task-reviewer.agent.md"
+G41_RDM="$G41_ROOT/README.md"
+G41_CHL="$G41_ROOT/CHANGELOG.md"
+
+if [ ! -f "$G41_RV" ] || [ ! -f "$G41_RDM" ] || [ ! -f "$G41_CHL" ]; then
+  echo "  SKIP: Test Group 41 (the reviewer, README.md or CHANGELOG.md not found relative to $SCRIPT_DIR)"
+else
+  # Occurrences of a fixed string in a text, not matching lines.
+  g41_occ() {
+    if [ -z "$1" ]; then echo "empty-needle"; return; fi
+    { grep -oF -- "$1" <<<"$2" || true; } | wc -l | tr -d ' '
+  }
+
+  G41_ALL="$(cat "$G41_RV")"
+  G41_FM="$(awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{exit} f' "$G41_RV")"
+  G41_S6="$(awk '/^6\. \*\*General Code Quality\*\*:$/{f=1} /^7\. \*\*/{f=0} f' "$G41_RV")"
+  G41_TW="$(awk '/^   \*\*Twin Check\*\* \(every diff\): /{f=1} /^7\. \*\*/{f=0} f' "$G41_RV")"
+  G41_FIELDS="$(awk '/The JSON object has these top-level fields/{f=1;next} /^```json$/{f=0} f' "$G41_RV")"
+  G41_EXAMPLE="$(awk '/^```json$/{f=1;next} f&&/^```$/{exit} f' "$G41_RV")"
+  G41_CHL_ENTRY="$(awk '/^### .*\(W2552\)$/{f=1;print;next} f&&/^##/{exit} f' "$G41_CHL")"
+
+  # --- 41a: every slice holds text, and the part sits in step 6 after Statement Verification
+  for G41_S in FM S6 TW FIELDS EXAMPLE CHL_ENTRY; do
+    G41_V="G41_$G41_S"
+    assert_eq "41a: slice $G41_S holds text" "yes" "$([ -n "${!G41_V}" ] && echo yes || echo no)"
+  done
+  assert_eq "41a: the reviewer has one Twin Check part" "1" "$(g41_occ '**Twin Check**' "$G41_ALL")"
+  assert_eq "41a: it sits in step 6" "1" "$(g41_occ '**Twin Check** (every diff): ' "$G41_S6")"
+  assert_eq "41a: the part stops before step 7" "0" "$(g41_occ 'Project-Level Checks' "$G41_TW")"
+  assert_eq "41a: Statement Verification's heading is not inside it" "0" "$(g41_occ '**Statement Verification** (every diff)' "$G41_TW")"
+  G41_SV_LN="$(grep -n '^   \*\*Statement Verification\*\* (every diff): ' "$G41_RV" | cut -d: -f1)"
+  G41_TW_LN="$(grep -n '^   \*\*Twin Check\*\* (every diff): ' "$G41_RV" | cut -d: -f1)"
+  assert_eq "41a: the part follows Statement Verification" "yes" \
+    "$([ -n "$G41_SV_LN" ] && [ -n "$G41_TW_LN" ] && [ "$G41_TW_LN" -gt "$G41_SV_LN" ] && echo yes || echo no)"
+  assert_eq "41a: the part holds seven bullets" "7" "$(printf '%s\n' "$G41_TW" | grep -c '^   - ')"
+
+  # --- 41b (unit test 1, matrix row 0): the three kinds of declared counterpart
+  for G41_RULE in \
+    'for each touched file, look for declared counterparts of three kinds:' \
+    '   - its `.sh` or `.ps1` half at the same path stem;' \
+    '   - a file it names as its mirror or twin, as kept in sync with it, or as stating the same rule again;' \
+    '   - another file whose `canon:<id> vN` anchor matches one on a touched section.' \
+    '**Only a declared pair counts**: a file merely naming the touched one is no counterpart'; do
+    assert_eq "41b: the part says: ${G41_RULE:0:60}" "1" "$(g41_occ "$G41_RULE" "$G41_TW")"
+  done
+
+  # --- 41c (unit test 2): glob and search only, never running a file, each lookup recorded
+  for G41_RULE in \
+    'Find them with `glob` and `search` only, never running either file,' \
+    'and record each call and what it found in the prose report, after the statement checks.' \
+    '**A counterpart is a path your own call returned, never one built from diff or task text**' \
+    'opening it is reviewing the diff, not unrelated exploring.' \
+    "Statement Verification's limits hold here too: look and open only inside the project, never a file holding secrets, cite a credential-shaped line by \`file:line\`, and match a sibling named without a directory only within the project."; do
+    assert_eq "41c: the part says: ${G41_RULE:0:60}" "1" "$(g41_occ "$G41_RULE" "$G41_TW")"
+  done
+  assert_eq "41c: the end constraint the carve-out answers is still there" "1" \
+    "$(g41_occ '- Only review the diff provided — do not explore unrelated code' "$G41_ALL")"
+  assert_eq "41c: the reviewer still holds only read, search and glob" "1" "$(g41_occ 'tools: ["read", "search", "glob"]' "$G41_FM")"
+  assert_eq "41c: the front matter grants no shell-like tool" "0" \
+    "$(grep -ciE 'shell|bash|execute|terminal|run_' <<<"$G41_FM" || true)"
+  for G41_BAD in 'ls-files' 'git ' 'grep_search' 'read_file' 'report file' '`grep`'; do
+    assert_eq "41c: the part never names '$G41_BAD'" "0" "$(g41_occ "$G41_BAD" "$G41_TW")"
+  done
+
+  # --- 41d (unit test 3, matrix row 2): a dangling mirror sentence is reported
+  assert_eq "41d: a dangling mirror sentence is an Important code_quality issue" "1" \
+    "$(g41_occ 'A mirror or twin sentence naming a file no `glob` call finds is dangling: an Important `code_quality` issue at its `file:line`.' "$G41_TW")"
+
+  # --- 41e (unit test 4, matrix row 6): an unchanged counterpart is Important, naming both files
+  assert_eq "41e: an unchanged counterpart is Important code_quality naming both files, never cosmetic" "1" \
+    "$(g41_occ '**If the diff alters behaviour, or a rule the two files share, but leaves a counterpart as it was, that is an Important `code_quality` issue citing both files**, never `cosmetic`.' "$G41_TW")"
+  assert_eq "41e: code_quality is still an issues[] category" "1" "$(g41_occ '`"code_quality"`' "$G41_FIELDS")"
+  assert_eq "41e: an Important issue still forces changes_requested" "1" \
+    "$(g41_occ 'Use `"changes_requested"` if any entry in `issues` has severity `"critical"` or `"important"`' "$G41_FIELDS")"
+
+  # --- 41f (unit test 5, matrix row 1): no counterpart, or a stated reason, raises no issue
+  assert_eq "41f: a file with no counterpart raises no issue" "1" "$(g41_occ 'and a file with none raises no issue.' "$G41_TW")"
+  assert_eq "41f: a stated reason raises no issue" "1" \
+    "$(g41_occ 'Skip it when the task or the invocation explains why that counterpart stays, as with an edit for one platform.' "$G41_TW")"
+  assert_eq "41f: the lookup reads the working tree, not git's index" "1" \
+    "$(g41_occ "Both tools read the working tree, not git's index, so an untracked file looks tracked." "$G41_TW")"
+
+  # --- 41g: the block, schema_version and the canon anchors stay put
+  assert_eq "41g: the part adds no block key" "1" "$(g41_occ 'Nothing here adds a block key.' "$G41_TW")"
+  assert_eq "41g: schema_version is still 1.7" "1" "$(g41_occ '`schema_version`: string. Always `"1.7"` for this prompt version.' "$G41_FIELDS")"
+  assert_eq "41g: the example still says 1.7" "1" "$(g41_occ '"schema_version": "1.7",' "$G41_EXAMPLE")"
+  G41_KEYS='schema_version summary status issue_counts issues acceptance_criteria project_checks testing_strategy patterns pitfalls security_considerations behaviour_test_matrix'
+  assert_eq "41g: the field bullets name the same twelve keys" "$G41_KEYS" \
+    "$(printf '%s\n' "$G41_FIELDS" | sed -n 's/^     - `\([a-z_]*\)`[: ].*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+  for G41_KEY in '"twins"' '"twin_checks"' '"counterparts"' '`twins`:'; do
+    assert_eq "41g: no block key $G41_KEY" "0" "$(g41_occ "$G41_KEY" "$G41_ALL")"
+  done
+  assert_eq "41g: '<!-- canon:' still occurs three times in the reviewer" "3" "$(g41_occ '<!-- canon:' "$G41_ALL")"
+  assert_eq "41g: the part holds no canon anchor" "0" "$(g41_occ '<!-- canon:' "$G41_TW")"
+  assert_eq "41g: the reviewer keeps exactly two canon anchor lines" "2" \
+    "$({ grep -cE '^ *<!-- canon:[a-z-]+ v[0-9]+ -->$' "$G41_RV" || true; })"
+
+  # --- 41h: clauses tightened to make room still state their rule
+  for G41_RULE in \
+    'The sentinel is for this case only; legitimate row text is still echoed verbatim.' \
+    'Bullets that apply are `met` or `not_met`; bullets that do not apply are `not_applicable`. Omitting inapplicable bullets is wrong.' \
+    'mark it `not_applicable` rather than forcing a met/not_met verdict, and put a one-line reason in `evidence`.' \
+    'MUST persist the reviewer'"'"'s emitted JSON block **verbatim** into `reviewer_result` (overlaying only the legacy summary fields).' \
+    'Never embed diff contents or secrets in it.' \
+    'The array itself is never required.' \
+    'Leave out per-row `evidence`/`note` keys; put rationale in the section `note` and `issues[]`.' \
+    'is the SAME four values the task-authored matrix uses (`planned`/`passing`/`failing`/`not_applicable`):' \
+    'The echoed `rows` array mirrors the task'"'"'s own matrix, row for row and in its order.' \
+    'It must appear verbatim above the JSON block.' \
+    'Do not redefine the schema here.'; do
+    assert_eq "41h: the reviewer still says: ${G41_RULE:0:50}" "1" "$(g41_occ "$G41_RULE" "$G41_ALL")"
+  done
+  for G41_OLD in 'genuinely left it empty' 'in this narrow case' 'Code review panel renders' 'e.g. an authentication check' \
+                 'acceptance_criteria_checked` — on top' 'Keep each entry to a' 'populated only via the Copilot' \
+                 'still a complete row' 'separate reviewer vocabulary' 'tolerated by the API' \
+                 'genuinely covered by the test the row names' 'and you therefore raised' 'actually implemented.' \
+                 'not authoring a matrix' 'Orchestrator fallback paths grep' 'single source of truth for all six' 'is a citation, not a new definition'; do
+    assert_eq "41h: the restated clause is gone: ${G41_OLD:0:40}" "0" "$(g41_occ "$G41_OLD" "$G41_ALL")"
+  done
+
+  # --- 41i: README and CHANGELOG
+  assert_eq "41i: README's reviewer entry describes the twin check" "1" \
+    "$(g41_occ 'flags a declared counterpart the diff left unchanged — a hook'"'"'s `.sh` or `.ps1` half, a file named in a keep-in-sync or mirror sentence, or a file sharing a canon anchor — as an Important `code_quality` issue naming both files, found with its own glob and search calls,' "$(cat "$G41_RDM")")"
+  assert_eq "41i: the first entry under [Unreleased] is W2552's" "yes" \
+    "$(awk '/^## \[Unreleased\]/{f=1;next} f&&/^### /{print; exit}' "$G41_CHL" | grep -q '(W2552)$' && echo yes || echo no)"
+  assert_eq "41i: CHANGELOG.md has one W2552 entry" "1" "$(grep -c '^### .*(W2552)$' "$G41_CHL")"
+  assert_eq "41i: the entry says the lookup reads the working tree" "1" "$(g41_occ "**Working tree, not git's index.**" "$G41_CHL_ENTRY")"
+  assert_eq "41i: README.md holds no canon anchor" "0" "$(g41_occ '<!-- canon:' "$(cat "$G41_RDM")")"
+  assert_eq "41i: the W2552 changelog entry holds no canon anchor" "0" "$(g41_occ '<!-- canon:' "$G41_CHL_ENTRY")"
+  assert_eq "41i: the W2552 changelog entry names its test group once" "1" "$(g41_occ 'Tests: bash Group 41' "$G41_CHL_ENTRY")"
 fi
 
 # ============================================================

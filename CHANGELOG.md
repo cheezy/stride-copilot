@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — the task-reviewer flags untouched twins and mirror files (W2552)
+
+Ports stride W2296. Step 6 of `agents/task-reviewer.agent.md` gains a
+**Twin Check** part after Statement Verification. For each file the diff
+touches, the reviewer looks for its declared counterparts, which come in
+three kinds: the `.sh` or `.ps1` half at the same path stem (this plugin
+ships both halves of every hook), a file the touched one names as its
+mirror or twin, as kept in sync with it, or as stating the same rule
+again, and another file whose `canon:<id> vN` anchor matches one on a
+touched section.
+
+- **Declared pairs only.** A file that merely names the touched one is not
+  a counterpart, and a touched file with no counterpart raises no issue.
+- **Its own tools, recorded.** Counterparts are found with `glob` and
+  `search` and nothing else, neither file of a pair is ever run, and each
+  call and what it found goes in the prose report after the statement
+  checks. A counterpart is a path the reviewer's own call returned, never
+  one built from diff or task text, and opening it counts as reviewing the
+  diff rather than as unrelated exploring. Statement Verification's limits
+  carry over: only files inside the project, none holding secrets, a
+  credential-shaped line cited by `file:line`, and a sibling named without
+  a directory matched only within the project.
+- **Working tree, not git's index.** With no shell there is no
+  `git ls-files`, so both tools see an untracked file just as they see a
+  tracked one, as in stride-gemini.
+- **Two Important `code_quality` findings.** A mirror or twin sentence
+  naming a file no `glob` call finds is dangling, raised at the sentence's
+  `file:line`. A counterpart the diff left as it was, while altering
+  behaviour or a rule the two share, is raised citing both files and is
+  never `cosmetic`; this second one is skipped when the task or the
+  invocation says why the counterpart needs no change.
+- **Nothing a parser reads changes.** No block key is added and
+  `schema_version` stays `"1.7"`. `README.md` describes the check in the
+  task-reviewer entry.
+
+To make room under Group 34c's 49,009-byte ceiling, twenty restated
+reasons and examples left the reviewer without dropping a rule: the
+fields-withheld sentence that repeats the opening line, the precedence
+aside and the longer sentinel-scope sentence on the credential carve-out,
+the rendered-panel reason in step 7, step 7's two `not_applicable`
+examples, the legacy field list in the consumption invariant, the
+`considerations` entry-size clause and its dispatch-only aside, three
+asides in the `rows` breakdown, the `criterion` gloss, three restated
+glosses on the `security_considerations` and `behaviour_test_matrix`
+verdicts, the never-invent-rows restatement, the fallback-grep reason for
+the summary line, and the two schema-citation clauses. The file ends at
+48,929 bytes. No canon entry is registered for this rule.
+
+Tests: bash Group 41, the next free number. It reads contract text only,
+so the PowerShell half carries no twin. Group 40's Statement Verification
+slice now stops at the Twin Check heading, and 40h asks only that the
+W2551 entry sit under `[Unreleased]`, since it is no longer first.
+
 ### Added — the task-reviewer checks the factual statements a diff adds (W2551)
 
 Ports stride W2295. Step 6 of `agents/task-reviewer.agent.md` gains a
