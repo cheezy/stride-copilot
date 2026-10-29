@@ -5,8 +5,8 @@
 #
 # Refuses to end a turn while work demonstrably remains. Blocks on EXACTLY one
 # condition — the loop-state file exists, its needs_review is the JSON boolean
-# false, and GET <base>/api/tasks/next answers 200 with a claimable identifier —
-# and permits on everything else.
+# false, and GET <base>/api/tasks/next?response_view=slim answers 200 with a
+# claimable identifier — and permits on everything else.
 #
 # BLOCKING CONTRACT: {"decision":"block","reason":"<prompt>"} on stdout, exit 0.
 # The value is 'block', NOT 'deny' as on Gemini.
@@ -432,10 +432,15 @@ try {
     # came from a file this plugin's own hook wrote and has already passed the
     # anchored identifier-grammar pattern, so it cannot carry a path segment, a
     # query separator or whitespace into the URL.
+    # The queue request asks for the slim summary (W2542): this gate reads
+    # nothing from it but the status code and .data.identifier, both of which
+    # the summary carries, and a server that predates the parameter ignores it
+    # and sends the full task, whose identifier sits in the same place. The
+    # held request is a different, field-projected URL and stays as it is.
     $reqUri = if ($GateMode -eq 'held') {
         "$apiBase/api/tasks/$HeldIdent" + '?fields=status,claim_expires_at,completed_by_id'
     } else {
-        "$apiBase/api/tasks/next"
+        "$apiBase/api/tasks/next?response_view=slim"
     }
     $resp = Invoke-WebRequest -Uri $reqUri `
         -Headers @{ Authorization = "Bearer $apiToken" } `

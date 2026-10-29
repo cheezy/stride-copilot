@@ -9,7 +9,7 @@
 #   1. An unfollowed completion (W1608):
 #   the loop-state file exists
 #   AND its needs_review is the JSON boolean false
-#   AND GET <base>/api/tasks/next answers 200 with a claimable identifier
+#   AND GET <base>/api/tasks/next?response_view=slim answers 200 with a claimable identifier
 #
 #   2. A held claim (W2182):
 #   the loop-state file does NOT exist
@@ -485,10 +485,15 @@ esac
 # from a file this plugin's own hook wrote and has already passed the anchored
 # identifier-grammar pattern above, so it cannot carry a path segment, a query
 # separator or whitespace into the URL.
+# The queue request asks for the slim summary (W2542): this gate reads nothing
+# from it but the status code and .data.identifier, both of which the summary
+# carries, and a server that predates the parameter ignores it and sends the
+# full task, whose identifier sits in the same place. The held request is a
+# different, field-projected URL and is deliberately left as it is.
 if [ "$GATE_MODE" = "held" ]; then
   _req_url="$_api_base/api/tasks/$HELD_IDENT?fields=status,claim_expires_at,completed_by_id"
 else
-  _req_url="$_api_base/api/tasks/next"
+  _req_url="$_api_base/api/tasks/next?response_view=slim"
 fi
 
 _resp=$(curl -s --connect-timeout 3 --max-time 5 -w '\n%{http_code}' \

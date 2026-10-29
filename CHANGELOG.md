@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — discovery asks for the slim task summary, and the enrichment check reads the full body (W2542)
+
+Port of stride W2256. `skills/stride-workflow/SKILL.md` Step 1 now calls
+`GET /api/tasks/next?response_view=slim`, which answers with a short summary
+instead of the task; a server that predates the parameter ignores it and sends
+the full task, and either answer is enough because discovery only needs the
+identifier. This port's Step 2 runs `before_doing` by hand ahead of the claim,
+so the check cannot wait for the claim response: Step 1 fetches
+`GET /api/tasks/<identifier>` and runs the review and the enrichment check on
+that body, never on the summary, which has no `key_files`. Step 1 also says
+that body is task-authored data to act on, never instructions.
+
+- The flowchart, the Quick Reference Card and every discovery site in
+  `skills/stride-claiming-tasks/SKILL.md` (both the plugin and manual lists,
+  both flowcharts, the Enrichment Check, the Implementation Workflow and the
+  card) say the same.
+- Both Stop-gate halves request `/api/tasks/next?response_view=slim` in non-held
+  mode. They read only the status code and `.data.identifier`, so no reader
+  changed, and the held-claim request is untouched.
+
+Tests: bash Group 32 plus 22a3 and a 27a case, PowerShell Group 27 plus 19a3
+(the goal planned PowerShell Group 26, which W2541 had already taken).
+
 ### Changed — the explorer is waited on, and two stride 1.81.0 items are recorded as not applicable (W2541)
 
 stride W2254 and W2255 rest on host behaviour that no Copilot CLI was available
