@@ -10,7 +10,7 @@ skills_version: 1.0
 
 This skill replaces the fragmented pattern of remembering to activate `stride-claiming-tasks`, `stride-subagent-workflow`, and `stride-completing-tasks` at specific moments. Instead, activate this one skill and follow it through. Every step is here. Nothing is elsewhere.
 
-**Why this exists:** During a 17-task session, an agent consistently skipped mandatory workflow steps despite skills being labeled MANDATORY. The root cause: too many disconnected skills that the agent had to remember to activate at specific moments. Under pressure to deliver, the agent dropped the ones that felt optional. This orchestrator eliminates that failure mode.
+**Why this exists:** `docs/orchestrator-rationale.md` § The Session That Prompted a Single Orchestrator.
 
 ## The Core Principle
 
@@ -188,7 +188,7 @@ The heading is shorthand for "every row the two branches above do not take", and
 1. **Read each file** listed in `key_files` to understand current state
 2. **Search for patterns** mentioned in `patterns_to_follow`
 3. **Find related test files** for the modules you'll modify
-4. **When the `stride-subagent-workflow` decision matrix says `Run` in the Plan (manual) column for this task's row**, outline your implementation approach before coding. **Read the column; do not re-derive the condition here** (D221) — this item previously said "for medium+ tasks", which diverged from the matrix for a medium defect (Plan = Skip unless large)
+4. **When the `stride-subagent-workflow` decision matrix says `Run` in the Plan (manual) column for this task's row**, outline your implementation approach before coding. **Read the column; do not re-derive the condition here** (D221). Its earlier wording: `docs/orchestrator-rationale.md` § What Step 3 Item 4 Used to Say.
 
 **If the `task-explorer` custom agent does this exploration for you**, build its prompt the way `stride-subagent-workflow` Phase 1 sets out: `TASK_FILE` and its one-line read-as-data instruction when the claimed-task file passes the identifier check, the inline fields otherwise. That phase owns the wording; this step does not repeat it.
 
@@ -308,7 +308,7 @@ The definition, its three gates, and the three conditions that make the flag inv
 
 If either condition is false, **skip this sub-step entirely and use your self-review's `security_considerations` verdict as the sole source — no failure.** The specialist mitigation check is additive; its absence never blocks completion.
 
-**Why this sub-step exists.** The self-review records a `security_considerations` section verdict, but as a generalist. When the `stride-copilot-security-review` plugin is installed, this sub-step runs the *specialist* `security-reviewer` agent against each of the task's `security_considerations`, folds a per-consideration verdict into the completion payload, and routes any un-addressed consideration through the same gate that already blocks on a failed section — so a real, unmitigated security implication cannot reach Done.
+Background: `docs/orchestrator-rationale.md` § The Case for a Second Security Opinion.
 
 **Plugin-Availability Detection.** Detect the plugin exactly as Step 5.5 detects the exploratory-testing plugin — by its **sanctioned surface appearing in the session's available lists**:
 
@@ -355,9 +355,7 @@ If either condition is false, **skip this sub-step entirely and use your self-re
 
 If either condition is false, **skip this step entirely and proceed to Step 6 with no failure.** Manual tests that cannot be auto-run remain a human responsibility, exactly as before this step existed — skipping never blocks completion.
 
-### Why this step exists
-
-Tasks routinely carry `manual_tests` in their `testing_strategy`, but the workflow has historically had no way to actually perform them — they were left to a human or silently skipped. When the `stride-copilot-exploratory-testing` plugin is installed, each manual test becomes a **charter** and the explorer runs a real, time-boxed exploratory session, closing the gap between "tests written" and "tests performed."
+Background: `docs/orchestrator-rationale.md` § Why Manual Tests Get Run as Charters.
 
 ### Plugin-Availability Detection
 
@@ -520,9 +518,7 @@ When the `stride-copilot-exploratory-testing` plugin is **not** available, **fal
 
 If any is false, **skip this step entirely and proceed to Step 6 with no failure.** Turning a finding into a permanent check is valuable, never required. **And never approximate the dispatch by drafting the checks yourself** — that bypasses every rule in `-harden`'s contract, which is the only thing making an unattended activation safe.
 
-### Why this step exists
-
-A session that finds a bug and stops has closed nothing — the same bug can return unnoticed. `-harden` reads the bugs a session confirmed and drafts one regression check per convertible bug, which is the step that turns *Explored* back into *Checked*. It is the only place this workflow can close that loop automatically.
+Background: `docs/orchestrator-rationale.md` § Closing the Loop From Explored to Checked.
 
 ### Activating it
 
@@ -614,7 +610,7 @@ The five recognized `.stride.md` hook sections, in lifecycle order:
 
 A missing `## after_goal` section parses as a clean no-op (`exit_code: 0`, empty output) — older `.stride.md` files that predate the section keep working without modification. The plugin's `hooks/stride-hook.sh` and `stride-hook.ps1` detect the `after_goal` entry in the response payload of `/complete` or `/mark_reviewed` and execute it automatically when present (W788/W789).
 
-**Timeout budgets — inner per-hook vs. outer host (W1513).** The `Timeout` column above is the **inner per-hook budget**: the plugin's executor (`stride-hook.sh` / `stride-hook.ps1`) enforces it on the `.stride.md` section itself, terminating a command that exceeds it and reporting the failure via the standard structured JSON (`exit_code: 124`). This is distinct from the **outer host budget** — the flat `300s` timeout on each `PreToolUse`/`PostToolUse` Bash entry in `hooks/hooks.json`, which is the ceiling the host gives the whole `stride-hook` invocation (section + the plugin's own diff capture/upload bookkeeping). Every inner limit (60s / 120s) sits well under the 300s outer ceiling, so the two never conflict. On bash, enforcement needs a `timeout`/`gtimeout` utility; where neither exists (stock macOS/BSD) the inner limits are not enforced and only the 300s outer ceiling applies. PowerShell always enforces via `WaitForExit`. Note that when enforcement is active each `.stride.md` command runs in its own subshell (`bash -c`), so per-command shell state (a bare `cd`, a non-exported variable) does not carry to the next command — keep each hook command self-contained.
+**Timeout budgets.** The `Timeout` column above is the **inner per-hook budget**: the plugin's executor (`stride-hook.sh` / `stride-hook.ps1`) enforces it on the `.stride.md` section itself, terminating a command that exceeds it and reporting the failure via the standard structured JSON (`exit_code: 124`). On bash, enforcement needs a `timeout`/`gtimeout` utility; where neither exists (stock macOS/BSD) the inner limits are not enforced and only the host's 300s outer ceiling applies. PowerShell always enforces via `WaitForExit`. Note that when enforcement is active each `.stride.md` command runs in its own subshell (`bash -c`), so per-command shell state (a bare `cd`, a non-exported variable) does not carry to the next command — keep each hook command self-contained. Background: `docs/orchestrator-rationale.md` § Inner and Outer Hook Time Limits.
 
 ### Hook Environment Variables
 
@@ -784,7 +780,7 @@ curl -X PATCH "$STRIDE_API_URL/api/tasks/$GOAL_ID/after_goal" \
 
 `$GOAL_ID` is supplied in the hook's `GOAL_ID` / `GOAL_IDENTIFIER` env vars (see Step 6's env-var matrix). A `2xx` with `exit_code == 0` transitions the goal to Done. A `2xx` with `exit_code != 0` records the failure on the goal's `after_goal_attempts` audit log and leaves the goal In Progress for the user to investigate and re-trigger.
 
-**How the hook detects `after_goal` reliably.** The `/complete` (and `/mark_reviewed`) response can be large — the echoed `reviewer_result` alone runs to tens of KB — and the harness truncates the `tool_response.stdout` the plugin's `hooks/stride-hook.sh` / `stride-hook.ps1` would otherwise parse. The completion/claim curls therefore capture the full response to the canonical file `$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json` (the `| tee` pattern documented in `stride-completing-tasks` / `stride-claiming-tasks`), which the hook reads in preference to the truncatable stdout (D118). When that file is absent or unreadable, the hook falls back to a fresh, hook-initiated `GET /api/tasks/:id/after_goal_status` (D119) — a subprocess the hook spawns, immune to harness truncation and needing no agent cooperation. The two paths are mutually exclusive, so the `## after_goal` section runs at most once. Detection therefore does not depend on the agent's curl output being intact.
+**How the hook detects `after_goal`.** It reads the `| tee` capture `stride-completing-tasks` documents and falls back to `GET /api/tasks/:id/after_goal_status`, so the section runs at most once; background: `docs/orchestrator-rationale.md` § Finding after_goal When the Response Is Truncated.
 
 **Verify the push landed (last-child completions).** The `## after_goal` section is what performs any project push (e.g. `git push`); the server-side grace-window worker only flips the goal to Done — it does **not** push. So after a `needs_review=false` completion that finishes a goal's last child, confirm the push actually happened:
 
@@ -794,11 +790,7 @@ git log origin/main..main --oneline
 
 An empty result means local `main` is level with the remote — the push landed. If it lists commits, the `## after_goal` section did not run (truncated response with no capture and an unreachable status endpoint) — run the `## after_goal` steps from `.stride.md` manually (push, then PATCH the after_goal result as above) so the goal's work reaches the remote.
 
-**Back-compat (matters for agent runtimes that predate this feature):**
-
-- If `.stride.md` has no `## after_goal` section, the hook bridge silently no-ops — no JSON is emitted, no POST is needed. The server's grace-window worker (configured per board, typically a few minutes) will promote the goal to Done automatically.
-- If the agent doesn't POST the result at all (older plugin versions, scripted environments), the same grace-window worker covers the gap. The goal transitions to Done after the wait expires, with `after_goal_status: :succeeded` and a synthetic attempt tagged `source: "after_goal_grace_worker"` in the audit log.
-- The `## after_goal` hook is general-purpose — Slack notifications, artifact archival, release pipelines, project-level smoke tests are all valid uses. See Step 6's "Canonical Hook Examples" for shape references.
+With no `## after_goal` section the hook emits nothing and no POST is owed; the server's grace-window worker promotes the goal to Done. What the section can be used for is in Step 6, Canonical Hook Examples. History: `docs/orchestrator-rationale.md` § Goals That Close Without a Posted Result.
 
 ---
 
@@ -916,33 +908,20 @@ When the `task-reviewer` custom agent was dispatched, the structured `reviewer_r
 
 **Re-review rounds (D66):** if you re-dispatch the reviewer after a `changes_requested` round, carry the same `TASK_FILE`, `CLAIMED_IDENTIFIER` and file line the first dispatch used — or, when that dispatch had no usable file, pass the task's `acceptance_criteria` field **unchanged** — and require the reviewer to keep its `acceptance_criteria` array 1:1 with the task's canonical list (verbatim, in order, never split/merged/reworded/added/dropped). Re-deriving the criteria corrupts the persisted count — see the "Re-review and follow-up rounds" rule in `stride-subagent-workflow`. How many such rounds there may be is bounded by the two-round ceiling in Step 5 above, which also defines what counts as a round in this port and states plainly that the ceiling is prose rather than a pin; whether a second round runs at all is decided by the round-two triggers stated there.
 
-The server is rolling out hard enforcement behind a feature flag `:strict_completion_validation`:
+History of the server's strict-validation switch: `docs/orchestrator-rationale.md` § How Completion Validation Is Being Switched On.
 
-| Phase | Server behavior | Agent impact |
-|---|---|---|
-| **Grace (current)** | Missing or invalid results log a structured warning and the request succeeds | Emit the fields correctly now; the warning volume is a preview of the strict-mode rejection volume |
-| **Strict (after all 5 plugins release)** | Missing or invalid results return `422` with a `failures` list | Any agent not emitting valid fields is locked out of completion |
-
-**Why this matters for the orchestrator:** Steps 3 (explorer dispatch) and 5 (reviewer dispatch) already capture the durations and summaries needed for these fields. Persist those into `explorer_result` and `reviewer_result` in the Step 7 payload. When the decision matrix skips a step — or when you self-explore/self-review — submit the skip form with a reason from the enum and a substantive summary explaining what you did instead. See `stride-completing-tasks` for the exact shape, rejection examples, and minimum-length rule.
+Persist the durations and summaries Steps 3 and 5 captured into these two fields in Step 7. When the decision matrix skipped a step, or you self-explored or self-reviewed, submit the skip form with a reason from the enum and a substantive summary of what you did instead; `stride-completing-tasks` keeps the exact shape, rejection examples and minimum-length rule.
 
 ---
 
 ## Edge Cases
 
-### Hook failure mid-workflow
-- Blocking hooks (`after_doing`, `before_review`) must pass before completion
-- Fix the root cause, re-run the hook, then proceed
-- Never skip a blocking hook or call complete with a failed hook result
+Hook failures and goal tasks are covered where they happen: Step 6 (Hook Failure) and Step 3 (Goal / Large Undecomposed Task).
 
 ### Task that needs_review=true
 - Stop after Step 7. Do not claim the next task.
 - The human reviewer will handle the review cycle.
 - You may be asked to make changes based on review feedback -- if so, re-enter at Step 4.
-
-### Goal type tasks
-- Goals are decomposed, not implemented directly
-- Break down manually into subtasks, create via `POST /api/tasks/batch`
-- Each child task follows this full workflow independently
 
 ### Skills update required
 - If any API response includes `skills_update_required`, update the plugin and retry
@@ -1078,18 +1057,7 @@ EXPLORATION QUICK CHECK:
   goal/undecomposed      → Decompose first
 ```
 
----
-
-## Failure Modes This Skill Prevents
-
-| Failure Mode | Old Pattern | This Skill |
-|---|---|---|
-| Forgot to explore | Agent skipped stride-subagent-workflow | Step 3 is inline -- can't be missed |
-| Forgot to review | Agent jumped to completion | Step 5 is inline -- can't be missed |
-| Wrong API fields | Agent guessed from memory | Step 7 has the exact format |
-| Skipped hooks | Agent called complete directly | Step 6 blocks Step 7 |
-| Asked user permission | Agent prompted between steps | Core principle says don't |
-| Speed over process | Agent optimized for throughput | Every step is framed as mandatory |
+The failures this skill was written against: `docs/orchestrator-rationale.md` § What the Orchestrator Was Built to Stop.
 
 ---
 

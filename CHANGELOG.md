@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — background and history leave the workflow skill for `docs/orchestrator-rationale.md` (W2543)
+
+Copilot CLI reads `skills/stride-workflow/SKILL.md` in full on every task, so
+ten passages that explain or record history rather than direct the work now
+live in the new `docs/orchestrator-rationale.md`, one `##` section each. Every
+site they left keeps a single-sentence pointer naming that file and section.
+Four duplicates were removed rather than moved, each with a pointer to where
+its twin stays: the "why this matters" paragraph under the result rollout
+(condensed to its one rule), the hook-failure and goal-task Edge Cases, and the
+Step 8 back-compat bullet calling `## after_goal` general-purpose (Step 6,
+Canonical Hook Examples, keeps it).
+
+- Gates, the decision matrix, every Decision Summary, schemas, self-checks,
+  executed code blocks, prompt-injection framing and redaction rules all stay in
+  the skill. The `review-round-cap`, `dispatch-count-telemetry` and
+  `reason-code-vocabulary` anchors still sit on top of their governed text, each
+  with its back-reference paragraph, and no canon version changed.
+- The skill went from 149,332 to 145,000 bytes (-2.9%). The task was filed
+  against 137,687 bytes, a size measured before W2538 to W2542 grew the file;
+  reaching it would mean moving rules, so it was not met.
+- `docs/` is not registered in `plugin.json`, so Copilot CLI loads nothing from
+  it.
+
+Tests: bash Group 33 (33i pins the three anchored spans byte for byte). It
+reads contract text only, so there is no PowerShell twin. Port of the method of
+stride W2257.
+
 ### Changed — discovery asks for the slim task summary, and the enrichment check reads the full body (W2542)
 
 Port of stride W2256. `skills/stride-workflow/SKILL.md` Step 1 now calls
