@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — the explorer is waited on, and two stride 1.81.0 items are recorded as not applicable (W2541)
+
+stride W2254 and W2255 rest on host behaviour that no Copilot CLI was available
+to observe, so `docs/HOOK_RESEARCH.md` gains Addendum (W2541) recording the CLI
+version as unmeasured, what the published hooks reference does establish (the
+`agentStop` input documents no agent list), and how to re-measure.
+`skills/stride-subagent-workflow/SKILL.md` Phase 1 now says the `task-explorer`
+call is waited on, with no reading or drafting during it. Neither Stop-gate
+half nor `hooks/hooks.json` changes. Not applicable on this port:
+
+- W2254, reading `key_files` while the explorer runs — whether the invocation
+  releases the turn is unmeasured.
+- W2255, the held-claim stop permit while a stride agent runs — the documented
+  `agentStop` input lists no running agents.
+- W2255's 30-minute bound on that permit — there is no permit for it to bound.
+
+Tests: bash Group 31, PowerShell Group 26 (the goal planned only the bash
+number; 26 is the next free PowerShell group).
+
 ### Added — Step 0 says when the installed plugin is behind the catalog
 
 New `hooks/check-plugin-current.sh` and its PowerShell twin

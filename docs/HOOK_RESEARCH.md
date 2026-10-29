@@ -283,3 +283,93 @@ nothing to do.** If the gate never fires, the fix is one of: replace the `Stop`
 entry with the flat form above, or rename the key to `agentStop`. Settling it
 requires a live Copilot restart; the test suite invokes the gate script
 directly and structurally cannot.
+
+---
+
+# Addendum (W2541): does a custom-agent call hold the turn, and does `agentStop` name running agents? — unmeasured
+
+Two stride 1.81.0 changes are only worth having on a host that behaves a
+particular way. W2254 asks the orchestrator to read the task's `key_files`
+during the explorer's run, which is useful only if a `task-explorer`
+invocation hands control back before the agent finishes. W2255 lets a stop go
+through while a claim is held and a stride agent is still working, which needs
+the turn-end hook's input to say which agents are working. stride took both
+facts from logged Claude Code sessions, and the porting guide asks each port to
+take its own. This addendum is stride-copilot's attempt.
+
+## CLI version: unmeasured
+
+**No Copilot CLI was available to observe.** The machine this was written on
+has no `copilot` executable on `PATH` and no `~/.copilot` directory, so no
+session ran, no logging hook was installed, and no log exists to keep or to
+delete. Nothing below is a runtime observation. Both questions are open, and
+this port acts as though the answer to each is the one that asks the least of
+the host.
+
+## What the published reference does say (fetched 2026-10-29)
+
+Source: <https://docs.github.com/en/copilot/reference/hooks-reference>, the
+same page the W2148 addendum quotes.
+
+- **`agentStop` input.** The documented fields are `sessionId`, `timestamp`,
+  `cwd`, `transcriptPath`, `stopReason` and `stop_hook_active` (snake_case
+  equivalents in the VS Code compatible form). None of them is a list of
+  agents or tasks, running or otherwise.
+- **Agent lifecycle events exist.** `subagentStart` fires before a subagent
+  runs and carries `agentName`; `subagentStop` fires "when a subagent completes
+  normally, before returning results to the parent" and carries `agentId`,
+  `agentType` and `agentName`. A custom agent's own scoped `Stop` hooks run at
+  `SubagentStop`.
+- **Background agents are mentioned, but only as notifications.** The
+  `notification` event's types include one for "a background subagent finishes"
+  and one for a background agent going idle. The page does not say whether a
+  custom-agent invocation from a skill runs in the background, nor whether the
+  calling turn waits for it.
+
+**Verified (documentary):** the `agentStop` field list carries no agent list.
+**NOT verified (runtime):** everything about timing — whether the parent turn
+waits for `task-explorer`, and whether a live `agentStop` payload carries
+fields the reference leaves out.
+
+## Answers, as far as they go
+
+1. **Does a `task-explorer` invocation hold the turn? Unmeasured.** The
+   reference describes background subagents somewhere in Copilot, so a
+   non-blocking call cannot be ruled out, but nothing shows that this port's
+   invocation is one.
+2. **Does the `agentStop` input list running agents? Unmeasured at runtime;
+   documented as no.** No documented field would carry the list, and the gate
+   reads only `stop_hook_active` and `cwd` from its input today.
+
+## Decisions
+
+- **W2254 — not applicable.** `skills/stride-subagent-workflow/SKILL.md`
+  Phase 1 now says the call is waited on: the orchestrator's next action after
+  invoking `task-explorer` is reading the summary it returns, and stride's
+  advice to use that time for reading is not carried over. An instruction
+  to work alongside an agent the host may not release the turn for would read
+  as advice the session can follow when it may not be able to.
+- **W2255 — not applicable.** `hooks/stride-stop-gate.sh` and
+  `hooks/stride-stop-gate.ps1` are unchanged, and so is the `Stop` registration
+  in `hooks/hooks.json`. stride's permit and its 30-minute
+  `.stride/.stop-pending-since.json` bound key on the running-agent list; with
+  no such list documented, porting them would mean building that list from
+  `subagentStart` / `subagentStop` bookkeeping, which is a marker stride does
+  not use and the porting guide says not to invent.
+
+For the release entry, the items this port does not carry:
+
+- W2254, reading `key_files` while `task-explorer` runs: unmeasured whether
+  the invocation releases the turn, so Phase 1 waits on it instead.
+- W2255, the held-claim stop permit while a stride agent runs: the documented
+  `agentStop` input lists no agents, and no runtime payload was observed.
+- W2255, the 30-minute bound on that permit: it limits a permit that is not
+  there.
+
+**Re-measure** when a Copilot CLI can be run: a throwaway project with no
+credentials, project-local hooks on `preToolUse`, `postToolUse`,
+`subagentStart`, `subagentStop` and `agentStop` that log the event name, a
+clock and the top-level stdin keys, one `task-explorer` invocation with a slow
+step in it, and the logs deleted afterwards. If the parent turn proceeds before
+`subagentStop`, revisit W2254; if `agentStop` input turns out to carry a
+running-agent field, revisit W2255 with whole-string agent-type matching.

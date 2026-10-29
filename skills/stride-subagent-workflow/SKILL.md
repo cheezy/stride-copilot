@@ -176,6 +176,8 @@ Paste no task fields beside it, and never open the file yourself to copy from it
 
 The explorer will return a structured summary of: each key file's current state, related test files, existing patterns found, and module APIs to reuse.
 
+**During the run, wait for it.** Whether a `task-explorer` invocation gives the turn back before the agent finishes is unmeasured on Copilot CLI — `docs/HOOK_RESEARCH.md`, Addendum (W2541), has what was and was not established — so treat the call as one that returns only with its result. Your next action after invoking it is reading the summary it returns: start no file reads, drafting or edits of your own in the meantime. stride's advice to read the `key_files` while its explorer works depends on a non-blocking dispatch this port has not shown it has, so it is not part of this phase.
+
 **Use the explorer's output** to inform your implementation — don't discard it. It tells you what exists, what patterns to follow, and what utilities to reuse.
 
 ## Phase 2: Planning (Conditional, Before Coding)

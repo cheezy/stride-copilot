@@ -7632,6 +7632,77 @@ else
 fi
 
 # ============================================================
+# Test Group 31: the explorer is waited on; W2254/W2255 not applicable (W2541)
+# ============================================================
+# Mirrored case-for-case by test-stride-hook.ps1 Test Group 26 (labels 31a..
+# there too). No Copilot CLI was available when W2541 was done, so there is no
+# measured host behaviour to replay here. What this group pins is that the
+# research record, Phase 1 and the two Stop-gate halves agree with one another:
+# the record says "unmeasured" and decides both items are not applicable,
+# Phase 1 tells the orchestrator to wait on task-explorer and points at that
+# record, stride's read-during-the-run instruction appears nowhere in the
+# skills, and neither gate half reads a running-agent list. Sections are cut by
+# heading, so an empty cut fails every assertion made against it.
+echo ""
+echo "=== Test Group 31: explorer waited on, W2254/W2255 not applicable (W2541) ==="
+
+G31_ROOT="$SCRIPT_DIR/.."
+G31_RES="$G31_ROOT/docs/HOOK_RESEARCH.md"
+G31_SUB="$G31_ROOT/skills/stride-subagent-workflow/SKILL.md"
+G31_GSH="$G31_ROOT/hooks/stride-stop-gate.sh"
+G31_GPS="$G31_ROOT/hooks/stride-stop-gate.ps1"
+
+if [ ! -f "$G31_RES" ] || [ ! -f "$G31_SUB" ] || [ ! -f "$G31_GSH" ] || [ ! -f "$G31_GPS" ]; then
+  echo "  SKIP: Test Group 31 (research record, skill or gate files not found relative to $SCRIPT_DIR)"
+else
+  # The W2541 addendum runs from its "# Addendum (W2541)" heading to the next
+  # top-level "# " heading or the end of the file.
+  G31_ADD=$(awk 'index($0, "# Addendum (W2541)") == 1 { f = 1; print; next } /^# / { f = 0 } f' "$G31_RES")
+  G31_P1=$(awk 'index($0, "## Phase 1: ") == 1 { f = 1; print; next } /^## / { f = 0 } f' "$G31_SUB")
+  # The release list: the "- " bullets after "For the release entry", up to the
+  # next bold paragraph.
+  G31_REL=$(awk '/^For the release entry/ { f = 1; next } /^\*\*/ { f = 0 } f && /^- /' <<< "$G31_ADD")
+
+  # --- Matrix row 5 (as recorded): the research record names the CLI version or "unmeasured"
+  assert_contains "31a: the record has its own addendum" \
+    '# Addendum (W2541): does a custom-agent call hold the turn, and does `agentStop` name running agents? — unmeasured' "$G31_ADD"
+  assert_contains "31a: it records the CLI version as unmeasured" '## CLI version: unmeasured' "$G31_ADD"
+  assert_contains "31a: and says why nothing was observed" '**No Copilot CLI was available to observe.**' "$G31_ADD"
+  assert_contains "31a: it keeps no log" 'no log exists to keep or to' "$G31_ADD"
+  assert_contains "31b: the blocking question is answered unmeasured" \
+    '**Does a `task-explorer` invocation hold the turn? Unmeasured.**' "$G31_ADD"
+  assert_contains "31b: the agent-list question is answered unmeasured, documented as no" \
+    '**Does the `agentStop` input list running agents? Unmeasured at runtime;' "$G31_ADD"
+  assert_contains "31b: the documentary finding is labelled as documentary" \
+    '**Verified (documentary):** the `agentStop` field list carries no agent list.' "$G31_ADD"
+  assert_contains "31c: W2254 is decided not applicable" '**W2254 — not applicable.**' "$G31_ADD"
+  assert_contains "31c: W2255 is decided not applicable" '**W2255 — not applicable.**' "$G31_ADD"
+  assert_eq "31c: the release list carries the three not-applicable items" "3" \
+    "$({ grep -c '^- W225[45]' <<< "$G31_REL" || true; })"
+  assert_contains "31c: the record says how to re-measure" '**Re-measure** when a Copilot CLI can be run' "$G31_ADD"
+
+  # --- Matrix row 0: bash Group 31: Phase 1 of stride-subagent-workflow states what the orchestrator may do while task-explorer runs, consistent with docs/HOOK_RESEARCH.md
+  assert_contains "31d: Phase 1 says to wait on the explorer" '**During the run, wait for it.**' "$G31_P1"
+  assert_contains "31d: Phase 1 points at the research record" \
+    '`docs/HOOK_RESEARCH.md`, Addendum (W2541)' "$G31_P1"
+  assert_contains "31d: Phase 1 gives the same reason the record does" 'is unmeasured on Copilot CLI' "$G31_P1"
+  assert_contains "31d: Phase 1 rules out work during the run" \
+    'start no file reads, drafting or edits of your own in the meantime' "$G31_P1"
+  assert_contains "31e: the record's W2254 decision names Phase 1" \
+    '`skills/stride-subagent-workflow/SKILL.md`' "$G31_ADD"
+  assert_contains "31e: and the behaviour Phase 1 states" 'Phase 1 now says the call is waited on' "$G31_ADD"
+  G31_ALL=$(find "$G31_ROOT/skills" "$G31_ROOT/agents" -name '*.md' -type f -exec cat {} + 2>/dev/null || true)
+  assert_eq "31f: no skill or agent carries stride's read-during-the-run line" "0" \
+    "$({ grep -ciE 'while it runs, read|draft your approach' <<< "$G31_ALL" || true; })"
+
+  # --- Matrix rows 1 and 4 are waived (W2255 not ported); this pins that the gates were left alone
+  assert_eq "31g: the bash gate reads no running-agent list" "0" \
+    "$({ grep -ciE 'background_tasks|since_epoch|stop-pending|subagentStart|subagentStop' "$G31_GSH" || true; })"
+  assert_eq "31g: the PowerShell gate reads no running-agent list" "0" \
+    "$({ grep -ciE 'background_tasks|since_epoch|stop-pending|subagentStart|subagentStop' "$G31_GPS" || true; })"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

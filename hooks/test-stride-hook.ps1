@@ -4977,6 +4977,73 @@ if ((Test-Path -LiteralPath $g25Wf) -and (Test-Path -LiteralPath $g25Readme)) {
 }
 
 # ============================================================
+# Test Group 26: the explorer is waited on; W2254/W2255 not applicable (W2541)
+# ============================================================
+# Mirror of test-stride-hook.sh Test Group 31; labels 31a.. match it. The goal
+# named only the bash group number, and 26 is the next free PowerShell one. As
+# in bash, there is no measured host behaviour to replay (no Copilot CLI was
+# available), so the group pins agreement between the research record,
+# Phase 1 and the two Stop-gate halves.
+Write-Host ""
+Write-Host "=== Test Group 26: explorer waited on, W2254/W2255 not applicable (W2541) ==="
+
+$G26Root = Split-Path -Parent $ScriptDir
+$G26Res  = Join-Path $G26Root 'docs/HOOK_RESEARCH.md'
+$G26Sub  = Join-Path $G26Root 'skills/stride-subagent-workflow/SKILL.md'
+$G26Gsh  = Join-Path $G26Root 'hooks/stride-stop-gate.sh'
+$G26Gps  = Join-Path $G26Root 'hooks/stride-stop-gate.ps1'
+
+if (-not ((Test-Path $G26Res) -and (Test-Path $G26Sub) -and (Test-Path $G26Gsh) -and (Test-Path $G26Gps))) {
+    Write-Host "  SKIP: Test Group 26 (research record, skill or gate files not found relative to $ScriptDir)"
+} else {
+    $G26ResTxt = Get-Content -Raw $G26Res
+    $G26SubTxt = Get-Content -Raw $G26Sub
+    # The addendum runs to the next top-level "# " heading or the end of the
+    # file; Phase 1 runs to the next "## " heading. Empty cuts fail closed.
+    $G26Add = [regex]::Match($G26ResTxt, '(?ms)^# Addendum \(W2541\).*?(?=^# |\z)').Value
+    $G26P1  = [regex]::Match($G26SubTxt, '(?ms)^## Phase 1: .*?(?=^## |\z)').Value
+    $G26Rel = [regex]::Match($G26Add, '(?ms)^For the release entry.*?(?=^\*\*|\z)').Value
+
+    # --- Matrix row 5 (as recorded): the research record names the CLI version or "unmeasured"
+    Assert-Contains "31a: the record has its own addendum" `
+        '# Addendum (W2541): does a custom-agent call hold the turn, and does `agentStop` name running agents? — unmeasured' $G26Add
+    Assert-Contains "31a: it records the CLI version as unmeasured" '## CLI version: unmeasured' $G26Add
+    Assert-Contains "31a: and says why nothing was observed" '**No Copilot CLI was available to observe.**' $G26Add
+    Assert-Contains "31a: it keeps no log" 'no log exists to keep or to' $G26Add
+    Assert-Contains "31b: the blocking question is answered unmeasured" `
+        '**Does a `task-explorer` invocation hold the turn? Unmeasured.**' $G26Add
+    Assert-Contains "31b: the agent-list question is answered unmeasured, documented as no" `
+        '**Does the `agentStop` input list running agents? Unmeasured at runtime;' $G26Add
+    Assert-Contains "31b: the documentary finding is labelled as documentary" `
+        '**Verified (documentary):** the `agentStop` field list carries no agent list.' $G26Add
+    Assert-Contains "31c: W2254 is decided not applicable" '**W2254 — not applicable.**' $G26Add
+    Assert-Contains "31c: W2255 is decided not applicable" '**W2255 — not applicable.**' $G26Add
+    Assert-Eq "31c: the release list carries the three not-applicable items" "3" `
+        ([string]([regex]::Matches($G26Rel, '(?m)^- W225[45]')).Count)
+    Assert-Contains "31c: the record says how to re-measure" '**Re-measure** when a Copilot CLI can be run' $G26Add
+
+    # --- Matrix row 0: bash Group 31: Phase 1 of stride-subagent-workflow states what the orchestrator may do while task-explorer runs, consistent with docs/HOOK_RESEARCH.md
+    Assert-Contains "31d: Phase 1 says to wait on the explorer" '**During the run, wait for it.**' $G26P1
+    Assert-Contains "31d: Phase 1 points at the research record" '`docs/HOOK_RESEARCH.md`, Addendum (W2541)' $G26P1
+    Assert-Contains "31d: Phase 1 gives the same reason the record does" 'is unmeasured on Copilot CLI' $G26P1
+    Assert-Contains "31d: Phase 1 rules out work during the run" `
+        'start no file reads, drafting or edits of your own in the meantime' $G26P1
+    Assert-Contains "31e: the record's W2254 decision names Phase 1" '`skills/stride-subagent-workflow/SKILL.md`' $G26Add
+    Assert-Contains "31e: and the behaviour Phase 1 states" 'Phase 1 now says the call is waited on' $G26Add
+    $G26All = (Get-ChildItem -Path (Join-Path $G26Root 'skills'), (Join-Path $G26Root 'agents') -Filter '*.md' -Recurse -File |
+        ForEach-Object { Get-Content -Raw $_.FullName }) -join "`n"
+    Assert-Eq "31f: no skill or agent carries stride's read-during-the-run line" "0" `
+        ([string]([regex]::Matches($G26All, '(?i)while it runs, read|draft your approach')).Count)
+
+    # --- Matrix rows 1 and 4 are waived (W2255 not ported); this pins that the gates were left alone
+    $G26AgentList = '(?i)background_tasks|since_epoch|stop-pending|subagentStart|subagentStop'
+    Assert-Eq "31g: the bash gate reads no running-agent list" "0" `
+        ([string]([regex]::Matches((Get-Content -Raw $G26Gsh), $G26AgentList)).Count)
+    Assert-Eq "31g: the PowerShell gate reads no running-agent list" "0" `
+        ([string]([regex]::Matches((Get-Content -Raw $G26Gps), $G26AgentList)).Count)
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""
