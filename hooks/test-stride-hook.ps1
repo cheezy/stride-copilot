@@ -4207,6 +4207,227 @@ if (-not ((Test-Path $G22Wf) -and (Test-Path $G22Ct))) {
         "never quote reviewer prose, a finding's description, or observed crash output" $G22WfTxt
 }
 # ============================================================
+# Test Group 23: the claimed task file (W2537, port of stride W2248)
+# ============================================================
+# PowerShell mirror of test-stride-hook.sh Test Group 28. A claim whose own
+# response proves the task's identity writes the response's raw `data` text to
+# .stride/.task-<stem>.json, UTF-8 with no byte-order mark; every other outcome
+# writes nothing. The cross-half byte comparison is bash case 28k. Labels carry
+# a g23 prefix because Group 20 already uses bare 23f / 23h labels.
+Write-Host ""
+Write-Host "=== Test Group 23: the claimed task file (W2537) ==="
+
+$G23Root = Join-Path ([System.IO.Path]::GetTempPath()) ("w2537-" + [System.IO.Path]::GetRandomFileName())
+New-Item -ItemType Directory -Force -Path $G23Root | Out-Null
+$G23Sentinel = 'NOT-A-REAL-TOKEN-g23'
+$G23Url = 'https://stride.example.com'
+$G23CmdFile = "curl -sS -X POST $G23Url/api/tasks/claim -H `"Authorization: Bearer $G23Sentinel`" -d @c.json | tee r.json"
+function Get-G23ArgCmd {
+    param([string]$Id)
+    return ("curl -X POST `"$G23Url/api/tasks/claim`" ``" + "`n" +
+        "  -H `"Authorization: Bearer $G23Sentinel`" ``" + "`n" +
+        "  -d `"`$(jq -n --arg identifier '$Id' --arg agent_name 'GitHub Copilot' '{identifier: `$identifier, agent_name: `$agent_name}')`"")
+}
+function New-G23Project {
+    $d = Join-Path $G23Root ([System.IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Force -Path (Join-Path $d '.stride') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $d '.stride.md'), "## before_doing`n``````bash`n```````n`n## before_review`n``````bash`n```````n")
+    return $d
+}
+function Invoke-G23Claim {
+    param([string]$Dir, [string]$Command, [string]$Stdout)
+    $in = @{ tool_input = @{ command = $Command }; tool_response = @{ stdout = $Stdout; stderr = ''; interrupted = $false } } |
+        ConvertTo-Json -Compress -Depth 6
+    return (Invoke-HookScript -InputJson $in -Phase 'post' -ProjectDir $Dir)
+}
+function Get-G23Text {
+    param([string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Leaf) { return [System.IO.File]::ReadAllText($Path) }
+    return '<absent>'
+}
+function Get-G23Count {
+    param([string]$Dir, [string]$Filter)
+    return @(Get-ChildItem -LiteralPath (Join-Path $Dir '.stride') -Force -Filter $Filter -ErrorAction SilentlyContinue).Count
+}
+# Compact JSON with raw UTF-8 and ISO timestamps: ConvertTo-Json would rewrite
+# the timestamps, so this fixture is what catches a re-serialising writer.
+$G23Data = '{"id":77,"identifier":"W123","title":"Say \"hi\"\nthen café — ok","acceptance_criteria":"one\ntwo","needs_review":false,"inserted_at":"2026-10-02T14:20:41","reviewed_at":"2026-10-02T14:20:41.5+05:30","claim_expires_at":"2026-10-02T17:00:33Z"}'
+$G23Ok = '{"data":' + $G23Data + ',"hook":{"name":"before_doing"}}'
+$G23Expected = $G23Data + "`n"
+
+try {
+    # --- Matrix row 6: PowerShell Group 23: the same five cases, and the file is written without a byte-order mark
+    # Row 0's case first: a proven claim writes the raw data text.
+    $d = New-G23Project
+    $r = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $G23Ok
+    Assert-Exit "g23a: the claim hook still exits 0" 0 $r.ExitCode
+    $f = Join-Path $d '.stride/.task-W123.json'
+    Assert-Eq "g23a: the file holds the raw data text with one LF" $G23Expected (Get-G23Text $f)
+    # Guarded so a missing file fails the assertions below instead of aborting the suite.
+    [byte[]]$bytes = @()
+    if (Test-Path -LiteralPath $f -PathType Leaf) { $bytes = [System.IO.File]::ReadAllBytes($f) }
+    $bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    Assert-Eq "g23a: and no byte-order mark" 'False' "$bom"
+    Assert-Contains "g23a: the timestamps are not rewritten" '"inserted_at":"2026-10-02T14:20:41"' (Get-G23Text $f)
+    Assert-Contains "g23a: nor is an offset timestamp moved into local time" '"reviewed_at":"2026-10-02T14:20:41.5+05:30"' (Get-G23Text $f)
+    Assert-Eq "g23a: no staging temp is left behind" '0' "$(Get-G23Count $d 'task-file.*')"
+    Assert-NotContains "g23a: the bearer sentinel never reaches the file" $G23Sentinel (Get-G23Text $f)
+    Assert-NotContains "g23a: nothing about the task file reaches stdout" 'task file' $r.Stdout
+
+    foreach ($c in @(
+        "curl -X POST $G23Url/api/tasks/claim -d '{`"identifier`":`"W123`"}'",
+        "curl -X POST $G23Url/api/tasks/claim -d `"{\`"identifier\`":\`"W123\`"}`"",
+        "curl -X POST $G23Url/api/tasks/claim -d `"`$(jq -n --arg identifier W123 '{`"identifier`": `$identifier}')`"",
+        $G23CmdFile)) {
+        $d = New-G23Project
+        $null = Invoke-G23Claim -Dir $d -Command $c -Stdout $G23Ok
+        Assert-Eq "g23a2: a matching request writes the file ($($c.Substring(0, [Math]::Min(40, $c.Length))))" 'True' `
+            "$(Test-Path -LiteralPath (Join-Path $d '.stride/.task-W123.json') -PathType Leaf)"
+    }
+
+    # Row 1: an unsafe identifier falls back to the numeric id.
+    foreach ($i in @('../../x', 'a.b', ('W' * 65), '', 'a/b', "W1`n")) {
+        $d = New-G23Project
+        $body = @{ data = @{ id = 77; identifier = $i } } | ConvertTo-Json -Compress
+        $null = Invoke-G23Claim -Dir $d -Command $G23CmdFile -Stdout $body
+        $label = ($i -replace '[^A-Za-z0-9./_-]', '?')
+        if ($label.Length -gt 24) { $label = $label.Substring(0, 24) }
+        Assert-Eq "g23b: identifier [$label] falls back to the numeric id" 'True' `
+            "$(Test-Path -LiteralPath (Join-Path $d '.stride/.task-77.json') -PathType Leaf)"
+        Assert-Eq "g23b: and exactly one task file exists" '1' "$(Get-G23Count $d '.task-*')"
+        Assert-Eq "g23b: and nothing lands outside .stride/" 'False' "$(Test-Path -LiteralPath (Join-Path $d 'x.json'))"
+    }
+    $d = New-G23Project
+    $id64 = 'W' * 64
+    $null = Invoke-G23Claim -Dir $d -Command $G23CmdFile -Stdout ('{"data":{"id":77,"identifier":"' + $id64 + '"}}')
+    Assert-Eq "g23b: a 64-character identifier is still used as the name" 'True' `
+        "$(Test-Path -LiteralPath (Join-Path $d ".stride/.task-$id64.json") -PathType Leaf)"
+    $d = New-G23Project
+    $r = Invoke-G23Claim -Dir $d -Command $G23CmdFile -Stdout '{"data":{"id":"7a","identifier":"x/y"}}'
+    Assert-Exit "g23c: a task with no usable name still exits 0" 0 $r.ExitCode
+    Assert-Eq "g23c: and writes no task file" '0' "$(Get-G23Count $d '.task-*')"
+
+    # Row 2: non-2xx, unparsable and truncated bodies write nothing.
+    foreach ($b in @('{"errors":{"identifier":["is not claimable"]}}', '{"error":"Task not found"}', 'curl: (7) Failed to connect')) {
+        $d = New-G23Project
+        [System.IO.File]::WriteAllText((Join-Path $d '.stride/.task-W123.json'), "EARLIER`n")
+        $r = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $b
+        Assert-Exit "g23d: '$($b.Substring(0, [Math]::Min(30, $b.Length)))' still exits 0" 0 $r.ExitCode
+        Assert-Eq "g23d: and leaves the earlier file untouched" "EARLIER`n" (Get-G23Text (Join-Path $d '.stride/.task-W123.json'))
+        Assert-Eq "g23d: and writes no other task file" '1' "$(Get-G23Count $d '.task-*')"
+    }
+    $d = New-G23Project
+    [System.IO.File]::WriteAllText((Join-Path $d '.stride/.last-api-response.json'), '{"data":{"id":40,"identifier":"W4000"}}')
+    $r = Invoke-G23Claim -Dir $d -Command $G23CmdFile -Stdout '{"data":{"id":41,"identifier":"W4001","ti'
+    Assert-Eq "g23e: a truncated claim does not write the earlier claim's file" '<absent>' (Get-G23Text (Join-Path $d '.stride/.task-W4000.json'))
+    Assert-Eq "g23e: nor a file for the claim it cannot prove" '<absent>' (Get-G23Text (Join-Path $d '.stride/.task-W4001.json'))
+    Assert-Contains "g23e: and says why on stderr" 'no task file written' $r.Stderr
+    $d = New-G23Project
+    [System.IO.File]::WriteAllText((Join-Path $d '.stride/.last-api-response.json'), $G23Ok)
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout '{"data":{"id":77,"identifier":"W1'
+    Assert-Eq "g23e: a truncated re-claim naming the same task still writes nothing" '0' "$(Get-G23Count $d '.task-*')"
+
+    # Row 3: a response that differs from what the command asked for.
+    foreach ($c in @(
+        (Get-G23ArgCmd 'W999'),
+        "curl -X POST $G23Url/api/tasks/claim -d '{`"identifier`":`"W999`"}'",
+        "curl -X POST $G23Url/api/tasks/claim -d `"{\`"identifier\`":\`"W999\`"}`"",
+        "curl -X POST $G23Url/api/tasks/claim -d `"`$(jq -n --arg identifier 'W123' '{`"identifier`":`"W9`"}')`"",
+        "curl -X POST $G23Url/api/tasks/claim -d `"`$(jq -n --arg identifier `"`$ID`" x)`"")) {
+        $d = New-G23Project
+        $r = Invoke-G23Claim -Dir $d -Command $c -Stdout $G23Ok
+        Assert-Eq "g23i: an unmatched request writes nothing ($($c.Substring(0, [Math]::Min(40, $c.Length)) -replace "`n", ' '))" '0' `
+            "$(Get-G23Count $d '.task-*')"
+        Assert-Exit "g23i: and the claim hook still exits 0" 0 $r.ExitCode
+    }
+
+    # The saved-output notice as the only source.
+    $persist = Join-Path $G23Root 'persisted.json'
+    [System.IO.File]::WriteAllText($persist, $G23Ok)
+    $d = New-G23Project
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout "Full output saved to: $persist"
+    Assert-Eq "g23p: a saved-output claim naming its identifier writes the file" $G23Expected (Get-G23Text (Join-Path $d '.stride/.task-W123.json'))
+    $d = New-G23Project
+    $null = Invoke-G23Claim -Dir $d -Command $G23CmdFile -Stdout "Full output saved to: $persist"
+    Assert-Eq "g23p: a saved-output claim naming no identifier writes nothing" '0' "$(Get-G23Count $d '.task-*')"
+    $d = New-G23Project
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W999') -Stdout "Full output saved to: $persist"
+    Assert-Eq "g23p: a saved-output claim naming another identifier writes nothing" '0' "$(Get-G23Count $d '.task-*')"
+
+    # Edge cases and destination guards.
+    $d = New-G23Project
+    Remove-Item -LiteralPath (Join-Path $d '.stride') -Recurse -Force
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $G23Ok
+    Assert-Eq "g23f: a missing .stride/ is created and the file written" $G23Expected (Get-G23Text (Join-Path $d '.stride/.task-W123.json'))
+    # Save-CanonicalResponse creates .stride/ too, but only for a stdout that
+    # parses; with a saved-output notice only Write-TaskFile can create it.
+    $d = New-G23Project
+    Remove-Item -LiteralPath (Join-Path $d '.stride') -Recurse -Force
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout "Full output saved to: $persist"
+    Assert-Eq "g23f2: Write-TaskFile itself creates a missing .stride/" $G23Expected (Get-G23Text (Join-Path $d '.stride/.task-W123.json'))
+    $d = New-G23Project
+    New-Item -ItemType Directory -Force -Path (Join-Path $d '.stride/.task-W123.json') | Out-Null
+    $r = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $G23Ok
+    Assert-Exit "g23g: a directory at the destination still exits 0" 0 $r.ExitCode
+    Assert-Eq "g23g: and nothing is moved inside it" '0' "$(@(Get-ChildItem -Force -LiteralPath (Join-Path $d '.stride/.task-W123.json')).Count)"
+    Assert-Eq "g23g: and no staging temp survives" '0' "$(Get-G23Count $d 'task-file.*')"
+    $d = New-G23Project
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $G23Ok
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W124') -Stdout '{"data":{"id":78,"identifier":"W124"}}'
+    Assert-Eq "g23h: two claims in a row each leave their own file" 'True' `
+        "$((Test-Path -LiteralPath (Join-Path $d '.stride/.task-W123.json')) -and (Test-Path -LiteralPath (Join-Path $d '.stride/.task-W124.json')))"
+    $d = New-G23Project
+    [System.IO.File]::WriteAllText((Join-Path $d '.stride/.task-W123.json'), "OLD CONTENT`n")
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $G23Ok
+    Assert-Eq "g23m: a proven re-claim replaces the earlier file" $G23Expected (Get-G23Text (Join-Path $d '.stride/.task-W123.json'))
+    $d = New-G23Project
+    $null = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W125') -Stdout '{ "id": 79, "identifier": "W125", "title": "spaced out" }'
+    Assert-Eq "g23o: a bare task object is written compact" ('{"id":79,"identifier":"W125","title":"spaced out"}' + "`n") `
+        (Get-G23Text (Join-Path $d '.stride/.task-W125.json'))
+    $d = New-G23Project
+    $in = @{ tool_input = @{ command = "curl -sS -X PATCH $G23Url/api/tasks/77/complete -d @p.json" }; tool_response = @{ stdout = '{"data":{"id":77,"identifier":"W123","needs_review":false}}' } } |
+        ConvertTo-Json -Compress -Depth 6
+    $null = Invoke-HookScript -InputJson $in -Phase 'post' -ProjectDir $d
+    Assert-Eq "g23r: a completion response never writes a task file" '0' "$(Get-G23Count $d '.task-*')"
+    # Atomicity: a rename that fails leaves the earlier file as it was and no
+    # temp behind. A wrapper script defines a Move-Item function before calling
+    # the hook; PowerShell resolves a function ahead of the cmdlet of the same
+    # name, so every Move-Item inside the hook throws.
+    $d = New-G23Project
+    [System.IO.File]::WriteAllText((Join-Path $d '.stride/.task-W123.json'), "EARLIER`n")
+    $wrapper = Join-Path $G23Root 'move-fails.ps1'
+    [System.IO.File]::WriteAllText($wrapper, (
+        '$in = [Console]::In.ReadToEnd()' + "`n" +
+        'function Move-Item { throw "forced rename failure" }' + "`n" +
+        "`$in | & '$HookScript' post" + "`n" +
+        'exit $LASTEXITCODE' + "`n"))
+    $in = @{ tool_input = @{ command = (Get-G23ArgCmd 'W123') }; tool_response = @{ stdout = $G23Ok } } | ConvertTo-Json -Compress -Depth 6
+    $savedDir = $env:CLAUDE_PROJECT_DIR
+    try {
+        $env:CLAUDE_PROJECT_DIR = $d
+        $null = ($in | & pwsh -NoProfile -File $wrapper 2>&1)
+        $rc = $LASTEXITCODE
+    } finally {
+        $env:CLAUDE_PROJECT_DIR = $savedDir
+    }
+    Assert-Exit "g23t: a failed rename never fails the claim" 0 $rc
+    Assert-Eq "g23t: and leaves the earlier file untouched" "EARLIER`n" (Get-G23Text (Join-Path $d '.stride/.task-W123.json'))
+    Assert-Eq "g23t: and no staging temp survives" '0' "$(Get-G23Count $d 'task-file.*')"
+    if (-not $IsWindows -and (& id -u) -ne '0') {
+        $d = New-G23Project
+        & chmod 500 (Join-Path $d '.stride')
+        $r = Invoke-G23Claim -Dir $d -Command (Get-G23ArgCmd 'W123') -Stdout $G23Ok
+        Assert-Exit "g23j: an unwritable .stride/ never fails the claim" 0 $r.ExitCode
+        Assert-Eq "g23j: and leaves no staging temp" '0' "$(Get-G23Count $d 'task-file.*')"
+        & chmod 755 (Join-Path $d '.stride')
+    } else {
+        Write-Host "  SKIP: 23j: mode bits do not bind here"
+    }
+} finally {
+    Remove-Item -LiteralPath $G23Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

@@ -6776,6 +6776,265 @@ else
 fi
 
 # ============================================================
+# Test Group 28: the claimed task file (W2537, port of stride W2248)
+# ============================================================
+#
+# A claim whose own response proves the task's identity leaves the response's
+# data object in .stride/.task-<stem>.json. Every other outcome writes nothing
+# and leaves any earlier file as it was. The PowerShell twin is Group 23 of
+# test-stride-hook.ps1; the cross-half byte comparison (28k) lives here,
+# because the ps1 suite cannot drive the bash half. Every fixture is built in
+# this group's own temp dirs, so no other group's fixtures are reshaped.
+
+echo ""
+echo "=== Test Group 28: the claimed task file (W2537) ==="
+
+if ! command -v jq > /dev/null 2>&1; then
+  echo "  SKIP: Test Group 28 (jq not available; the claim block needs it and writes no task file without it)"
+else
+  G28_T=$(mktemp -d)
+  # A sentinel standing in for a bearer token. It must never reach the file.
+  G28_SENTINEL='NOT-A-REAL-TOKEN-g28'
+  G28_URL="https://stride.example.com"
+  G28_CMD_FILE="curl -sS -X POST $G28_URL/api/tasks/claim -H \"Authorization: Bearer $G28_SENTINEL\" -d @c.json | tee r.json"
+  g28_cmd_arg() { # $1 = identifier -> the claiming skill's documented jq-arg curl
+    printf 'curl -X POST "%s/api/tasks/claim" \\\n  -H "Authorization: Bearer %s" \\\n  -d "$(jq -n \\\n    --arg identifier %s \\\n    --arg agent_name %s \\\n    %s)" \\\n  | tee "$CLAUDE_PROJECT_DIR/.stride/.last-api-response.json"' \
+      "$G28_URL" "$G28_SENTINEL" "'$1'" "'GitHub Copilot'" "'{identifier: \$identifier, agent_name: \$agent_name}'"
+  }
+  g28_proj() {
+    local _d; _d=$(mktemp -d "$G28_T/proj.XXXXXX"); mkdir -p "$_d/.stride"
+    printf '## before_doing\n```bash\n```\n\n## before_review\n```bash\n```\n' > "$_d/.stride.md"
+    printf '%s' "$_d"
+  }
+  g28_input() { # $1 = command, $2 = stdout text
+    jq -nc --arg c "$1" --arg r "$2" '{tool_input:{command:$c},tool_response:{stdout:$r,stderr:"",interrupted:false}}'
+  }
+  g28_claim() { # $1 = project, $2 = command, $3 = stdout -> sets G28_RC, G28_OUT, G28_ERR
+    g28_input "$2" "$3" | CLAUDE_PROJECT_DIR="$1" bash "$HOOK_SCRIPT" post \
+      > "$G28_T/out" 2> "$G28_T/err"
+    G28_RC=$?; G28_OUT=$(cat "$G28_T/out"); G28_ERR=$(cat "$G28_T/err")
+  }
+  g28_absent() { # $1 = label, $2 = path
+    if [ -e "$2" ]; then
+      echo -e "  ${RED}FAIL${RESET}: $1"; FAIL=$((FAIL + 1))
+    else
+      echo -e "  ${GREEN}PASS${RESET}: $1"; PASS=$((PASS + 1))
+    fi
+  }
+  g28_count() { find "$1/.stride" -name "$2" 2>/dev/null | wc -l | tr -d ' '; }
+  # Compact JSON with raw UTF-8, as the API sends it: an escaped quote, a \n
+  # escape and non-ASCII text are what a hand-rolled writer most often breaks.
+  G28_OK=$(printf '%s' '{"data":{"id":77,"identifier":"W123","title":"Say \"hi\"\nthen café — ok","acceptance_criteria":"one\ntwo","key_files":[{"file_path":"a/b.sh","position":0}],"needs_review":false,"inserted_at":"2026-10-02T14:20:41","reviewed_at":"2026-10-02T14:20:41.5+05:30","claim_expires_at":"2026-10-02T17:00:33Z"},"hook":{"name":"before_doing"}}' | jq -c '.')
+  printf '%s\n' "$(printf '%s' "$G28_OK" | jq -c '.data')" > "$G28_T/expected.json"
+
+  # --- Matrix row 0: bash Group 28: a 2xx claim fixture for W123 writes .stride/.task-W123.json whose parsed content equals the response data object
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+  assert_exit "28a: the claim hook still exits 0" 0 "$G28_RC"
+  assert_eq "28a: the task file is named after the identifier" "yes" \
+    "$([ -f "$G28_D/.stride/.task-W123.json" ] && echo yes || echo no)"
+  assert_eq "28a: it is the response's data object, byte for byte, with one newline" "same" \
+    "$(cmp -s "$G28_T/expected.json" "$G28_D/.stride/.task-W123.json" && echo same || echo differ)"
+  assert_eq "28a: its parsed content equals the data object" "true" \
+    "$(jq -n --slurpfile a "$G28_D/.stride/.task-W123.json" --argjson b "$(printf '%s' "$G28_OK" | jq -c '.data')" '$a[0] == $b' 2>/dev/null)"
+  assert_eq "28a: no staging temp is left in .stride/" "0" "$(g28_count "$G28_D" 'task-file.*')"
+  assert_eq "28a: the bearer sentinel never reaches the file" "0" \
+    "$(grep -c "$G28_SENTINEL" "$G28_D/.stride/.task-W123.json" || true)"
+  assert_eq "28a: nothing about the task file reaches stdout" "0" \
+    "$(printf '%s' "$G28_OUT" | grep -c 'task file' || true)"
+
+  # The other spellings of a matching request write too: a plain -d body, an
+  # escaped one, a bare jq-arg word, a jq program that refers to $identifier,
+  # and a command that names no identifier at all.
+  for g28_c in \
+    "curl -X POST $G28_URL/api/tasks/claim -d '{\"identifier\":\"W123\",\"agent_name\":\"x\"}'" \
+    "curl -X POST $G28_URL/api/tasks/claim -d \"{\\\"identifier\\\":\\\"W123\\\"}\"" \
+    "curl -X POST $G28_URL/api/tasks/claim -d \"\$(jq -n --arg identifier W123 '{\"identifier\": \$identifier}')\"" \
+    "$G28_CMD_FILE"; do
+    G28_D=$(g28_proj)
+    g28_claim "$G28_D" "$g28_c" "$G28_OK"
+    assert_eq "28a2: a matching request ($(printf '%s' "$g28_c" | tr '\n' ' ' | cut -c1-60)...) writes the file" "yes" \
+      "$([ -f "$G28_D/.stride/.task-W123.json" ] && echo yes || echo no)"
+  done
+
+  # --- Matrix row 1: bash Group 28: an identifier failing the anchored ^[A-Za-z0-9_-]{1,64}$ rule (../../x, a dot, 65 chars, empty) falls back to .task-<id>.json
+  G28_65=$(printf 'W%.0s' $(seq 1 65))
+  for g28_i in '../../x' 'a.b' "$G28_65" '' 'a/b' 'W1
+'; do
+    G28_D=$(g28_proj)
+    g28_claim "$G28_D" "$G28_CMD_FILE" "$(jq -nc --arg i "$g28_i" '{data:{id:77,identifier:$i}}')"
+    assert_eq "28b: identifier [$(printf '%s' "$g28_i" | tr -c 'A-Za-z0-9./_-' '?' | cut -c1-24)] falls back to the numeric id" "yes" \
+      "$([ -f "$G28_D/.stride/.task-77.json" ] && echo yes || echo no)"
+    assert_eq "28b: and exactly one task file exists" "1" "$(find "$G28_D" -name '.task-*' | wc -l | tr -d ' ')"
+    g28_absent "28b: and nothing lands outside .stride/" "$G28_D/x.json"
+  done
+  G28_64=$(printf 'W%.0s' $(seq 1 64))
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$G28_CMD_FILE" "$(jq -nc --arg i "$G28_64" '{data:{id:77,identifier:$i}}')"
+  assert_eq "28b: a 64-character identifier is still used as the name" "yes" \
+    "$([ -f "$G28_D/.stride/.task-$G28_64.json" ] && echo yes || echo no)"
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$G28_CMD_FILE" '{"data":{"id":"7a","identifier":"x/y"}}'
+  assert_exit "28c: a task with no usable name still exits 0" 0 "$G28_RC"
+  assert_eq "28c: and writes no task file" "0" "$(g28_count "$G28_D" '.task-*')"
+
+  # --- Matrix row 2: bash Group 28: a non-2xx, unparsable or truncated claim response writes no file and leaves an existing one untouched
+  for g28_body in '{"errors":{"identifier":["is not claimable"]}}' '{"error":"Task not found"}' 'curl: (7) Failed to connect'; do
+    G28_D=$(g28_proj)
+    printf 'EARLIER\n' > "$G28_D/.stride/.task-W123.json"
+    g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$g28_body"
+    assert_exit "28d: '$(printf '%s' "$g28_body" | cut -c1-30)' still exits 0" 0 "$G28_RC"
+    assert_eq "28d: and leaves the earlier file untouched" "EARLIER" "$(cat "$G28_D/.stride/.task-W123.json")"
+    assert_eq "28d: and writes no other task file" "1" "$(g28_count "$G28_D" '.task-*')"
+  done
+  # THE D226 CASE: a truncated stdout resolves an EARLIER claim from the
+  # canonical response file. Neither task's file may be written from it, even
+  # when the command names the earlier task (a re-claim whose tee was lost).
+  G28_D=$(g28_proj)
+  printf '%s' '{"data":{"id":40,"identifier":"W4000"}}' > "$G28_D/.stride/.last-api-response.json"
+  g28_claim "$G28_D" "$G28_CMD_FILE" '{"data":{"id":41,"identifier":"W4001","ti'
+  g28_absent "28e: a truncated claim does not write the earlier claim's file" "$G28_D/.stride/.task-W4000.json"
+  g28_absent "28e: nor a file for the claim it cannot prove" "$G28_D/.stride/.task-W4001.json"
+  assert_contains "28e: and says why on stderr" "no task file written" "$G28_ERR"
+  G28_D=$(g28_proj)
+  printf '%s' "$G28_OK" > "$G28_D/.stride/.last-api-response.json"
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" '{"data":{"id":77,"identifier":"W1'
+  g28_absent "28e: a truncated re-claim naming the same task still writes nothing" "$G28_D/.stride/.task-W123.json"
+
+  # --- Matrix row 3: bash Group 28: a claim response whose identifier differs from the identifier the claim command requested writes nothing
+  for g28_c in \
+    "$(g28_cmd_arg W999)" \
+    "curl -X POST $G28_URL/api/tasks/claim -d '{\"identifier\":\"W999\"}'" \
+    "curl -X POST $G28_URL/api/tasks/claim -d \"{\\\"identifier\\\":\\\"W999\\\"}\"" \
+    "curl -X POST $G28_URL/api/tasks/claim -d \"\$(jq -n --arg identifier 'W123' '{\"identifier\":\"W9\"}')\"" \
+    "curl -X POST $G28_URL/api/tasks/claim -d \"\$(jq -n --arg identifier \"\$ID\" x)\""; do
+    G28_D=$(g28_proj)
+    g28_claim "$G28_D" "$g28_c" "$G28_OK"
+    assert_eq "28i: an unmatched request ($(printf '%s' "$g28_c" | tr '\n' ' ' | cut -c40-90)...) writes nothing" "0" \
+      "$(g28_count "$G28_D" '.task-*')"
+    assert_exit "28i: and the claim hook still exits 0" 0 "$G28_RC"
+  done
+  # The own-response id must be the resolved id: when the capture of this
+  # call's stdout cannot land (a read-only canonical file holding W4000), the
+  # resolver returns the stale task, and the id comparison refuses it.
+  if [ "$(id -u)" != "0" ]; then
+    G28_D=$(g28_proj)
+    printf '%s' '{"data":{"id":40,"identifier":"W4000"}}' > "$G28_D/.stride/.last-api-response.json"
+    chmod 400 "$G28_D/.stride/.last-api-response.json"
+    g28_claim "$G28_D" "$G28_CMD_FILE" "$G28_OK"
+    assert_eq "28q: a stale canonical file whose id is not this call's writes nothing" "0" "$(g28_count "$G28_D" '.task-*')"
+    chmod 600 "$G28_D/.stride/.last-api-response.json"
+  else
+    echo "  SKIP: 28q: running as root, mode bits do not bind"
+  fi
+
+  # The persisted-output notice is the only source: written only when the
+  # command named the identifier it got back.
+  G28_D=$(g28_proj)
+  printf '%s' "$G28_OK" > "$G28_T/persisted.json"
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "Full output saved to: $G28_T/persisted.json"
+  assert_eq "28p: a persisted-output claim naming its identifier writes the file" "same" \
+    "$(cmp -s "$G28_T/expected.json" "$G28_D/.stride/.task-W123.json" && echo same || echo differ)"
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$G28_CMD_FILE" "Full output saved to: $G28_T/persisted.json"
+  assert_eq "28p: a persisted-output claim naming no identifier writes nothing" "0" "$(g28_count "$G28_D" '.task-*')"
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$(g28_cmd_arg W999)" "Full output saved to: $G28_T/persisted.json"
+  assert_eq "28p: a persisted-output claim naming another identifier writes nothing" "0" "$(g28_count "$G28_D" '.task-*')"
+
+  # Edge cases from the testing strategy, and the destination guards.
+  G28_D=$(g28_proj); rm -rf "$G28_D/.stride"
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+  assert_eq "28f: a missing .stride/ is created and the file written" "yes" \
+    "$([ -f "$G28_D/.stride/.task-W123.json" ] && echo yes || echo no)"
+  # The canonical-response capture also creates .stride/, but only for a stdout
+  # that parses. A saved-output notice does not, so here only write_task_file
+  # can create the directory.
+  G28_D=$(g28_proj); rm -rf "$G28_D/.stride"
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "Full output saved to: $G28_T/persisted.json"
+  assert_eq "28f2: write_task_file itself creates a missing .stride/" "yes" \
+    "$([ -f "$G28_D/.stride/.task-W123.json" ] && echo yes || echo no)"
+  G28_D=$(g28_proj); mkdir -p "$G28_D/.stride/.task-W123.json"
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+  assert_exit "28g: a directory at the destination still exits 0" 0 "$G28_RC"
+  assert_eq "28g: and nothing is moved inside it" "0" \
+    "$(find "$G28_D/.stride/.task-W123.json" -mindepth 1 | wc -l | tr -d ' ')"
+  assert_eq "28g: and no staging temp survives" "0" "$(g28_count "$G28_D" 'task-file.*')"
+  # Matrix row 4 is N/A (one hook process per claim); its edge case: two
+  # claims in a row for different tasks each keep their own file.
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+  g28_claim "$G28_D" "$(g28_cmd_arg W124)" '{"data":{"id":78,"identifier":"W124"}}'
+  assert_eq "28h: two claims in a row each leave their own file" "yes" \
+    "$([ -f "$G28_D/.stride/.task-W123.json" ] && [ -f "$G28_D/.stride/.task-W124.json" ] && echo yes || echo no)"
+  G28_D=$(g28_proj)
+  printf 'OLD CONTENT\n' > "$G28_D/.stride/.task-W123.json"
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+  assert_eq "28m: a proven re-claim replaces the earlier file" "same" \
+    "$(cmp -s "$G28_T/expected.json" "$G28_D/.stride/.task-W123.json" && echo same || echo differ)"
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$(g28_cmd_arg W125)" '{ "id": 79, "identifier": "W125", "title": "spaced out" }'
+  assert_eq "28o: a bare task object is written compact" '{"id":79,"identifier":"W125","title":"spaced out"}' \
+    "$(cat "$G28_D/.stride/.task-W125.json" 2>/dev/null)"
+  if [ "$(id -u)" != "0" ]; then
+    G28_D=$(g28_proj); chmod 500 "$G28_D/.stride"
+    g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+    assert_exit "28j: an unwritable .stride/ never fails the claim" 0 "$G28_RC"
+    chmod 755 "$G28_D/.stride"
+  else
+    echo "  SKIP: 28j: running as root, mode bits do not bind"
+  fi
+  # Atomicity: a rename that fails leaves neither a partial file nor a temp.
+  G28_D=$(g28_proj)
+  printf 'EARLIER\n' > "$G28_D/.stride/.task-W1.json"
+  (
+    # shellcheck disable=SC1090
+    source "$HOOK_SCRIPT" > /dev/null 2>&1
+    mv() { return 1; }
+    PROJECT_DIR="$G28_D"; HAS_JQ=true
+    write_task_file '{"id":1,"identifier":"W1"}' 2> /dev/null
+  )
+  assert_eq "28t: a failed rename leaves the earlier file untouched" "EARLIER" "$(cat "$G28_D/.stride/.task-W1.json")"
+  assert_eq "28t: and no staging temp survives" "0" "$(g28_count "$G28_D" 'task-file.*')"
+
+  # --- Matrix row 5: bash Group 28: a full claim then complete through stride-hook.sh post: the file exists between them and Step 7's cleanup text names it
+  G28_D=$(g28_proj)
+  g28_claim "$G28_D" "$(g28_cmd_arg W123)" "$G28_OK"
+  assert_eq "28z: after the claim the task file exists" "yes" \
+    "$([ -f "$G28_D/.stride/.task-W123.json" ] && echo yes || echo no)"
+  g28_input "curl -sS -X PATCH $G28_URL/api/tasks/77/complete -d @p.json | tee r.json" \
+    '{"data":{"id":77,"identifier":"W123","needs_review":false,"status":"completed"}}' \
+    | CLAUDE_PROJECT_DIR="$G28_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "28z: a completion neither writes nor deletes it (Step 7 owns the delete)" "same" \
+    "$(cmp -s "$G28_T/expected.json" "$G28_D/.stride/.task-W123.json" && echo same || echo differ)"
+  G28_STEP7=$(cat "$SCRIPT_DIR/../skills/stride-workflow/SKILL.md")
+  G28_STEP7="${G28_STEP7#*"## Step 7: Complete the Task"}"
+  G28_STEP7="${G28_STEP7%%"## Step 8:"*}"
+  assert_contains "28z: Step 7 names the task file" '.stride/.task-' "$G28_STEP7"
+  assert_contains "28z: and deletes it" 'rm -f' "$G28_STEP7"
+  G28_D=$(g28_proj)
+  g28_input "curl -sS -X PATCH $G28_URL/api/tasks/77/complete -d @p.json | tee r.json" \
+    '{"data":{"id":77,"identifier":"W123","needs_review":false}}' \
+    | CLAUDE_PROJECT_DIR="$G28_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  g28_absent "28r: a completion response never writes a task file" "$G28_D/.stride/.task-W123.json"
+
+  # --- Matrix row 6 (cross-half): the PowerShell half writes the same bytes, no byte-order mark
+  if command -v pwsh > /dev/null 2>&1; then
+    G28_D=$(g28_proj)
+    g28_input "$(g28_cmd_arg W123)" "$G28_OK" \
+      | CLAUDE_PROJECT_DIR="$G28_D" pwsh -NoProfile -File "$SCRIPT_DIR/stride-hook.ps1" post > /dev/null 2>&1
+    assert_eq "28k: the PowerShell half writes the same bytes as the bash half" "same" \
+      "$(cmp -s "$G28_T/expected.json" "$G28_D/.stride/.task-W123.json" && echo same || echo differ)"
+    assert_eq "28k: and writes no byte-order mark" "no-bom" \
+      "$(head -c 3 "$G28_D/.stride/.task-W123.json" | od -An -tx1 | tr -d ' \n' | grep -q '^efbbbf' && echo bom || echo no-bom)"
+  else
+    echo "  SKIP: 28k: pwsh not installed"
+  fi
+
+  rm -rf "$G28_T"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""

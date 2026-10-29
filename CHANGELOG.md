@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added — the claim hook keeps a copy of the claimed task
+
+After a claim that can prove the response is its own task, both hook halves
+now store the response's `data` object in `.stride/.task-<IDENTIFIER>.json`
+(port of stride W2248), so a later step can point a subagent at the file
+rather than re-keying the task in a prompt. Proof means this call's own
+response carries the resolved task id and every identifier the claim command
+names came back unchanged; a truncated, failed or mismatched claim writes
+nothing. Files are named after an identifier of 1-64 `[A-Za-z0-9_-]`
+characters, falling back to the numeric id. Each one is staged in a temp file
+and renamed into place, never fails the claim, and the PowerShell half copies the raw text
+with no byte-order mark. `stride-workflow`'s Step 7 removes it once a completion
+returns 2xx; README.md describes it under "The claimed-task file". Tests:
+bash Group 28, PowerShell Group 23.
+
 ## [2.42.0] - 2026-10-01
 
 ### Fixed — an escaped `>` is no longer read as an operator

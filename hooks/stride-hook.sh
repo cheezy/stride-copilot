@@ -1092,6 +1092,33 @@ capture_canonical_response() {
   printf '%s' "$_payload" > "$RESPONSE_FILE" 2>/dev/null || true
 }
 
+# (W1086) The persisted-output file a large tool response leaves behind. When
+# the response is too big to inline, the harness writes the tool output to a
+# file and leaves only a notice -- "Full output saved to: <absolute path>" -- in
+# stdout. $1 is that stdout text; prints the file's content when it is complete
+# JSON, else nothing. The path is harness-controlled, so it must name an
+# existing regular file, and the content is parsed with jq only -- never
+# sourced, evaluated or written to. Split out of extract_response_payload
+# (W2537) so the claim's task-file gate can resolve THIS call's own response
+# through the same parse rather than a second copy of it.
+read_persisted_output() {
+  local _notice="${1:-}" _persist_line _persist_path _persist_json
+  [ "${HAS_JQ:-false}" = "true" ] || return 0
+  printf '%s' "$_notice" | grep -qi 'saved to' || return 0
+  # Keep the path from its first "/" to end of the notice line so a path
+  # containing spaces survives; tolerate the notice wrapping it in quotes.
+  _persist_line=$(printf '%s\n' "$_notice" | grep -i 'saved to' | head -1)
+  _persist_path="/${_persist_line#*/}"
+  _persist_path="${_persist_path%\"}"
+  if [ -n "$_persist_line" ] && [ -f "$_persist_path" ]; then
+    _persist_json=$(cat "$_persist_path" 2>/dev/null || echo "")
+    if [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e . > /dev/null 2>&1; then
+      printf '%s' "$_persist_json"
+    fi
+  fi
+  return 0
+}
+
 # (D118/W1609) The single shared response resolver. Source order:
 #   1. the canonical response file (survives harness truncation) — D118
 #   2. tool_response.stdout, unwrapped from the Copilot {"stdout":...} shape
@@ -1104,7 +1131,7 @@ capture_canonical_response() {
 # env-cache/TASK_BASE_REF refresh so none of them can diverge (W1609 pitfall).
 extract_response_payload() {
   local _hook_input="$1"
-  local _payload _notice _persist_line _persist_path _persist_json
+  local _payload _persist_json
 
   [ "$HAS_JQ" = "true" ] || return 0
 
@@ -1125,25 +1152,11 @@ extract_response_payload() {
     return 0
   fi
 
-  # (W1086) Shape 3: persisted-output file fallback. When the response is large,
-  # the harness writes the tool output to a file and leaves only a notice —
-  # "Full output saved to: <absolute path>" — in stdout. Recover the API JSON by
-  # reading that file. The path is harness-controlled, so require an existing
-  # regular file and parse it with jq only — never source, eval, or write to it.
-  _notice="$_payload"
-  if printf '%s' "$_notice" | grep -qi 'saved to'; then
-    # Keep the path from its first "/" to end of the notice line so a path
-    # containing spaces survives; tolerate the notice wrapping it in quotes.
-    _persist_line=$(printf '%s\n' "$_notice" | grep -i 'saved to' | head -1)
-    _persist_path="/${_persist_line#*/}"
-    _persist_path="${_persist_path%\"}"
-    if [ -n "$_persist_line" ] && [ -f "$_persist_path" ]; then
-      _persist_json=$(cat "$_persist_path" 2>/dev/null || echo "")
-      if [ -n "$_persist_json" ] && echo "$_persist_json" | jq -e . > /dev/null 2>&1; then
-        printf '%s' "$_persist_json"
-        return 0
-      fi
-    fi
+  # (W1086) Shape 3: persisted-output file fallback; see read_persisted_output.
+  _persist_json=$(read_persisted_output "$_payload")
+  if [ -n "$_persist_json" ]; then
+    printf '%s' "$_persist_json"
+    return 0
   fi
 
   # Best-effort last resort: whatever we unwrapped (possibly truncated).
@@ -1364,6 +1377,118 @@ record_loop_state_for_completion() {
   fi
 
   write_loop_state "$_json"
+  return 0
+}
+
+# --- (W2537) The claimed task, kept in .stride/.task-<stem>.json -------------
+# Port of stride W2248. Once a claim succeeds, the hook copies the response's
+# `data` object into a file under .stride/ so the workflow can name a path for
+# its subagents rather than re-keying the task's fields into each prompt; a
+# re-keyed copy can drift from the server's text, and this one cannot.
+#
+# Everything the file holds is task free text written by whoever authored the
+# task. It is data to every reader: nothing here evaluates it, and the file's
+# NAME is never built from that text unless it passes the anchored test in
+# task_file_stem.
+
+# The file-name stem: the identifier when the WHOLE string is 1-64 characters
+# of [A-Za-z0-9_-] (\A...\z, because jq's ^...$ would let a trailing newline
+# through), otherwise a non-negative integer id, otherwise nothing.
+task_file_stem() { # $1 = task object JSON -> stem on stdout, or empty
+  printf '%s' "${1:-}" | jq -r '
+    if (.identifier | type) == "string"
+       and (.identifier | test("\\A[A-Za-z0-9_-]{1,64}\\z")) then .identifier
+    elif (.id | type) == "number" and .id >= 0 and (.id | floor) == .id
+       then (.id | tostring)
+    elif (.id | type) == "string" and (.id | test("\\A[0-9]{1,20}\\z")) then .id
+    else empty end' 2>/dev/null
+}
+
+# Is this response the task the claim command asked for? Returns 0 when it is.
+#
+# The command text is read from STDIN, never taken as an argument: it carries
+# the Authorization header, and an argument list is visible to every process
+# on the machine. $1 is the task object; $2 is "require" when the command must
+# name an identifier for the claim to count as proven.
+#
+# Three ways of naming the identifier are read, each as its own tier:
+#   jq-arg   --arg identifier 'W47'   (the curl this plugin's claiming skill
+#                                      documents; also "W47" and bare W47)
+#   plain    "identifier":"W47"       (a single-quoted -d body)
+#   escaped  \"identifier\":\"W47\"   (a double-quoted -d body; read only when
+#                                      the plain tier found nothing, since in a
+#                                      plain body an escaped key is merely text
+#                                      inside some other string)
+# A tier with no occurrence of its key says nothing. A tier that has one
+# passes only when EVERY occurrence carries a cleanly readable value equal to
+# the response's identifier, so a second, different name, a shell variable
+# ("$ID") or a value that will not read cleanly leaves the claim unproven. A
+# key followed by `$` is a jq variable reference inside a program, not a
+# request, and is skipped. With no tier speaking, the claim is proven unless
+# $2 is "require" -- the caller then relies on its own-response id check.
+claim_identity_proven() {
+  local _rid
+  _rid=$(printf '%s' "${1:-}" | jq -c '.identifier' 2>/dev/null) || return 1
+  [ -n "$_rid" ] || return 1
+  jq -Rse --argjson rid "$_rid" --arg need "${2:-}" '
+    def tier(key; val):
+      ([scan(key)] | length) as $k
+      | if $k == 0 then null
+        else ([scan(val) | map(select(. != null)) | .[0]]) as $v
+          | (($v | length) == $k and ($v | all(. == $rid)))
+        end;
+    tier("--arg[ \t]+identifier[ \t]";
+         "--arg[ \t]+identifier[ \t]+(?:'"'"'([^'"'"']*)'"'"'|\"([^\"\\\\$`]*)\"|([A-Za-z0-9_-]+)(?=[ \t\r\n;|&)]|\\z))") as $arg
+    | tier("\"identifier\"[ \t\r\n]*:(?![ \t\r\n]*\\$)";
+           "\"identifier\"[ \t\r\n]*:[ \t\r\n]*\"([^\"\\\\]*)\"") as $plain
+    | (if $plain == null then
+         tier("\\\\\"identifier\\\\\"[ \t\r\n]*:(?![ \t\r\n]*\\$)";
+              "\\\\\"identifier\\\\\"[ \t\r\n]*:[ \t\r\n]*\\\\\"([^\"\\\\]*)\\\\\"")
+       else null end) as $esc
+    | [$arg, $plain, $esc] | map(select(. != null)) as $said
+    | if ($said | length) == 0 then ($need != "require") else ($said | all) end
+  ' > /dev/null 2>&1
+}
+
+# Write the task object to .stride/.task-<stem>.json, on write_loop_state's
+# mechanics: the temp is created inside .stride/ so the rename never crosses a
+# filesystem, no temp outlives a failure, and a destination that exists but is
+# not a regular file is left alone. Every message goes to stderr, and the
+# function always returns 0 -- the claim has already succeeded, and losing this
+# file only means readers fall back to the inline fields.
+write_task_file() {
+  local _json _stem _dest _tmp
+  # Compact it: a data-wrapped response is already `jq -c '.data'`, but a bare
+  # task object reaches here as the response text exactly as it was sent.
+  _json=$(printf '%s' "${1:-}" | jq -c '.' 2>/dev/null)
+  [ -n "$_json" ] || return 0
+  _stem=$(task_file_stem "$_json")
+  if [ -z "$_stem" ]; then
+    printf 'stride-hook: the claimed task carries neither a safe identifier nor a numeric id; no task file written\n' >&2
+    return 0
+  fi
+  _dest="$PROJECT_DIR/.stride/.task-$_stem.json"
+  if [ -e "$_dest" ] && [ ! -f "$_dest" ]; then
+    printf 'stride-hook: the task-file path exists and is not a regular file; no task file written\n' >&2
+    return 0
+  fi
+  mkdir -p "$PROJECT_DIR/.stride" 2>/dev/null || {
+    printf 'stride-hook: .stride/ could not be created; no task file written\n' >&2
+    return 0
+  }
+  _tmp=$(mktemp "$PROJECT_DIR/.stride/task-file.XXXXXX" 2>/dev/null) || {
+    printf 'stride-hook: no temp file could be staged in .stride/; no task file written\n' >&2
+    return 0
+  }
+  if printf '%s\n' "$_json" > "$_tmp" 2>/dev/null; then
+    mv -f "$_tmp" "$_dest" 2>/dev/null || {
+      printf 'stride-hook: the staged task file could not be renamed into place; no task file written\n' >&2
+      rm -f "$_tmp" 2>/dev/null
+    }
+  else
+    printf 'stride-hook: the staged task file could not be written; no task file written\n' >&2
+    rm -f "$_tmp" 2>/dev/null
+  fi
   return 0
 }
 
@@ -2234,6 +2359,40 @@ if [ "$HOOK_NAME" = "before_doing" ]; then
   fi
 
   if [ -n "$TASK_JSON" ]; then
+    # (W2537) Write the claimed task file, but only when this call can prove
+    # the response is its own. TASK_JSON came from extract_response_payload,
+    # which reads the canonical response file FIRST -- and that file outlives
+    # the call that wrote it. So a claim whose stdout was truncated can resolve
+    # an EARLIER claim's task here, and writing from that would recreate or
+    # overwrite a file with another task's (or another attempt's) body. The
+    # proof is stride's D226 gate: the id in THIS call's own response must be
+    # the id that was resolved. A truncated stdout therefore writes nothing.
+    # A "Full output saved to" notice counts as this call's own response, but
+    # its path was read out of response text, so it must also be matched by
+    # an identifier the command itself named. On top of either, every
+    # identifier the command names must be the one that came back.
+    _tf_need=""
+    _tf_own=$(unwrap_tool_response "$INPUT" 2>/dev/null || true)
+    if ! printf '%s' "$_tf_own" | jq -e . > /dev/null 2>&1; then
+      _tf_own=$(read_persisted_output "$_tf_own")
+      _tf_need="require"
+    fi
+    # The file is written from that own response -- the same data-or-bare
+    # choice the TASK_JSON parse above makes -- never from the canonical file,
+    # which on a persisted-output claim may still hold an older copy.
+    _tf_task=$(printf '%s' "$_tf_own" | jq -c '
+      if (.data | type) == "object" and ((.data.id // false) != false) then .data
+      elif type == "object" and ((.id // false) != false) then .
+      else empty end' 2>/dev/null || true)
+    _tf_own_id=$(printf '%s' "$_tf_task" | jq -r '.id // empty' 2>/dev/null || true)
+    _tf_res_id=$(printf '%s' "$TASK_JSON" | jq -r '.id // empty' 2>/dev/null || true)
+    if [ -n "$_tf_own_id" ] && [ "$_tf_own_id" = "$_tf_res_id" ] \
+       && printf '%s' "$COMMAND" | claim_identity_proven "$_tf_task" "$_tf_need"; then
+      write_task_file "$_tf_task" > /dev/null || true
+    else
+      printf 'stride-hook: this claim could not prove the response is its own task; no task file written\n' >&2
+    fi
+
     # Values are single-quoted to handle spaces in titles/descriptions. Identity
     # lines ONLY — no TASK_BASE_REF / TASK_DIRTY_BASELINE / TASK_BASE_REF_TRUSTED
     # (finalize_before_doing writes those post-section); overwriting the whole

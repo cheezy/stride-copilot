@@ -547,6 +547,308 @@ function Save-CanonicalResponse {
     }
 }
 
+# THIS call's payload only — the mirror of the bash twin's Tier 1, and
+# deliberately NOT Get-ResponsePayload, which is canonical-file-first (D118).
+# .stride/.last-api-response.json survives across calls, so on a truncated 422
+# that helper resolves the previous CLAIM payload — which carries both fields —
+# and would record a completion that never happened.
+#
+# The RAW body of this call, before any parse — so the unparsable diagnostic can
+# distinguish "no body at all" from "a body that failed to parse".
+# Get-OwnCallPayload returns $null for four different reasons and only one of
+# them is a parse failure, so it cannot be used to decide that question.
+# Render a `tool_response.stdout` value as the TEXT the bash twin would see,
+# which is what `jq -r '.stdout // ""'` produces:
+#   - jq's `//` treats null and false as absent, yielding the empty string;
+#   - `jq -r` prints a string RAW, without quotes;
+#   - every other type is re-serialised as compact JSON.
+# Without this, an object-shaped stdout diverges hard: `[string]$obj` renders
+# the PowerShell hashtable form "@{a=1}", which is not JSON, so this half would
+# announce an unparsable body and record nothing while the bash twin parsed the
+# re-serialised object and recorded a completion. Today's Copilot harness always
+# supplies stdout as a string, so neither path is reachable — but the task's
+# pitfall is that the halves must not diverge on JSON type handling AT THE PARSE
+# BOUNDARY, and this is that boundary.
+function ConvertTo-OwnCallText {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [bool]) { if ($Value) { return 'true' } else { return '' } }
+    if ($Value -is [string]) { return $Value }
+    # -Depth 100 is ConvertTo-Json's maximum, so truncation needs a value nested
+    # deeper than any real API response; -WarningAction SilentlyContinue is what
+    # makes the branch SAFE rather than merely unlikely. Past the depth limit
+    # PowerShell emits "Resulting JSON is truncated..." on the WARNING stream,
+    # which pwsh writes to STDOUT — corrupting the single JSON document this
+    # script is contracted to emit, and diverging from the bash twin, whose `jq`
+    # has no depth limit and writes nothing. Only the four fields at depth 2 are
+    # ever read from the result, so even a truncated serialisation still yields
+    # the correct record.
+    try { return ($Value | ConvertTo-Json -Compress -Depth 100 -WarningAction SilentlyContinue) } catch { return '' }
+}
+
+function Get-OwnCallRawBody {
+    param([string]$InputJson)
+    if (-not $InputJson) { return '' }
+    try { $parsed = $InputJson | ConvertFrom-Json } catch { return '' }
+    if ($null -eq $parsed) { return '' }
+    if ($parsed.PSObject.Properties.Name -notcontains 'tool_response') { return '' }
+    $resp = $parsed.tool_response
+    if (-not $resp) { return '' }
+    if ($resp -is [PSCustomObject] -and $resp.PSObject.Properties.Name -contains 'stdout') {
+        return (ConvertTo-OwnCallText -Value $resp.stdout)
+    } elseif ($resp -is [string]) {
+        return $resp
+    }
+    return ''
+}
+
+# The elseif-never-fall-through rule matters here: a TRUNCATED stdout must
+# resolve to $null, never to the wrapper object, or the wrapper would be handed
+# to Test-LoopStatePayloadOk as though it were the payload.
+function Get-OwnCallPayload {
+    param([string]$InputJson)
+    if (-not $InputJson) { return $null }
+    try { $parsed = $InputJson | ConvertFrom-Json } catch { return $null }
+    if ($null -eq $parsed) { return $null }
+    if ($parsed.PSObject.Properties.Name -notcontains 'tool_response') { return $null }
+    $resp = $parsed.tool_response
+    if (-not $resp) { return $null }
+    if ($resp -is [PSCustomObject] -and $resp.PSObject.Properties.Name -contains 'stdout') {
+        # Via ConvertTo-OwnCallText, so a non-string stdout resolves the same
+        # way the bash twin's `jq -r` resolves it rather than through
+        # [string]'s "@{...}" rendering.
+        $text = ConvertTo-OwnCallText -Value $resp.stdout
+        if (-not $text) { return $null }
+        try { return ($text | ConvertFrom-Json) } catch { return $null }
+    } elseif ($resp -is [string]) {
+        try { return ($resp | ConvertFrom-Json) } catch { return $null }
+    } elseif ($resp -is [PSCustomObject]) {
+        return $resp
+    }
+    return $null
+}
+
+# --- (W2537) The claimed task, kept in .stride/.task-<stem>.json -------------
+# The twin of the bash half's task_file_stem / claim_identity_proven /
+# write_task_file; the bash comments carry the reasoning. These sit above the
+# claim block below because PowerShell resolves a function only once its
+# definition has run -- which is also why ConvertTo-OwnCallText,
+# Get-OwnCallRawBody and Get-OwnCallPayload now live just above this point.
+#
+# What is written is the RAW text of the response's top-level `data` member,
+# with the whitespace between tokens dropped -- never a ConvertTo-Json
+# re-serialisation, which rewrites ISO timestamps as DateTime values and
+# re-spells some escapes. For the compact JSON the API sends, that text is
+# byte-identical to the bash half's `jq -c '.data'`; where the two could differ
+# (jq lower-cases a \u escape), they are still equal as JSON.
+function Get-TopLevelMemberJson {
+    param([string]$Text, [string]$Name)
+    if (-not $Text) { return $null }
+    $sb = New-Object System.Text.StringBuilder
+    $depth = 0; $inStr = $false; $esc = $false
+    $wantKey = $false; $strIsKey = $false; $strStart = -1; $pendingKey = $null
+    $capturing = $false; $capDepth = 0
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = $Text[$i]
+        if ($capturing) {
+            if ($inStr) {
+                [void]$sb.Append($c)
+                if ($esc) { $esc = $false }
+                elseif ($c -eq [char]'\') { $esc = $true }
+                elseif ($c -eq [char]'"') { $inStr = $false }
+                continue
+            }
+            if ([char]::IsWhiteSpace($c)) { continue }
+            # Only an object member is a task; anything else is refused.
+            if ($capDepth -eq 0 -and $c -ne [char]'{') { return $null }
+            [void]$sb.Append($c)
+            if ($c -eq [char]'"') { $inStr = $true }
+            elseif ($c -eq [char]'{' -or $c -eq [char]'[') { $capDepth++ }
+            elseif ($c -eq [char]'}' -or $c -eq [char]']') {
+                $capDepth--
+                if ($capDepth -eq 0) { return $sb.ToString() }
+            }
+            continue
+        }
+        if ($inStr) {
+            if ($esc) { $esc = $false }
+            elseif ($c -eq [char]'\') { $esc = $true }
+            elseif ($c -eq [char]'"') {
+                $inStr = $false
+                if ($strIsKey) { $pendingKey = $Text.Substring($strStart, $i - $strStart); $wantKey = $false }
+            }
+            continue
+        }
+        if ($c -eq [char]'"') {
+            $inStr = $true; $strIsKey = ($depth -eq 1 -and $wantKey); $strStart = $i + 1
+        } elseif ($c -eq [char]'{' -or $c -eq [char]'[') {
+            $depth++
+            if ($depth -eq 1) { $wantKey = ($c -eq [char]'{') }
+        } elseif ($c -eq [char]'}' -or $c -eq [char]']') {
+            $depth--
+        } elseif ($c -eq [char]',' -and $depth -eq 1) {
+            $wantKey = $true
+        } elseif ($c -eq [char]':' -and $depth -eq 1) {
+            if ($pendingKey -ceq $Name) { $capturing = $true }
+            $pendingKey = $null
+        }
+    }
+    return $null
+}
+
+# The file-name stem: the identifier when the whole string is 1-64 characters
+# of [A-Za-z0-9_-], else a non-negative integer id, else ''.
+function Get-TaskFileStem {
+    param($Task)
+    if ($null -eq $Task -or -not ($Task -is [PSCustomObject])) { return '' }
+    $props = $Task.PSObject.Properties.Name
+    if (($props -contains 'identifier') -and ($Task.identifier -is [string]) -and
+        ($Task.identifier -cmatch '\A[A-Za-z0-9_-]{1,64}\z')) {
+        return $Task.identifier
+    }
+    if ($props -contains 'id') {
+        $id = $Task.id
+        if (($id -is [int] -or $id -is [long]) -and $id -ge 0) { return [string]$id }
+        if (($id -is [string]) -and ($id -cmatch '\A[0-9]{1,20}\z')) { return $id }
+    }
+    return ''
+}
+
+# The text of the file a "Full output saved to: <path>" notice names, or $null.
+# The same parse as the claim block's Shape 4: the path is harness-controlled,
+# so it must be an existing regular file, and it is only ever read and parsed.
+# ReadAllText rather than Get-Content, whose Windows PowerShell 5.1 default is
+# the ANSI code page and would mangle non-ASCII task text.
+function Get-PersistedOutputText {
+    param([string]$Notice)
+    if (-not $Notice -or -not ($Notice -imatch 'saved to')) { return $null }
+    $line = ($Notice -split "`n" | Where-Object { $_ -imatch 'saved to' } | Select-Object -First 1)
+    if (-not $line) { return $null }
+    $path = '/' + ($line -replace '^[^/]*/', '')
+    $path = ($path.TrimEnd()) -replace '"$', ''
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try { return [System.IO.File]::ReadAllText($path) } catch { return $null }
+}
+
+# THIS call's own claim response, as @{ Obj; Text; Persisted } or $null. Text is
+# the raw response text when there is any (an object-shaped tool_response has
+# none); Persisted marks a response recovered through a saved-output notice.
+function Get-ClaimOwnCall {
+    param([string]$InputJson)
+    $text = Get-OwnCallRawBody -InputJson $InputJson
+    if ($text) {
+        $obj = $null
+        try { $obj = $text | ConvertFrom-Json } catch { $obj = $null }
+        if ($obj -is [PSCustomObject]) { return @{ Obj = $obj; Text = $text; Persisted = $false } }
+        $ptext = Get-PersistedOutputText -Notice $text
+        if ($ptext) {
+            $pobj = $null
+            try { $pobj = $ptext | ConvertFrom-Json } catch { $pobj = $null }
+            if ($pobj -is [PSCustomObject]) { return @{ Obj = $pobj; Text = $ptext; Persisted = $true } }
+        }
+        return $null
+    }
+    $obj = Get-OwnCallPayload -InputJson $InputJson
+    if ($obj -is [PSCustomObject]) { return @{ Obj = $obj; Text = $null; Persisted = $false } }
+    return $null
+}
+
+# The task object inside a response: `data` when it carries an id, else the
+# response itself when it does -- the same choice the claim block makes.
+function Get-ClaimTaskObject {
+    param($Obj)
+    if (-not ($Obj -is [PSCustomObject])) { return $null }
+    $props = $Obj.PSObject.Properties.Name
+    if (($props -contains 'data') -and ($Obj.data -is [PSCustomObject]) -and
+        ($Obj.data.PSObject.Properties.Name -contains 'id') -and $Obj.data.id) {
+        return $Obj.data
+    }
+    if (($props -contains 'id') -and $Obj.id) { return $Obj }
+    return $null
+}
+
+# One naming tier: $null when the key never occurs, else $true only when every
+# occurrence carries a cleanly read value equal to $Rid.
+function Get-ClaimIdentityTier {
+    param([string]$Text, [string]$KeyPattern, [string]$ValuePattern, $Rid)
+    $k = [regex]::Matches($Text, $KeyPattern).Count
+    if ($k -eq 0) { return $null }
+    $vals = @([regex]::Matches($Text, $ValuePattern) | ForEach-Object {
+        $m = $_
+        $v = $null
+        for ($g = 1; $g -lt $m.Groups.Count; $g++) {
+            if ($m.Groups[$g].Success) { $v = $m.Groups[$g].Value; break }
+        }
+        $v
+    })
+    if ($vals.Count -ne $k) { return $false }
+    if (-not ($Rid -is [string])) { return $false }
+    foreach ($v in $vals) { if (-not ($v -is [string]) -or -not ($v -ceq $Rid)) { return $false } }
+    return $true
+}
+
+# The twin of claim_identity_proven: every identifier the claim command names
+# must be the one that came back; naming none passes unless $Require is set.
+function Test-ClaimIdentityProven {
+    param($Task, [string]$CommandText, [bool]$Require)
+    $rid = $null
+    if (($Task -is [PSCustomObject]) -and ($Task.PSObject.Properties.Name -contains 'identifier')) { $rid = $Task.identifier }
+    $text = if ($CommandText) { $CommandText } else { '' }
+    $bt = [char]0x60
+    $arg = Get-ClaimIdentityTier -Text $text -Rid $rid `
+        -KeyPattern '--arg[ \t]+identifier[ \t]' `
+        -ValuePattern ("--arg[ \t]+identifier[ \t]+(?:'([^']*)'|""([^""\\`$$bt]*)""|([A-Za-z0-9_-]+)(?=[ \t\r\n;|&)]|\z))")
+    $plain = Get-ClaimIdentityTier -Text $text -Rid $rid `
+        -KeyPattern '"identifier"[ \t\r\n]*:(?![ \t\r\n]*\$)' `
+        -ValuePattern '"identifier"[ \t\r\n]*:[ \t\r\n]*"([^"\\]*)"'
+    $escTier = $null
+    if ($null -eq $plain) {
+        $escTier = Get-ClaimIdentityTier -Text $text -Rid $rid `
+            -KeyPattern '\\"identifier\\"[ \t\r\n]*:(?![ \t\r\n]*\$)' `
+            -ValuePattern '\\"identifier\\"[ \t\r\n]*:[ \t\r\n]*\\"([^"\\]*)\\"'
+    }
+    $said = @(@($arg, $plain, $escTier) | Where-Object { $null -ne $_ })
+    if ($said.Count -eq 0) { return (-not $Require) }
+    foreach ($s in $said) { if (-not $s) { return $false } }
+    return $true
+}
+
+# Write the task text to .stride/.task-<stem>.json on Write-LoopState's
+# mechanics. UTF-8 with no byte-order mark, one trailing LF, through a temp in
+# .stride/ and a rename. Never fatal, and nothing reaches the output stream.
+function Write-TaskFile {
+    param($Task, [string]$Text)
+    $stem = Get-TaskFileStem $Task
+    if (-not $stem) {
+        [Console]::Error.WriteLine('stride-hook: the claimed task carries neither a safe identifier nor a numeric id; no task file written')
+        return
+    }
+    if (-not $Text) {
+        [Console]::Error.WriteLine('stride-hook: the claimed task text could not be isolated; no task file written')
+        return
+    }
+    $dir = Join-Path $ProjectDir '.stride'
+    $dest = Join-Path $dir (".task-{0}.json" -f $stem)
+    if ((Test-Path -LiteralPath $dest) -and -not (Test-Path -LiteralPath $dest -PathType Leaf)) {
+        [Console]::Error.WriteLine('stride-hook: the task-file path exists and is not a regular file; no task file written')
+        return
+    }
+    $_tmp = $null
+    try {
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir -ErrorAction Stop | Out-Null
+        }
+        $_tmp = Join-Path $dir ("task-file.{0}.tmp" -f ([System.IO.Path]::GetRandomFileName()))
+        [System.IO.File]::WriteAllText($_tmp, $Text + "`n", (New-Object System.Text.UTF8Encoding $false))
+        Move-Item -LiteralPath $_tmp -Destination $dest -Force -ErrorAction Stop
+    } catch {
+        [Console]::Error.WriteLine('stride-hook: the task file could not be written or renamed into place; no task file written')
+        if ($_tmp -and (Test-Path -LiteralPath $_tmp)) {
+            Remove-Item -LiteralPath $_tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # (W1609) Persist THIS call's response to the canonical file before the claim
 # env-cache refresh reads it, so a valid current stdout overwrites any stale
 # prior-call file (no staleness regression) and a truncated stdout leaves an
@@ -675,6 +977,55 @@ if ($HookName -eq 'before_doing') {
         # snapshot is likewise gone: it must hash against the post-pull tree, not
         # claim time.
         if ($taskJson) {
+            # (W2537) The claimed task file, written only when THIS call proves
+            # the response is its own -- the twin of the bash gate, which
+            # explains why: the canonical file read first above outlives the
+            # call that wrote it. The id in this call's own response must be
+            # the resolved id; a saved-output notice counts as this call's own
+            # response but must also be matched by an identifier the command
+            # named; and every identifier the command names must come back.
+            # Its own try, so nothing here can skip the cache write below.
+            try {
+                $own = Get-ClaimOwnCall -InputJson $Input
+                $ownTask = $null
+                $ownId = ''
+                if ($own) { $ownTask = Get-ClaimTaskObject -Obj $own.Obj }
+                if ($ownTask) { $ownId = [string]$ownTask.id }
+                $resId = ''
+                if (($taskJson.PSObject.Properties.Name -contains 'id') -and $null -ne $taskJson.id) { $resId = [string]$taskJson.id }
+                if ($ownId -and ($ownId -eq $resId) -and
+                    (Test-ClaimIdentityProven -Task $ownTask -CommandText $Command -Require ([bool]$own.Persisted))) {
+                    $taskText = $null
+                    if ($own.Text) {
+                        if ([object]::ReferenceEquals($ownTask, $own.Obj)) {
+                            # A bare task object: the whole response is the task.
+                            $taskText = Get-TopLevelMemberJson -Text ('{"data":' + $own.Text + '}') -Name 'data'
+                        } else {
+                            $taskText = Get-TopLevelMemberJson -Text $own.Text -Name 'data'
+                        }
+                    } else {
+                        # An object-shaped tool_response has no raw text: the one
+                        # path that has to re-serialise.
+                        $taskText = $ownTask | ConvertTo-Json -Depth 100 -Compress -WarningAction SilentlyContinue
+                    }
+                    # The scanner takes the FIRST top-level `data`, ConvertFrom-Json
+                    # the last; write only text whose own id is the proven id, so a
+                    # duplicate key cannot file one object under another's name.
+                    $textObj = $null
+                    if ($taskText) { try { $textObj = $taskText | ConvertFrom-Json } catch { $textObj = $null } }
+                    if (($textObj -is [PSCustomObject]) -and ($textObj.PSObject.Properties.Name -contains 'id') -and
+                        ([string]$textObj.id -eq $ownId)) {
+                        $null = Write-TaskFile -Task $textObj -Text $taskText
+                    } else {
+                        [Console]::Error.WriteLine('stride-hook: the isolated task text does not carry the claimed id; no task file written')
+                    }
+                } else {
+                    [Console]::Error.WriteLine('stride-hook: this claim could not prove the response is its own task; no task file written')
+                }
+            } catch {
+                [Console]::Error.WriteLine('stride-hook: the task file could not be written; continuing')
+            }
+
                 $cacheLines = @(
                     "TASK_ID=$($taskJson.id)"
                     "TASK_IDENTIFIER=$($taskJson.identifier)"
@@ -1581,87 +1932,6 @@ function Write-LoopState {
             Remove-Item -LiteralPath $_tmp -Force -ErrorAction SilentlyContinue
         }
     }
-}
-
-# THIS call's payload only — the mirror of the bash twin's Tier 1, and
-# deliberately NOT Get-ResponsePayload, which is canonical-file-first (D118).
-# .stride/.last-api-response.json survives across calls, so on a truncated 422
-# that helper resolves the previous CLAIM payload — which carries both fields —
-# and would record a completion that never happened.
-#
-# The RAW body of this call, before any parse — so the unparsable diagnostic can
-# distinguish "no body at all" from "a body that failed to parse".
-# Get-OwnCallPayload returns $null for four different reasons and only one of
-# them is a parse failure, so it cannot be used to decide that question.
-# Render a `tool_response.stdout` value as the TEXT the bash twin would see,
-# which is what `jq -r '.stdout // ""'` produces:
-#   - jq's `//` treats null and false as absent, yielding the empty string;
-#   - `jq -r` prints a string RAW, without quotes;
-#   - every other type is re-serialised as compact JSON.
-# Without this, an object-shaped stdout diverges hard: `[string]$obj` renders
-# the PowerShell hashtable form "@{a=1}", which is not JSON, so this half would
-# announce an unparsable body and record nothing while the bash twin parsed the
-# re-serialised object and recorded a completion. Today's Copilot harness always
-# supplies stdout as a string, so neither path is reachable — but the task's
-# pitfall is that the halves must not diverge on JSON type handling AT THE PARSE
-# BOUNDARY, and this is that boundary.
-function ConvertTo-OwnCallText {
-    param($Value)
-    if ($null -eq $Value) { return '' }
-    if ($Value -is [bool]) { if ($Value) { return 'true' } else { return '' } }
-    if ($Value -is [string]) { return $Value }
-    # -Depth 100 is ConvertTo-Json's maximum, so truncation needs a value nested
-    # deeper than any real API response; -WarningAction SilentlyContinue is what
-    # makes the branch SAFE rather than merely unlikely. Past the depth limit
-    # PowerShell emits "Resulting JSON is truncated..." on the WARNING stream,
-    # which pwsh writes to STDOUT — corrupting the single JSON document this
-    # script is contracted to emit, and diverging from the bash twin, whose `jq`
-    # has no depth limit and writes nothing. Only the four fields at depth 2 are
-    # ever read from the result, so even a truncated serialisation still yields
-    # the correct record.
-    try { return ($Value | ConvertTo-Json -Compress -Depth 100 -WarningAction SilentlyContinue) } catch { return '' }
-}
-
-function Get-OwnCallRawBody {
-    param([string]$InputJson)
-    if (-not $InputJson) { return '' }
-    try { $parsed = $InputJson | ConvertFrom-Json } catch { return '' }
-    if ($null -eq $parsed) { return '' }
-    if ($parsed.PSObject.Properties.Name -notcontains 'tool_response') { return '' }
-    $resp = $parsed.tool_response
-    if (-not $resp) { return '' }
-    if ($resp -is [PSCustomObject] -and $resp.PSObject.Properties.Name -contains 'stdout') {
-        return (ConvertTo-OwnCallText -Value $resp.stdout)
-    } elseif ($resp -is [string]) {
-        return $resp
-    }
-    return ''
-}
-
-# The elseif-never-fall-through rule matters here: a TRUNCATED stdout must
-# resolve to $null, never to the wrapper object, or the wrapper would be handed
-# to Test-LoopStatePayloadOk as though it were the payload.
-function Get-OwnCallPayload {
-    param([string]$InputJson)
-    if (-not $InputJson) { return $null }
-    try { $parsed = $InputJson | ConvertFrom-Json } catch { return $null }
-    if ($null -eq $parsed) { return $null }
-    if ($parsed.PSObject.Properties.Name -notcontains 'tool_response') { return $null }
-    $resp = $parsed.tool_response
-    if (-not $resp) { return $null }
-    if ($resp -is [PSCustomObject] -and $resp.PSObject.Properties.Name -contains 'stdout') {
-        # Via ConvertTo-OwnCallText, so a non-string stdout resolves the same
-        # way the bash twin's `jq -r` resolves it rather than through
-        # [string]'s "@{...}" rendering.
-        $text = ConvertTo-OwnCallText -Value $resp.stdout
-        if (-not $text) { return $null }
-        try { return ($text | ConvertFrom-Json) } catch { return $null }
-    } elseif ($resp -is [string]) {
-        try { return ($resp | ConvertFrom-Json) } catch { return $null }
-    } elseif ($resp -is [PSCustomObject]) {
-        return $resp
-    }
-    return $null
 }
 
 # Self-gates on before_review — the hook that fires AFTER a /complete succeeds.
