@@ -5424,22 +5424,32 @@ fi
 #   * Any assertion on round COUNTING. The count lives in the orchestrator's
 #     context and touches no file, so it has no observable surface to assert
 #     against. That is a stated limit of the design, not a gap in the suite.
+#   * (W2540) The reference's fix-path classifier and the two predicate terms
+#     W2252 added to round_cap_ok. The round-two trigger is prose here too, so
+#     23ak-23at pin that the triggers, the code-path definition and the
+#     recorded-not-re-reviewed disposition are STATED and mirrored; nothing
+#     here can show that an orchestrator obeys them.
 echo ""
-echo "=== Test Group 23: two-round review cap (W2155) ==="
+echo "=== Test Group 23: two-round review cap (W2155); round two earned (W2540) ==="
 
 G23_ROOT="$SCRIPT_DIR/.."
 G23_WF="$G23_ROOT/skills/stride-workflow/SKILL.md"
 G23_SUB="$G23_ROOT/skills/stride-subagent-workflow/SKILL.md"
 G23_CT="$G23_ROOT/skills/stride-completing-tasks/SKILL.md"
 G23_RV="$G23_ROOT/agents/task-reviewer.agent.md"
+G23_README="$G23_ROOT/README.md"
+G23_CHANGELOG="$G23_ROOT/CHANGELOG.md"
 
-if [ ! -f "$G23_WF" ] || [ ! -f "$G23_SUB" ] || [ ! -f "$G23_CT" ] || [ ! -f "$G23_RV" ]; then
+if [ ! -f "$G23_WF" ] || [ ! -f "$G23_SUB" ] || [ ! -f "$G23_CT" ] || [ ! -f "$G23_RV" ] \
+   || [ ! -f "$G23_README" ] || [ ! -f "$G23_CHANGELOG" ]; then
   echo "  SKIP: Test Group 23 (contract files not found relative to $SCRIPT_DIR)"
 else
   G23_WF_TXT=$(cat "$G23_WF")
   G23_SUB_TXT=$(cat "$G23_SUB")
   G23_CT_TXT=$(cat "$G23_CT")
   G23_RV_TXT=$(cat "$G23_RV")
+  G23_README_TXT=$(cat "$G23_README")
+  G23_CHANGELOG_TXT=$(cat "$G23_CHANGELOG")
 
   # Every markdown contract in the port, enumerated with find rather than a
   # recursive grep: the grep on a developer machine may be ugrep, which honors
@@ -5464,16 +5474,16 @@ else
 
   # --- The ceiling itself (AC 1, verification step 1) ---
   assert_contains "23a: the ceiling is stated in the port's review step" \
-    "Two review rounds is the ceiling, and the second verifies rather than re-reviews." \
+    "Two review rounds is the ceiling, and a second round is earned rather than automatic: it verifies rather than re-reviews, and it runs only when one of the three triggers below fired." \
     "$G23_WF_TXT"
 
   assert_contains "23b: carries the canon back-reference anchor" \
-    "<!-- canon:review-round-cap v1 -->" "$G23_WF_TXT"
+    "<!-- canon:review-round-cap v2 -->" "$G23_WF_TXT"
 
   # Structural: the anchor must sit on the line immediately above the sentence
   # it governs. A bare presence check passes even after the anchor drifts to
   # some unrelated paragraph, which is exactly how a back-reference rots.
-  G23_ANCHOR_LN=$(grep -nF "<!-- canon:review-round-cap v1 -->" "$G23_WF" | head -1 | cut -d: -f1)
+  G23_ANCHOR_LN=$(grep -nF "<!-- canon:review-round-cap v2 -->" "$G23_WF" | head -1 | cut -d: -f1)
   G23_CEIL_LN=$(grep -nF "Two review rounds is the ceiling" "$G23_WF" | head -1 | cut -d: -f1)
   assert_eq "23c: the anchor sits immediately above the ceiling sentence" \
     "1" "$((G23_CEIL_LN - G23_ANCHOR_LN))"
@@ -5710,6 +5720,114 @@ else
   assert_eq "23ag: and the sweep found mandates to check" \
     "1" "$([ "$(grep -hcF -e 'Re-run the reviewer' "${G23_MD[@]}" 2>/dev/null | grep -c '^[1-9]' || true)" -ge 1 ] && echo 1 || echo 0)"
 
+  # --- W2540: round two is earned (review-round-cap v2, prose-only port) ---
+  # The canonical trigger triple. Stated once in Step 5 and carried, word for
+  # word, by every mirror (23as), so a mirror that drifts to a different list
+  # fails here rather than going unnoticed.
+  G23_T='a code-path fix, a `critical`, or a security finding at any severity'
+
+  # 23ak: the v1 wording and anchor are gone, the v2 anchor is the only one,
+  # and neither README nor CHANGELOG carries a LITERAL canon anchor (the canon
+  # check counts those as live and reports them STALE on every bump).
+  assert_eq "23ak: no v1 review-round-cap anchor is left in the port" \
+    "0" "$(g23_count "$G23_ALL_TXT$G23_README_TXT$G23_CHANGELOG_TXT" '<!-- canon:review-round-cap v1 -->')"
+  assert_eq "23ak: the v2 anchor appears exactly once in skills and agents" \
+    "1" "$(g23_count "$G23_ALL_TXT" '<!-- canon:review-round-cap v2 -->')"
+  assert_eq "23ak: the v1 ceiling sentence is gone" \
+    "0" "$(g23_count "$G23_ALL_TXT" 'and the second verifies rather than re-reviews.')"
+  assert_eq "23ak: README and CHANGELOG carry no literal canon anchor" \
+    "0" "$({ grep -Eo '<!--[[:blank:]]*canon:[A-Za-z0-9][A-Za-z0-9_-]*[[:blank:]]+v[0-9]+' <<< "$G23_README_TXT
+$G23_CHANGELOG_TXT" || true; } | grep -c . || true)"
+
+  # 23al: the three triggers are stated, once, with the bound on what they buy.
+  assert_contains "23al: the round-two triggers are stated" \
+    "Round two is earned: three triggers open it, and nothing else does." "$G23_WF_TXT"
+  assert_eq "23al: the trigger triple is stated exactly once in Step 5's file" \
+    "1" "$(g23_count "$G23_WF_TXT" "$G23_T")"
+  assert_contains "23al: a trigger never opens a third round" \
+    "A trigger opens round two and never a third" "$G23_WF_TXT"
+
+  # 23am: the no-trigger disposition.
+  assert_contains "23am: without a trigger each fix is recorded, not re-reviewed" \
+    "No trigger, no round two: each fix is recorded, not re-reviewed" "$G23_WF_TXT"
+  assert_contains "23am: and round one's status is submitted unchanged" \
+    "exactly as the reviewer left it" "$G23_WF_TXT"
+  assert_contains "23am: never rewritten to approved" \
+    'never rewrite it to `approved`' "$G23_WF_TXT"
+
+  # 23an: a code path is defined in prose and the orchestrator applies it.
+  assert_contains "23an: the orchestrator applies the classification itself" \
+    "applies this classification itself" "$G23_WF_TXT"
+  assert_contains "23an: a code path is defined by what it is not" \
+    "not documentation, not a test, and not a comment-only change" "$G23_WF_TXT"
+  assert_contains "23an: doubtful paths count as code" \
+    "so does any path you are unsure how to sort" "$G23_WF_TXT"
+  assert_contains "23an: a shebang or #Requires line is never comment-only" \
+    'a shebang (`#!`) or a PowerShell `#Requires` line is code' "$G23_WF_TXT"
+
+  # 23ao: nothing names the reference's machinery as if this port had it.
+  for g23name in round_cap_ok FIX_CODE_PATHS FIX_STAGE .review-fixbase-; do
+    assert_eq "23ao: $g23name is not named anywhere in skills or agents" \
+      "0" "$(g23_count "$G23_ALL_TXT" "$g23name")"
+  done
+
+  # 23ap: the task's three edge cases are each answered in the prose.
+  assert_contains "23ap: a changelog-only fix earns no round two" \
+    "a fix confined to a changelog" "$G23_WF_TXT"
+  assert_contains "23ap: a minor security finding is a trigger on its own" \
+    'A `minor` security finding is enough on its own.' "$G23_WF_TXT"
+  assert_contains "23ap: a lost trigger counts as fired" \
+    "A trigger you cannot reconstruct counts as one that fired." "$G23_WF_TXT"
+
+  # 23aq: the stated limits name the self-applied trigger and the markdown
+  # classification, and the numeral matches the list.
+  assert_contains "23aq: the trigger is self-applied" \
+    "The round-two trigger is self-applied." "$G23_WF_TXT"
+  assert_contains "23aq: markdown counts as documentation here too" \
+    "Markdown is classified as documentation even though it is this plugin's product." "$G23_WF_TXT"
+  assert_contains "23aq: the limits are counted as six" \
+    "Six limits, written down" "$G23_WF_TXT"
+  G23_LIMITS=$(awk '/^\*\*Stated limits — what this cap is/{f=1; next}
+    f && /^\*\*Canon-governed — entry `review-round-cap`/{exit}
+    f && /^[0-9]+\. \*\*/{n++} END{print n+0}' "$G23_WF")
+  assert_eq "23aq: and the list really has six entries" "6" "$G23_LIMITS"
+
+  # 23ar: the critical exemption and the security rule survive in substance.
+  assert_contains "23ar: the no-trigger record cannot hold a critical or security finding" \
+    'Nothing on this list may be a `critical` or a security finding' "$G23_WF_TXT"
+  assert_contains "23ar: a round-one critical is a trigger as well as exempt" \
+    'a round-one `critical` is trigger 2 above as well' "$G23_WF_TXT"
+  assert_contains "23ar: a round-one security finding is a trigger and still fixed" \
+    "It is also trigger 3 above" "$G23_WF_TXT"
+
+  # 23as: every mirror carries the triple and defers to Step 5.
+  G23_CT_LINE=$(grep -F "Review rounds are within the cap" "$G23_CT" | head -1)
+  assert_contains "23as: the completion self-check names the triggers" "$G23_T" "$G23_CT_LINE"
+  assert_contains "23as: and the recorded disposition" "recorded, not re-reviewed" "$G23_CT_LINE"
+  assert_contains "23as: and an untriggered round two submits round one's result" \
+    'if it ran untriggered, round one' "$G23_CT_LINE"
+  assert_contains "23as: which Step 5 states the same way" \
+    'A round two that ran without a trigger is not escalated, but its result is not what you submit' "$G23_WF_TXT"
+  assert_eq "23as: both completion review steps defer to the triggers" \
+    "2" "$(g23_count "$G23_CT_TXT" 'round two runs only when a trigger named there fires')"
+  G23_SUB_LINE=$(grep -F -- "- After fixing, you do NOT need to re-run the reviewer" "$G23_SUB" | head -1)
+  assert_contains "23as: the subagent-workflow re-run bullet names the triggers" "$G23_T" "$G23_SUB_LINE"
+  assert_contains "23as: the subagent re-review paragraph defers too" \
+    "the second runs only when a trigger named there fired" "$G23_SUB_TXT"
+  assert_contains "23as: the D66 paragraph defers to the triggers" \
+    "decided by the round-two triggers stated there" "$G23_WF_TXT"
+  assert_contains "23as: README names the triggers" "$G23_T" "$G23_README_TXT"
+  assert_contains "23as: README states the recorded disposition" \
+    "recorded, not re-reviewed" "$G23_README_TXT"
+  assert_contains "23as: README points at Step 5" \
+    '`skills/stride-workflow/SKILL.md` Step 5' "$G23_README_TXT"
+  assert_eq "23as: README does not restate the ceiling sentence" \
+    "0" "$(g23_count "$G23_README_TXT" 'Two review rounds is the ceiling')"
+
+  # 23at: the v1 re-run reason is gone (doubt is not a trigger).
+  assert_eq "23at: doubt about a fix no longer buys round two" \
+    "0" "$(g23_count "$G23_SUB_TXT" 'verify a fix you could not confirm by reading')"
+
   # --- Chained-task boundaries: W2156 has landed; W2157 has not ---
   assert_contains "23x: the cosmetic finding class has landed (W2156)" \
     "cosmetic" "$G23_ALL_TXT"
@@ -5881,7 +5999,7 @@ else
   assert_contains "24q: an empty issues[] is never an all-cosmetic round" \
     "An absent or empty \`issues[]\` is never an all-cosmetic round" "$G24_WF_TXT"
   assert_contains "24r: changes_requested overrides regardless" \
-    "honour that and re-dispatch regardless" "$G24_WF_TXT"
+    "honour that status — round two is then governed by the three triggers above" "$G24_WF_TXT"
   assert_contains "24s: cosmetic findings are still recorded" \
     "Not buying a round is not being dropped" "$G24_WF_TXT"
 

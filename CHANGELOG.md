@@ -60,6 +60,34 @@ pass the same file. Without a file the inline field lists are unchanged. This
 port has no planner agent, so planning is untouched. Tests: bash Group 29,
 PowerShell Group 24.
 
+### Changed — round two of review has to be earned
+
+Port of stride W2252. Two review rounds is still the cap, but the second one now
+runs only when round one gives it a reason: a fix that edited a code path, a
+`critical`, or a security finding at any severity (judged by subject matter, as
+this port's security rule already is). With none of the three, every fix is
+recorded by severity, category, `file:line` and a one-line note in
+`completion_notes` and `completion_summary`, and round one's result is
+submitted with its `status` untouched. `stride-workflow` Step 5 now says in
+prose what a code path is — not documentation, not a test, not a comment-only
+change — names which of this repository's files fall where, and sends anything
+doubtful, or any trigger whose evidence a resumed session has lost, toward a
+second round. **In this port the round-two trigger is followed, not
+enforced:** there is no predicate, path classifier, fix-base snapshot or round
+counter, so the orchestrator sorts the paths itself, and two new stated limits
+say so and say that markdown counts as documentation even here. The critical
+exemption, the never-record-a-security-finding rule and the fail-closed round
+default are unchanged. The `review-round-cap` anchor beside Step 5 moves to v2.
+The completing-tasks self-check and its two review steps, the
+`stride-subagent-workflow` review bullets and re-review paragraph, the D66
+paragraph and a new README paragraph carry the triggers. The 2.37.0 entry
+quoted the anchor literally, which the canon check counts as a live anchor and
+would report as stale on every bump, so that quotation is now written in the
+elided form the 2.40.0 entry already uses. The all-cosmetic bullet's
+`changes_requested` clause now defers to the triggers rather than ordering a
+re-dispatch. Tests: bash Group 23 and PowerShell Group 20, rewritten in place,
+plus the case 24r needle in bash Group 24 and PowerShell Group 21.
+
 ## [2.42.0] - 2026-10-01
 
 ### Fixed — an escaped `>` is no longer read as an operator
@@ -732,7 +760,7 @@ at `review_blocked` (`failure.kind: "review_escalation"`) rather than being
 recorded and submitted.
 
 The rule is stated **once**, in `stride-workflow` Step 5, under a
-`<!-- canon:review-round-cap v1 -->` anchor. Every other site defers to it:
+`<!-- canon:review-round-cap ... -->` anchor. Every other site defers to it:
 the D66 re-review paragraph, the `stride-subagent-workflow` issues-found
 bullets and its re-review and extraction sections, both Complete Completion
 Process variants, and a new bullet in the completing-tasks hard gate. Two

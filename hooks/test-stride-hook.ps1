@@ -3521,22 +3521,30 @@ try {
 #     bash half's g23_count both count literal OCCURRENCES for exactly that
 #     reason: `grep -c` would have counted matching LINES, and the mirrored
 #     exact-count cases would then assert different propositions.
+#   * (W2540) Like the bash half, the reference's fix-path classifier and the
+#     two predicate terms W2252 added are not ported: the round-two trigger is
+#     prose here, so 23ak-23at pin that it is STATED and mirrored, not obeyed.
 Write-Host ""
-Write-Host "=== Test Group 20: two-round review cap (W2155) ==="
+Write-Host "=== Test Group 20: two-round review cap (W2155); round two earned (W2540) ==="
 
 $G20Root = Split-Path -Parent $ScriptDir
 $G20Wf   = Join-Path $G20Root 'skills/stride-workflow/SKILL.md'
 $G20Sub  = Join-Path $G20Root 'skills/stride-subagent-workflow/SKILL.md'
 $G20Ct   = Join-Path $G20Root 'skills/stride-completing-tasks/SKILL.md'
 $G20Rv   = Join-Path $G20Root 'agents/task-reviewer.agent.md'
+$G20Readme    = Join-Path $G20Root 'README.md'
+$G20Changelog = Join-Path $G20Root 'CHANGELOG.md'
 
-if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -and (Test-Path $G20Rv))) {
+if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -and (Test-Path $G20Rv) -and
+          (Test-Path $G20Readme) -and (Test-Path $G20Changelog))) {
     Write-Host "  SKIP: Test Group 20 (contract files not found relative to $ScriptDir)"
 } else {
     $G20WfTxt  = Get-Content -Raw $G20Wf
     $G20SubTxt = Get-Content -Raw $G20Sub
     $G20CtTxt  = Get-Content -Raw $G20Ct
     $G20RvTxt  = Get-Content -Raw $G20Rv
+    $G20ReadmeTxt    = Get-Content -Raw $G20Readme
+    $G20ChangelogTxt = Get-Content -Raw $G20Changelog
 
     # Every markdown contract in the port. The bash half enumerates these with
     # find rather than a recursive grep, because the grep on a developer
@@ -3555,17 +3563,17 @@ if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -a
 
     # --- The ceiling itself (AC 1, verification step 1) ---
     Assert-Contains "23a: the ceiling is stated in the port's review step" `
-        'Two review rounds is the ceiling, and the second verifies rather than re-reviews.' $G20WfTxt
+        'Two review rounds is the ceiling, and a second round is earned rather than automatic: it verifies rather than re-reviews, and it runs only when one of the three triggers below fired.' $G20WfTxt
 
     Assert-Contains "23b: carries the canon back-reference anchor" `
-        '<!-- canon:review-round-cap v1 -->' $G20WfTxt
+        '<!-- canon:review-round-cap v2 -->' $G20WfTxt
 
     # Structural: the anchor must sit on the line immediately above the
     # sentence it governs. A bare presence check passes even after the anchor
     # drifts to some unrelated paragraph, which is exactly how a
     # back-reference rots.
     $G20WfLines  = Get-Content $G20Wf
-    $G20AnchorLn = ($G20WfLines | Select-String -SimpleMatch '<!-- canon:review-round-cap v1 -->' | Select-Object -First 1).LineNumber
+    $G20AnchorLn = ($G20WfLines | Select-String -SimpleMatch '<!-- canon:review-round-cap v2 -->' | Select-Object -First 1).LineNumber
     $G20CeilLn   = ($G20WfLines | Select-String -SimpleMatch 'Two review rounds is the ceiling' | Select-Object -First 1).LineNumber
     Assert-Eq "23c: the anchor sits immediately above the ceiling sentence" `
         "1" "$($G20CeilLn - $G20AnchorLn)"
@@ -3778,6 +3786,102 @@ if (-not ((Test-Path $G20Wf) -and (Test-Path $G20Sub) -and (Test-Path $G20Ct) -a
     Assert-Eq "23ag: and the sweep found mandates to check" `
         "1" "$(if (@($G20Mandates | Where-Object { $_.Contains('Re-run the reviewer') }).Count -ge 1) { 1 } else { 0 })"
 
+    # --- W2540: round two is earned (review-round-cap v2, prose-only port) ---
+    # Mirrors bash 23ak-23at case for case.
+    $G20T = 'a code-path fix, a `critical`, or a security finding at any severity'
+
+    Assert-Eq "23ak: no v1 review-round-cap anchor is left in the port" `
+        "0" "$(Get-G20Count -Text ($G20AllTxt + $G20ReadmeTxt + $G20ChangelogTxt) -Needle '<!-- canon:review-round-cap v1 -->')"
+    Assert-Eq "23ak: the v2 anchor appears exactly once in skills and agents" `
+        "1" "$(Get-G20Count -Text $G20AllTxt -Needle '<!-- canon:review-round-cap v2 -->')"
+    Assert-Eq "23ak: the v1 ceiling sentence is gone" `
+        "0" "$(Get-G20Count -Text $G20AllTxt -Needle 'and the second verifies rather than re-reviews.')"
+    Assert-Eq "23ak: README and CHANGELOG carry no literal canon anchor" `
+        "0" "$(([regex]::Matches($G20ReadmeTxt + "`n" + $G20ChangelogTxt, '<!--[ \t]*canon:[A-Za-z0-9][A-Za-z0-9_-]*[ \t]+v[0-9]+')).Count)"
+
+    Assert-Contains "23al: the round-two triggers are stated" `
+        'Round two is earned: three triggers open it, and nothing else does.' $G20WfTxt
+    Assert-Eq "23al: the trigger triple is stated exactly once in Step 5's file" `
+        "1" "$(Get-G20Count -Text $G20WfTxt -Needle $G20T)"
+    Assert-Contains "23al: a trigger never opens a third round" `
+        'A trigger opens round two and never a third' $G20WfTxt
+
+    Assert-Contains "23am: without a trigger each fix is recorded, not re-reviewed" `
+        'No trigger, no round two: each fix is recorded, not re-reviewed' $G20WfTxt
+    Assert-Contains "23am: and round one's status is submitted unchanged" `
+        'exactly as the reviewer left it' $G20WfTxt
+    Assert-Contains "23am: never rewritten to approved" `
+        'never rewrite it to `approved`' $G20WfTxt
+
+    Assert-Contains "23an: the orchestrator applies the classification itself" `
+        'applies this classification itself' $G20WfTxt
+    Assert-Contains "23an: a code path is defined by what it is not" `
+        'not documentation, not a test, and not a comment-only change' $G20WfTxt
+    Assert-Contains "23an: doubtful paths count as code" `
+        'so does any path you are unsure how to sort' $G20WfTxt
+    Assert-Contains "23an: a shebang or #Requires line is never comment-only" `
+        'a shebang (`#!`) or a PowerShell `#Requires` line is code' $G20WfTxt
+
+    foreach ($g20Name in @('round_cap_ok', 'FIX_CODE_PATHS', 'FIX_STAGE', '.review-fixbase-')) {
+        Assert-Eq "23ao: $g20Name is not named anywhere in skills or agents" `
+            "0" "$(Get-G20Count -Text $G20AllTxt -Needle $g20Name)"
+    }
+
+    Assert-Contains "23ap: a changelog-only fix earns no round two" `
+        'a fix confined to a changelog' $G20WfTxt
+    Assert-Contains "23ap: a minor security finding is a trigger on its own" `
+        'A `minor` security finding is enough on its own.' $G20WfTxt
+    Assert-Contains "23ap: a lost trigger counts as fired" `
+        'A trigger you cannot reconstruct counts as one that fired.' $G20WfTxt
+
+    Assert-Contains "23aq: the trigger is self-applied" `
+        'The round-two trigger is self-applied.' $G20WfTxt
+    Assert-Contains "23aq: markdown counts as documentation here too" `
+        'Markdown is classified as documentation even though it is this plugin''s product.' $G20WfTxt
+    Assert-Contains "23aq: the limits are counted as six" `
+        'Six limits, written down' $G20WfTxt
+    $G20Limits = 0
+    $g20InLimits = $false
+    foreach ($g20Ln in $G20WfLines) {
+        if ($g20Ln.StartsWith('**Stated limits — what this cap is')) { $g20InLimits = $true; continue }
+        if ($g20InLimits -and $g20Ln.StartsWith('**Canon-governed — entry `review-round-cap`')) { break }
+        if ($g20InLimits -and $g20Ln -match '^[0-9]+\. \*\*') { $G20Limits++ }
+    }
+    Assert-Eq "23aq: and the list really has six entries" "6" "$G20Limits"
+
+    Assert-Contains "23ar: the no-trigger record cannot hold a critical or security finding" `
+        'Nothing on this list may be a `critical` or a security finding' $G20WfTxt
+    Assert-Contains "23ar: a round-one critical is a trigger as well as exempt" `
+        'a round-one `critical` is trigger 2 above as well' $G20WfTxt
+    Assert-Contains "23ar: a round-one security finding is a trigger and still fixed" `
+        'It is also trigger 3 above' $G20WfTxt
+
+    $G20CtLine = @(Get-Content $G20Ct | Where-Object { $_.Contains('Review rounds are within the cap') })[0]
+    Assert-Contains "23as: the completion self-check names the triggers" $G20T $G20CtLine
+    Assert-Contains "23as: and the recorded disposition" 'recorded, not re-reviewed' $G20CtLine
+    Assert-Contains "23as: and an untriggered round two submits round one's result" `
+        'if it ran untriggered, round one' $G20CtLine
+    Assert-Contains "23as: which Step 5 states the same way" `
+        'A round two that ran without a trigger is not escalated, but its result is not what you submit' $G20WfTxt
+    Assert-Eq "23as: both completion review steps defer to the triggers" `
+        "2" "$(Get-G20Count -Text $G20CtTxt -Needle 'round two runs only when a trigger named there fires')"
+    $G20SubLine = @(Get-Content $G20Sub | Where-Object { $_.Contains('- After fixing, you do NOT need to re-run the reviewer') })[0]
+    Assert-Contains "23as: the subagent-workflow re-run bullet names the triggers" $G20T $G20SubLine
+    Assert-Contains "23as: the subagent re-review paragraph defers too" `
+        'the second runs only when a trigger named there fired' $G20SubTxt
+    Assert-Contains "23as: the D66 paragraph defers to the triggers" `
+        'decided by the round-two triggers stated there' $G20WfTxt
+    Assert-Contains "23as: README names the triggers" $G20T $G20ReadmeTxt
+    Assert-Contains "23as: README states the recorded disposition" `
+        'recorded, not re-reviewed' $G20ReadmeTxt
+    Assert-Contains "23as: README points at Step 5" `
+        '`skills/stride-workflow/SKILL.md` Step 5' $G20ReadmeTxt
+    Assert-Eq "23as: README does not restate the ceiling sentence" `
+        "0" "$(Get-G20Count -Text $G20ReadmeTxt -Needle 'Two review rounds is the ceiling')"
+
+    Assert-Eq "23at: doubt about a fix no longer buys round two" `
+        "0" "$(Get-G20Count -Text $G20SubTxt -Needle 'verify a fix you could not confirm by reading')"
+
     # --- Chained-task boundaries: W2156 has landed; W2157 has not ---
     Assert-Contains "23x: the cosmetic finding class has landed (W2156)" `
         'cosmetic' $G20AllTxt
@@ -3941,7 +4045,7 @@ if (-not ((Test-Path $G21Wf) -and (Test-Path $G21Sub) -and (Test-Path $G21Ct) -a
     Assert-Contains "24q: an empty issues[] is never an all-cosmetic round" `
         'An absent or empty `issues[]` is never an all-cosmetic round' $G21WfTxt
     Assert-Contains "24r: changes_requested overrides regardless" `
-        'honour that and re-dispatch regardless' $G21WfTxt
+        'honour that status — round two is then governed by the three triggers above' $G21WfTxt
     Assert-Contains "24s: cosmetic findings are still recorded" `
         'Not buying a round is not being dropped' $G21WfTxt
 
