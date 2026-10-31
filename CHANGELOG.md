@@ -4,6 +4,60 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.44.0] - 2026-10-31
+
+The deep security-considerations review now sends the `security-reviewer`
+agent everything its 0.5.0 core no longer carries. `stride-copilot-security-review`
+0.5.0 split that agent into a core kept under Copilot's 30,000-character
+agent limit plus rule files in its `skills/security-review-essentials/`
+directory, and only its own `/security-review` skill sent those files. This
+workflow dispatches the agent directly, so until now every deep review ran
+on the core's compact rules and returned its result inline. Its 0.5.0
+changelog's *For stride-copilot* section lists what the dispatch must send.
+This release sends it.
+
+### Changed
+
+- **`stride-workflow` Step 5, *Deep security-considerations review*:** the
+  dispatch prompt now has a fixed order:
+  - the mode tag `/security-review invocation, mode: considerations` alone
+    on the first line;
+  - the `Security considerations to assess:` list;
+  - a `SECURITY_RESULT_PATH=` line naming `.stride/.security-<IDENTIFIER>-r<N>.json`
+    under the project root;
+  - a fresh 16-character `Rule-file key:`;
+  - the keyed rule-file blocks: `modes/considerations.md`,
+    `modes/reproduction.md`, `modes/result-file.md`, and the packs the
+    plugin skill's Step 4 table matches to the changed files;
+  - the changed-file list and the diff.
+
+  Rule files are read from the installed plugin's skill directory, never
+  from the repository under review. A file that cannot be read is left out
+  and noted, never reconstructed. When the project root's path holds a
+  character the agent's path check refuses, such as a space, the path line
+  and `modes/result-file.md` are left out and the result is read inline.
+- **The result is read from the path the workflow supplied, never from a
+  path the reply names.** The workflow falls back to the reply's ```json
+  fence when the file is missing, is a symlink or does not parse, or when
+  the reply opens with `result: NOT WRITTEN`. If neither source yields a
+  document, that is the existing malformed-verdicts anomaly and fails closed.
+- **A `partial` verdict whose `note` begins `budget reached:`** means the
+  agent's 20-call budget ran out before it settled that consideration. It is
+  now named as unverified and escalates like any other `partial`.
+- **Step 7 deletes `.stride/.security-<IDENTIFIER>-r*.json`** after a 2xx
+  completion, next to the claimed-task file, because the result can quote
+  code.
+- `stride-subagent-workflow`'s deep-review trigger line and the README's
+  *Security-considerations deep review* section now say the same.
+
+### Not verified
+
+None of this has been run against a live Copilot CLI dispatch. Copilot CLI
+was not available where the change was made. Still unconfirmed: that
+Copilot exposes the plugin's skill files to a direct agent dispatch, that
+the agent writes the result file through `execute`, and that the result is
+then read back from that path.
+
 ## [2.43.0] - 2026-10-29
 
 This release carries two stride batches into this plugin at once. The first
