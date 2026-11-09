@@ -5127,6 +5127,518 @@ if (-not ((Test-Path $G27Wf) -and (Test-Path $G27Clm) -and (Test-Path $G27Gsh) -
 }
 
 # ============================================================
+# Test Group 28: task attachments downloaded by the claim hook, PowerShell half
+# (W2526, port of stride W2522)
+# ============================================================
+# The twin of the bash suite's Group 43 (download) and Group 44 (guard). A
+# looping HttpListener on localhost stands in for the API: a plain-http API URL
+# is allowed only for loopback, so nothing leaves the machine. The cross-half
+# byte-identical manifest check runs in the bash suite (43p), because this
+# suite cannot run bash. Needles stay ASCII: Windows PowerShell 5.1 can misread
+# a BOM-less UTF-8 script, so non-ASCII test text is built from [char] codes.
+Write-Host ""
+Write-Host "=== Test Group 28: task attachments from the proven claim (W2526) ==="
+
+# A free loopback port, picked by the OS, so this group cannot collide with
+# another suite's listener (stride's twin group uses a fixed 18985).
+$g28Probe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$g28Probe.Start()
+$g28Port = ([System.Net.IPEndPoint]$g28Probe.LocalEndpoint).Port
+$g28Probe.Stop()
+$g28Dir = Join-Path $TmpDir 'w2526'
+New-Item -ItemType Directory -Path $g28Dir -Force | Out-Null
+$g28Routes = Join-Path $g28Dir 'routes.json'
+$g28Log = Join-Path $g28Dir 'requests.log'
+$g28Token = 'g28_fake_tok_5d1e'
+$g28Api = "http://localhost:$g28Port"
+$g28ClaimCmd = "curl -sS -X POST $g28Api/api/tasks/claim -d @c.json | tee r.json"
+
+# path -> { status, body (base64), location, sleep (seconds to stall before
+# answering) }. Re-read on every request, so a
+# case can change the routes without restarting the listener.
+function Set-G28Routes {
+    param([hashtable]$Routes)
+    $o = [ordered]@{}
+    foreach ($k in $Routes.Keys) { $o[$k] = $Routes[$k] }
+    [System.IO.File]::WriteAllText($g28Routes, ($o | ConvertTo-Json -Depth 5 -Compress))
+}
+function New-G28Route {
+    param([string]$Body, [int]$Status = 200, [string]$Location = '', [int]$Sleep = 0, [switch]$Chunked, [switch]$Drip)
+    return @{ status = $Status; body = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Body)); location = $Location; sleep = $Sleep; chunked = [bool]($Chunked -or $Drip); drip = [bool]$Drip }
+}
+function Get-G28Sha {
+    param([string]$Body)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $h = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Body))
+        return (($h | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally { $sha.Dispose() }
+}
+function New-G28Att {
+    param([int]$Id, [string]$Filename, [string]$Body)
+    return [ordered]@{
+        id = $Id; filename = $Filename; content_type = 'text/plain'
+        byte_size = [System.Text.Encoding]::UTF8.GetByteCount($Body); sha256 = (Get-G28Sha $Body)
+        comment_id = $null; uploaded_at = '2026-11-08T10:00:00Z'
+        download_url = "/api/tasks/77/attachments/$Id"
+    }
+}
+function New-G28Claim {
+    param($Attachments)
+    $data = [ordered]@{ id = 77; identifier = 'W5001'; title = 'attach' }
+    if ($null -ne $Attachments) { $data['attachments'] = @($Attachments) }
+    return ([ordered]@{ data = $data } | ConvertTo-Json -Depth 8 -Compress)
+}
+function New-G28Project {
+    param([string]$Name)
+    $d = Join-Path $g28Dir "proj-$Name"
+    if (Test-Path $d) { Remove-Item -Recurse -Force $d }
+    New-Item -ItemType Directory -Path (Join-Path $d '.stride') -Force | Out-Null
+    Set-Content -Path (Join-Path $d '.stride.md') -Encoding UTF8 -Value @"
+## before_doing
+
+``````bash
+``````
+"@
+    [System.IO.File]::WriteAllText((Join-Path $d '.stride_auth.md'),
+        ("- **API URL:** ``{0}```n- **API Token:** ``{1}```n" -f $g28Api, $g28Token))
+    return $d
+}
+function New-G28Input {
+    param([string]$SessionId, [string]$Command, [string]$Stdout)
+    $o = [ordered]@{}
+    if ($SessionId) { $o['session_id'] = $SessionId }
+    $o['tool_input'] = @{ command = $Command }
+    $o['tool_response'] = @{ stdout = $Stdout }
+    return ($o | ConvertTo-Json -Compress -Depth 6)
+}
+function Invoke-G28Claim {
+    param([string]$Dir, [string]$Stdout)
+    if (Test-Path $g28Log) { Remove-Item -Force $g28Log }
+    $in = New-G28Input -SessionId 's' -Command $g28ClaimCmd -Stdout $Stdout
+    return (Invoke-HookScript -InputJson $in -Phase 'post' -ProjectDir $Dir)
+}
+function Get-G28Manifest {
+    param([string]$Dir)
+    $p = Join-Path $Dir '.stride/attachments/W5001/manifest.json'
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    return ([System.IO.File]::ReadAllText($p) | ConvertFrom-Json)
+}
+function Get-G28Requested {
+    if (-not (Test-Path $g28Log)) { return @() }
+    return @(Get-Content -LiteralPath $g28Log | ForEach-Object { ($_ | ConvertFrom-Json).path })
+}
+
+Set-G28Routes @{}
+$g28Job = Start-Job -ArgumentList $g28Port, $g28Routes, $g28Log -ScriptBlock {
+    param($Port, $Routes, $Log)
+    $l = [System.Net.HttpListener]::new()
+    $l.Prefixes.Add("http://localhost:$Port/")
+    try {
+        $l.Start()
+        while ($l.IsListening) {
+            $ctx = $l.GetContext()
+            $req = $ctx.Request
+            $resp = $ctx.Response
+            $entry = @{ path = $req.RawUrl; auth = $req.Headers['Authorization']; ua = $req.UserAgent } | ConvertTo-Json -Compress
+            Add-Content -LiteralPath $Log -Value $entry
+            $map = [System.IO.File]::ReadAllText($Routes) | ConvertFrom-Json
+            $route = $null
+            if ($map.PSObject.Properties.Name -contains $req.RawUrl) { $route = $map.($req.RawUrl) }
+            if ($null -eq $route) {
+                $resp.StatusCode = 404
+            } else {
+                if ([int]$route.sleep -gt 0) { Start-Sleep -Seconds ([int]$route.sleep) }
+                $resp.StatusCode = [int]$route.status
+                if ($route.location) { $resp.RedirectLocation = $route.location }
+                $bytes = [Convert]::FromBase64String($route.body)
+                if ($route.chunked) { $resp.SendChunked = $true } else { $resp.ContentLength64 = $bytes.Length }
+                $resp.OutputStream.Write($bytes, 0, $bytes.Length)
+                if ($route.drip) {
+                    # ~10 s more of 1 KiB chunks; a client that stopped
+                    # reading closes the socket and the write throws.
+                    $chunk = New-Object byte[] 1024
+                    try {
+                        for ($j = 0; $j -lt 200; $j++) {
+                            $resp.OutputStream.Write($chunk, 0, $chunk.Length)
+                            $resp.OutputStream.Flush()
+                            Start-Sleep -Milliseconds 50
+                        }
+                    } catch { }
+                }
+            }
+            try { $resp.OutputStream.Close() } catch { }
+        }
+    } catch {
+    } finally {
+        if ($l.IsListening) { $l.Stop() }
+    }
+}
+
+try {
+    $null = Wait-ForListener -Port $g28Port
+
+    # 28a: several files download; oversize-by-metadata and bad-sha files are
+    # skipped or removed; the hook exits 0.
+    $g28Bodies = @{ 812 = 'png-ish bytes'; 813 = 'pdf-ish bytes'; 814 = 'plain notes'; 816 = 'wrong hash body' }
+    $g28Map = @{}
+    foreach ($k in $g28Bodies.Keys) { $g28Map["/api/tasks/77/attachments/$k"] = (New-G28Route $g28Bodies[$k]) }
+    Set-G28Routes $g28Map
+    $g28Big = New-G28Att 815 'big.bin' 'x'
+    $g28Big['byte_size'] = 26214401
+    $g28BadSha = New-G28Att 816 'hash.bin' $g28Bodies[816]
+    $g28BadSha['sha256'] = ('0' * 64)
+    $g28Atts = @((New-G28Att 812 'screenshot.png' $g28Bodies[812]), (New-G28Att 813 'spec.pdf' $g28Bodies[813]),
+        (New-G28Att 814 'notes.txt' $g28Bodies[814]), $g28Big, $g28BadSha)
+    $g28d = New-G28Project 'a'
+    $r = Invoke-G28Claim $g28d (New-G28Claim $g28Atts)
+    Assert-Exit "28a: the claim hook still exits 0" 0 $r.ExitCode
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28a: statuses follow the contract" 'downloaded,downloaded,downloaded,skipped,failed' (($m.attachments | ForEach-Object { $_.status }) -join ',')
+    Assert-Eq "28a: reasons follow the contract" ',,,too_large,sha256_mismatch' (($m.attachments | ForEach-Object { [string]$_.reason }) -join ',')
+    Assert-Eq "28a: files are saved as <id>-<name> and the bad one removed" '812-screenshot.png,813-spec.pdf,814-notes.txt,manifest.json' `
+        ((Get-ChildItem -LiteralPath (Join-Path $g28d '.stride/attachments/W5001') -Force | Sort-Object Name | ForEach-Object { $_.Name }) -join ',')
+    Assert-Eq "28a: the saved bytes are the served bytes" $g28Bodies[812] ([System.IO.File]::ReadAllText((Join-Path $g28d '.stride/attachments/W5001/812-screenshot.png')))
+    Assert-Eq "28a: a too_large file is never requested" 'False' ([string]((Get-G28Requested) -contains '/api/tasks/77/attachments/815'))
+    Assert-Eq "28a: .gitignore holds exactly *" "*`n" ([System.IO.File]::ReadAllText((Join-Path $g28d '.stride/attachments/.gitignore')))
+    $g28Raw = [System.IO.File]::ReadAllBytes((Join-Path $g28d '.stride/attachments/W5001/manifest.json'))
+    Assert-Eq "28a: manifest.json has no byte-order mark" 'False' ([string]($g28Raw.Length -ge 3 -and $g28Raw[0] -eq 0xEF -and $g28Raw[1] -eq 0xBB -and $g28Raw[2] -eq 0xBF))
+    Assert-Eq "28a: manifest.json ends in exactly one LF" '10,125' ("{0},{1}" -f $g28Raw[$g28Raw.Length - 1], $g28Raw[$g28Raw.Length - 2])
+    Assert-Contains "28a: one summary line on stderr" 'stride: attachments W5001: 3 downloaded, 1 skipped, 1 failed' $r.Stderr
+
+    # 28b: unsafe filenames, ids and download_url values are refused or
+    # sanitised exactly as the bash half does them.
+    $g28Map = @{}
+    foreach ($i in 840..846) { $g28Map["/api/tasks/77/attachments/$i"] = (New-G28Route 'x') }
+    Set-G28Routes $g28Map
+    $g28Emoji = [char]::ConvertFromUtf32(0x1F600)
+    $g28Names = @('../../etc/passwd', '..', 'C:\temp\.env', ("caf{0} r{0}sum{0}.pdf" -f [char]0x00E9), ("smile {0}.png" -f $g28Emoji), 'same.txt', 'same.txt')
+    $g28Atts = @()
+    for ($i = 0; $i -lt $g28Names.Count; $i++) { $g28Atts += (New-G28Att (840 + $i) $g28Names[$i] 'x') }
+    $g28UnsafeId = New-G28Att 847 'x' 'x'; $g28UnsafeId['id'] = '../x'
+    $g28Off = New-G28Att 848 'x' 'x'; $g28Off['download_url'] = 'https://evil.example/x'
+    $g28Dot = New-G28Att 849 'x' 'x'; $g28Dot['download_url'] = '/api/../x'
+    $g28Other = New-G28Att 850 'x' 'x'; $g28Other['download_url'] = '/api/tasks/78/attachments/850'
+    $g28Atts += @($g28UnsafeId, $g28Off, $g28Dot, $g28Other)
+    $g28d = New-G28Project 'b'
+    $r = Invoke-G28Claim $g28d (New-G28Claim $g28Atts)
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28b: names are sanitised per code point inside the task directory" `
+        '840-passwd,841-attachment,842-env,843-caf__r_sum_.pdf,844-smile__.png,845-same.txt,846-same.txt,,,,' `
+        (($m.attachments | ForEach-Object { [string]$_.local_file }) -join ',')
+    Assert-Eq "28b: an unsafe id is unsafe_id and unsafe URLs unsafe_url" 'unsafe_id,unsafe_url,unsafe_url,unsafe_url' `
+        (($m.attachments[7..10] | ForEach-Object { $_.reason }) -join ',')
+    Assert-Eq "28b: no request was made for a refused entry" '7' ([string]@(Get-G28Requested).Count)
+
+    # 28c: a redirect is not followed, so the Authorization header never
+    # reaches the redirect target; it is recorded as http_302.
+    $g28Map = @{}
+    $g28Map['/api/tasks/77/attachments/860'] = (New-G28Route -Body 'moved' -Status 302 -Location "$g28Api/elsewhere/860")
+    $g28Map['/api/tasks/77/attachments/861'] = (New-G28Route -Body 'boom' -Status 500)
+    $g28Map['/api/tasks/77/attachments/862'] = (New-G28Route 'fine')
+    $g28Map['/elsewhere/860'] = (New-G28Route 'moved')
+    Set-G28Routes $g28Map
+    $g28d = New-G28Project 'c'
+    $r = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 860 'a' 'moved'), (New-G28Att 861 'b' 'boom'), (New-G28Att 862 'c' 'fine')))
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28c: a 302 is http_302 and a 500 http_500, the rest still download" 'http_302,http_500,' `
+        (($m.attachments | ForEach-Object { [string]$_.reason }) -join ',')
+    Assert-Eq "28c: the redirect target is never requested" 'False' ([string]((Get-G28Requested) -contains '/elsewhere/860'))
+    Assert-Exit "28c: the hook exit code is unchanged" 0 $r.ExitCode
+
+    # 28d: the token stays in the header, with a curl-like User-Agent.
+    $g28Lines = @(Get-Content -LiteralPath $g28Log | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert-Eq "28d: every request carried the token as its Authorization header" 'True' `
+        ([string](@($g28Lines | Where-Object { $_.auth -ceq "Bearer $g28Token" }).Count -eq $g28Lines.Count))
+    Assert-Eq "28d: and a curl-like User-Agent" 'True' ([string](@($g28Lines | Where-Object { $_.ua -clike 'curl/*' }).Count -eq $g28Lines.Count))
+    $g28Leak = @(Get-ChildItem -LiteralPath (Join-Path $g28d '.stride') -Recurse -File -Force | Where-Object {
+        [System.IO.File]::ReadAllText($_.FullName).Contains($g28Token) })
+    Assert-Eq "28d: the token is in no file under .stride/" '0' ([string]$g28Leak.Count)
+    Assert-NotContains "28d: nor on stdout" $g28Token $r.Stdout
+    Assert-NotContains "28d: nor on stderr" $g28Token $r.Stderr
+
+    # 28e: no attachments key, null or [] creates no directory.
+    foreach ($g28Case in @('{"data":{"id":77,"identifier":"W5001"}}', '{"data":{"id":77,"identifier":"W5001","attachments":null}}',
+                           '{"data":{"id":77,"identifier":"W5001","attachments":[]}}')) {
+        $g28d = New-G28Project 'e'
+        $null = Invoke-G28Claim $g28d $g28Case
+        Assert-Eq "28e: $g28Case creates no attachments directory" 'False' ([string](Test-Path (Join-Path $g28d '.stride/attachments')))
+    }
+
+    # 28f: a claim whose own response does not prove the identity downloads nothing.
+    $g28d = New-G28Project 'f'
+    [System.IO.File]::WriteAllText((Join-Path $g28d '.stride/.last-api-response.json'), (New-G28Claim @((New-G28Att 862 'c' 'fine'))))
+    $null = Invoke-G28Claim $g28d '{"data":{"id":77,"identifier":"W5001","attach'
+    Assert-Eq "28f: a truncated claim downloads nothing" 'False' ([string](Test-Path (Join-Path $g28d '.stride/attachments')))
+
+    # 28g: a symlinked .stride/attachments is refused and nothing written through it.
+    $g28d = New-G28Project 'g'
+    $g28Else = Join-Path $g28Dir 'elsewhere-g'
+    New-Item -ItemType Directory -Path $g28Else -Force | Out-Null
+    $g28Linked = $true
+    try { New-Item -ItemType SymbolicLink -Path (Join-Path $g28d '.stride/attachments') -Target $g28Else -ErrorAction Stop | Out-Null } catch { $g28Linked = $false }
+    if ($g28Linked) {
+        $r = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+        Assert-Eq "28g: a symlinked .stride/attachments is refused" '0' ([string]@(Get-ChildItem -LiteralPath $g28Else -Force).Count)
+        Assert-Contains "28g: and says so on stderr" 'symlink' $r.Stderr
+    } else {
+        Write-Host "  SKIP: 28g: this host cannot create a symbolic link"
+    }
+
+    # 28g2: a symlinked task directory and a symlinked .stride are refused
+    # too, and nothing lands through either.
+    if ($g28Linked) {
+        $g28Map = @{}
+        $g28Map['/api/tasks/77/attachments/862'] = (New-G28Route 'fine')
+        Set-G28Routes $g28Map
+        $g28d = New-G28Project 'g2'
+        $g28Else2 = Join-Path $g28Dir 'elsewhere-g2'
+        New-Item -ItemType Directory -Path $g28Else2 -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $g28d '.stride/attachments') -Force | Out-Null
+        New-Item -ItemType SymbolicLink -Path (Join-Path $g28d '.stride/attachments/W5001') -Target $g28Else2 | Out-Null
+        $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+        Assert-Eq "28g: a symlinked task directory is refused" '0/True' `
+            ("{0}/{1}" -f @(Get-ChildItem -LiteralPath $g28Else2 -Force).Count, [bool]((Get-Item -LiteralPath (Join-Path $g28d '.stride/attachments/W5001') -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint))
+        $g28d = New-G28Project 'g3'
+        $g28Else3 = Join-Path $g28Dir 'elsewhere-g3'
+        if (Test-Path $g28Else3) { Remove-Item -Recurse -Force $g28Else3 }
+        Move-Item -LiteralPath (Join-Path $g28d '.stride') -Destination $g28Else3
+        New-Item -ItemType SymbolicLink -Path (Join-Path $g28d '.stride') -Target $g28Else3 | Out-Null
+        $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+        Assert-Eq "28g: a symlinked .stride is refused" 'False' ([string](Test-Path (Join-Path $g28Else3 'attachments')))
+    }
+
+    # 28n: the half's own size enforcement: a declared length past byte_size,
+    # a short body, and a chunked body that runs past byte_size are each
+    # removed and recorded size_mismatch.
+    $g28Map = @{}
+    $g28Map['/api/tasks/77/attachments/880'] = (New-G28Route 'longer than three')
+    $g28Map['/api/tasks/77/attachments/881'] = (New-G28Route 'short')
+    $g28Map['/api/tasks/77/attachments/882'] = (New-G28Route 'chunked and longer' -Chunked)
+    Set-G28Routes $g28Map
+    $g28Long = New-G28Att 880 'long' 'abc'
+    $g28Short = New-G28Att 881 'short' 'short'; $g28Short['byte_size'] = 50
+    $g28Chunk = New-G28Att 882 'chunk' 'abc'
+    $g28d = New-G28Project 'n'
+    $null = Invoke-G28Claim $g28d (New-G28Claim @($g28Long, $g28Short, $g28Chunk))
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28n: longer, shorter and chunked over-long bodies fail size_mismatch" `
+        'failed/size_mismatch,failed/size_mismatch,failed/size_mismatch' (($m.attachments | ForEach-Object { "{0}/{1}" -f $_.status, $_.reason }) -join ',')
+    Assert-Eq "28n: and no file is left for any of them" 'manifest.json' `
+        ((Get-ChildItem -LiteralPath (Join-Path $g28d '.stride/attachments/W5001') -Force | ForEach-Object { $_.Name }) -join ',')
+
+    # 28n2: an over-long streamed body is cut off as soon as it passes
+    # byte_size, not read for the ~10 s the server keeps sending.
+    $g28Map = @{}
+    $g28Map['/api/tasks/77/attachments/883'] = (New-G28Route 'drip' -Drip)
+    Set-G28Routes $g28Map
+    $g28d = New-G28Project 'n2'
+    $g28Sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 883 'drip' 'abc')))
+    $g28Sw.Stop()
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28n: an over-long streamed body fails size_mismatch" 'failed/size_mismatch' (($m.attachments | ForEach-Object { "{0}/{1}" -f $_.status, $_.reason }) -join ',')
+    Assert-Eq "28n: and is cut off at once rather than read to the end" 'True' ([string]($g28Sw.Elapsed.TotalSeconds -lt 6))
+
+    # 28p: a .gitignore that is a link is replaced, never written through;
+    # one that is a directory stops the download.
+    $g28Map = @{}
+    $g28Map['/api/tasks/77/attachments/862'] = (New-G28Route 'fine')
+    Set-G28Routes $g28Map
+    if ($g28Linked) {
+        $g28d = New-G28Project 'p'
+        New-Item -ItemType Directory -Path (Join-Path $g28d '.stride/attachments') -Force | Out-Null
+        $g28Out = Join-Path $g28Dir 'outside-gitignore'
+        [System.IO.File]::WriteAllText($g28Out, "outside`n")
+        New-Item -ItemType SymbolicLink -Path (Join-Path $g28d '.stride/attachments/.gitignore') -Target $g28Out | Out-Null
+        $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+        $g28Gi = Get-Item -LiteralPath (Join-Path $g28d '.stride/attachments/.gitignore') -Force
+        Assert-Eq "28p: a linked .gitignore is replaced by a regular file holding *" "False|*`n|outside`n" `
+            ("{0}|{1}|{2}" -f [bool]($g28Gi.Attributes -band [System.IO.FileAttributes]::ReparsePoint), [System.IO.File]::ReadAllText($g28Gi.FullName), [System.IO.File]::ReadAllText($g28Out))
+        # A link to a directory is the case a plain move gets wrong.
+        $g28d = New-G28Project 'p3'
+        New-Item -ItemType Directory -Path (Join-Path $g28d '.stride/attachments') -Force | Out-Null
+        $g28OutDir = Join-Path $g28Dir 'outside-gidir'
+        if (Test-Path $g28OutDir) { Remove-Item -Recurse -Force $g28OutDir }
+        New-Item -ItemType Directory -Path $g28OutDir -Force | Out-Null
+        New-Item -ItemType SymbolicLink -Path (Join-Path $g28d '.stride/attachments/.gitignore') -Target $g28OutDir | Out-Null
+        $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+        $g28Gi = Get-Item -LiteralPath (Join-Path $g28d '.stride/attachments/.gitignore') -Force -ErrorAction SilentlyContinue
+        Assert-Eq "28p: a .gitignore linked to a directory is replaced, nothing lands inside it" 'True|0' `
+            ("{0}|{1}" -f [bool]($null -ne $g28Gi -and -not $g28Gi.PSIsContainer -and -not ($g28Gi.Attributes -band [System.IO.FileAttributes]::ReparsePoint)), @(Get-ChildItem -LiteralPath $g28OutDir -Force).Count)
+    }
+    $g28d = New-G28Project 'p2'
+    New-Item -ItemType Directory -Path (Join-Path $g28d '.stride/attachments/.gitignore') -Force | Out-Null
+    $r = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+    Assert-Eq "28p: a .gitignore that is a directory downloads nothing" 'False' ([string](Test-Path (Join-Path $g28d '.stride/attachments/W5001')))
+    Assert-Contains "28p: and says so on stderr" '.gitignore is not a regular file' $r.Stderr
+
+    # 28h: the budget override only shortens it; 0 skips every accepted entry.
+    $g28d = New-G28Project 'h'
+    $env:STRIDE_ATTACHMENT_BUDGET_SECONDS = '0'
+    try { $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine'))) } finally { Remove-Item Env:STRIDE_ATTACHMENT_BUDGET_SECONDS -ErrorAction SilentlyContinue }
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28h: an exhausted budget skips the entry time_budget" 'skipped/time_budget/0' ("{0}/{1}/{2}" -f $m.attachments[0].status, $m.attachments[0].reason, $m.caps.budget_seconds)
+    $env:STRIDE_ATTACHMENT_BUDGET_SECONDS = '999'
+    try { $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine'))) } finally { Remove-Item Env:STRIDE_ATTACHMENT_BUDGET_SECONDS -ErrorAction SilentlyContinue }
+    Assert-Eq "28h: a budget over 120 s is ignored" '120' ([string](Get-G28Manifest $g28d).caps.budget_seconds)
+
+    # 28j: number ids must be plain digits, ids are at most 64 characters, and
+    # a byte_size that is not a non-negative integer is too_large -- all
+    # without a request. The claim text is written by hand so 1e3 and 1.5 stay
+    # literal.
+    $g28d = New-G28Project 'j'
+    $g28LongId = 'a' * 65
+    $g28Text = '{"data":{"id":77,"identifier":"W5001","attachments":[' +
+        '{"id":1e3,"filename":"n","byte_size":3,"download_url":"/api/tasks/77/attachments/1000"},' +
+        '{"id":"' + $g28LongId + '","filename":"n","byte_size":3,"download_url":"/api/tasks/77/attachments/862"},' +
+        '{"id":-5,"filename":"n","byte_size":3,"download_url":"/api/tasks/77/attachments/862"},' +
+        '{"id":905,"filename":"s","byte_size":"12","download_url":"/api/tasks/77/attachments/905"},' +
+        '{"id":906,"filename":"s","byte_size":-1,"download_url":"/api/tasks/77/attachments/906"},' +
+        '{"id":907,"filename":"s","byte_size":1.5,"download_url":"/api/tasks/77/attachments/907"}]}}'
+    $null = Invoke-G28Claim $g28d $g28Text
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28j: exponent, long and negative ids are unsafe_id; bad sizes too_large" `
+        'unsafe_id,unsafe_id,unsafe_id,too_large,too_large,too_large' (($m.attachments | ForEach-Object { $_.reason }) -join ',')
+    Assert-Eq "28j: and none of them is requested" '0' ([string]@(Get-G28Requested).Count)
+
+    # 28k: no token, or no API URL, fetches nothing and records transport; the
+    # URL in the intercepted command is never a fallback.
+    $g28d = New-G28Project 'k'
+    [System.IO.File]::WriteAllText((Join-Path $g28d '.stride_auth.md'), ("- **API URL:** ``{0}```n" -f $g28Api))
+    $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28k: no API token records transport with no request" 'failed/transport/0' `
+        ("{0}/{1}/{2}" -f $m.attachments[0].status, $m.attachments[0].reason, @(Get-G28Requested).Count)
+    [System.IO.File]::WriteAllText((Join-Path $g28d '.stride_auth.md'), ("- **API Token:** ``{0}```n" -f $g28Token))
+    $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28k: no API URL records transport with no request" 'failed/transport/0' `
+        ("{0}/{1}/{2}" -f $m.attachments[0].status, $m.attachments[0].reason, @(Get-G28Requested).Count)
+
+    # A plain-http URL not spelled exactly as loopback is refused. LOCALHOST
+    # reaches the stand-in listener (its host match ignores case), so the
+    # refusal is the only thing stopping the request.
+    [System.IO.File]::WriteAllText((Join-Path $g28d '.stride_auth.md'), ("- **API URL:** ``http://LOCALHOST:{0}```n- **API Token:** ``{1}```n" -f $g28Port, $g28Token))
+    $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28k: a non-loopback http API URL records transport with no request" 'failed/transport/0' `
+        ("{0}/{1}/{2}" -f $m.attachments[0].status, $m.attachments[0].reason, @(Get-G28Requested).Count)
+
+    # 28l: a re-claim replaces the directory, and a re-claim with no
+    # attachments removes it.
+    $g28d = New-G28Project 'l'
+    $g28Td = Join-Path $g28d '.stride/attachments/W5001'
+    New-Item -ItemType Directory -Path $g28Td -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $g28Td '999-stale.txt'), "stale`n")
+    [System.IO.File]::WriteAllText((Join-Path $g28Td 'manifest.json'), "{`"manifest_version`":1,`"stale`":true}`n")
+    $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+    Assert-Eq "28l: a re-claim replaces the previous directory" '862-c,manifest.json' `
+        ((Get-ChildItem -LiteralPath $g28Td -Force | Sort-Object Name | ForEach-Object { $_.Name }) -join ',')
+    Assert-Eq "28l: and its manifest describes this claim" 'False' `
+        ([string]((Get-G28Manifest $g28d).PSObject.Properties.Name -contains 'stale'))
+    $null = Invoke-G28Claim $g28d '{"data":{"id":77,"identifier":"W5001","attachments":[]}}'
+    Assert-Eq "28l: a re-claim with no attachments removes the stale directory" 'False' ([string](Test-Path -LiteralPath $g28Td))
+
+    # 28q: this port's own-call gate also asks the COMMAND. A saved-output
+    # notice counts only when the command names the identifier that came
+    # back, and a command naming another identifier never downloads.
+    $g28Map = @{}
+    $g28Map['/api/tasks/77/attachments/862'] = (New-G28Route 'fine')
+    Set-G28Routes $g28Map
+    $g28Persist = Join-Path $g28Dir 'persisted-q.json'
+    [System.IO.File]::WriteAllText($g28Persist, (New-G28Claim @((New-G28Att 862 'c' 'fine'))))
+    $g28Saved = $g28ClaimCmd
+    try {
+        $g28ClaimCmd = "jq -n --arg identifier W5001 '{identifier: `$identifier}' | curl -sS -X POST $g28Api/api/tasks/claim -d @- | tee r.json"
+        $g28d = New-G28Project 'q'
+        $null = Invoke-G28Claim $g28d "Full output saved to: $g28Persist"
+        $m = Get-G28Manifest $g28d
+        $g28St = ''
+        if ($null -ne $m) { $g28St = (($m.attachments | ForEach-Object { $_.status }) -join ',') }
+        Assert-Eq "28q: a saved-output claim whose command names the identifier downloads" 'downloaded' $g28St
+        $g28ClaimCmd = $g28Saved
+        $g28d = New-G28Project 'q2'
+        $null = Invoke-G28Claim $g28d "Full output saved to: $g28Persist"
+        Assert-Eq "28q: a saved-output claim whose command names no identifier downloads nothing" 'False/0' `
+            ("{0}/{1}" -f (Test-Path (Join-Path $g28d '.stride/attachments')), @(Get-G28Requested).Count)
+        $g28ClaimCmd = "jq -n --arg identifier W9999 '{identifier: `$identifier}' | curl -sS -X POST $g28Api/api/tasks/claim -d @- | tee r.json"
+        $g28d = New-G28Project 'q3'
+        $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 862 'c' 'fine')))
+        Assert-Eq "28q: a claim whose command names a different identifier downloads nothing" 'False/0' `
+            ("{0}/{1}" -f (Test-Path (Join-Path $g28d '.stride/attachments')), @(Get-G28Requested).Count)
+    } finally { $g28ClaimCmd = $g28Saved }
+
+    # 28m: the budget is a wall clock across the whole download: a request that
+    # stalls past it fails time_budget, and the next entry is skipped without a
+    # request. Last in the try, because the stall holds the one-at-a-time
+    # listener for its whole length.
+    $g28Map = @{}
+    $g28Map['/api/tasks/77/attachments/870'] = (New-G28Route -Body 'slow body' -Sleep 8)
+    $g28Map['/api/tasks/77/attachments/871'] = (New-G28Route 'never reached')
+    Set-G28Routes $g28Map
+    $g28d = New-G28Project 'm'
+    $env:STRIDE_ATTACHMENT_BUDGET_SECONDS = '2'
+    $g28Sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try { $null = Invoke-G28Claim $g28d (New-G28Claim @((New-G28Att 870 'slow' 'slow body'), (New-G28Att 871 'next' 'never reached'))) } finally { Remove-Item Env:STRIDE_ATTACHMENT_BUDGET_SECONDS -ErrorAction SilentlyContinue }
+    $g28Sw.Stop()
+    $m = Get-G28Manifest $g28d
+    Assert-Eq "28m: a stalled request fails time_budget and the next is skipped time_budget" 'failed/time_budget,skipped/time_budget' `
+        (($m.attachments | ForEach-Object { "{0}/{1}" -f $_.status, $_.reason }) -join ',')
+    Assert-Eq "28m: the request was cut off near the 2 s budget, not at the 8 s stall" 'True' ([string]($g28Sw.Elapsed.TotalSeconds -lt 7))
+    Assert-Eq "28m: the entry after the deadline was never requested" 'False' ([string]((Get-G28Requested) -contains '/api/tasks/77/attachments/871'))
+} finally {
+    Stop-Job $g28Job -ErrorAction SilentlyContinue
+    Remove-Job $g28Job -Force -ErrorAction SilentlyContinue
+}
+
+# 28i: the curl-guard exemption -- exactly a GET of an attachments path whose
+# -o target is under <project>/.stride/attachments/. Everything else is refused.
+$g28gd = New-G28Project 'guard'
+New-Item -ItemType Directory -Path (Join-Path $g28gd '.stride/attachments/W5001') -Force | Out-Null
+$g28Root = ([System.IO.Path]::GetFullPath($g28gd)).TrimEnd('\', '/').Replace('\', '/')
+$g28T = "$g28Root/.stride/attachments/W5001/812-shot.png"
+$g28U = 'https://www.stridelikeaboss.com/api/tasks/77/attachments/812'
+function Invoke-G28Guard {
+    param([string]$Cmd)
+    $in = @{ tool_input = @{ command = $Cmd } } | ConvertTo-Json -Compress -Depth 4
+    return (Invoke-HookScript -InputJson $in -Phase 'pre' -ProjectDir $g28gd).ExitCode
+}
+Assert-Exit "28i: a GET of an attachments path with -o under .stride/attachments/ is allowed" 0 (Invoke-G28Guard "curl -sS -H `"Authorization: Bearer `$T`" -o `"$g28T`" `"$g28U`"")
+Assert-Exit "28i: a clustered -o is allowed" 0 (Invoke-G28Guard "curl -sSo $g28T $g28U")
+Assert-Exit "28i: allowlisted options and a quoted `${VAR} base are allowed" 0 (Invoke-G28Guard "curl -sS --fail --max-time 30 -A curl/8 -o $g28T `"`${STRIDE_API_URL}/api/tasks/77/attachments/812`"")
+Assert-Exit "28i: an unquoted `$VAR base is refused" 2 (Invoke-G28Guard "curl -sS -o $g28T `$STRIDE_API_URL/api/tasks/77/attachments/812")
+Assert-Exit "28i: an empty word is refused" 2 (Invoke-G28Guard "curl -sS -o $g28T '' $g28U")
+Assert-Exit "28i: an empty option value is refused too" 2 (Invoke-G28Guard "curl -sS -A '' -o $g28T $g28U")
+# A quoted "$@", "${a[@]}" or "$*" can expand to zero or several words.
+Assert-Exit "28i: a quoted `"`$@`" is refused" 2 (Invoke-G28Guard "curl -sS -A `"`$@`" -o $g28T $g28U")
+Assert-Exit "28i: a quoted `"`${a[@]}`" is refused" 2 (Invoke-G28Guard "curl -sS -A `"`${a[@]}`" -o $g28T $g28U")
+Assert-Exit "28i: a quoted `"`$*`" is refused" 2 (Invoke-G28Guard "curl -sS -A `"`$*`" -o $g28T $g28U")
+Assert-Exit "28i: a quoted plain `$NAME option value is allowed" 0 (Invoke-G28Guard "curl -sS -A `"`$UA`" -o $g28T $g28U")
+Assert-Exit "28i: -o outside .stride/attachments/ is still refused" 2 (Invoke-G28Guard "curl -sS -o /tmp/812.png $g28U")
+Assert-Exit "28i: -o elsewhere under .stride/ is still refused" 2 (Invoke-G28Guard "curl -sS -o $g28Root/.stride/812.png $g28U")
+Assert-Exit "28i: -o onto a manifest is refused" 2 (Invoke-G28Guard "curl -sS -o $g28Root/.stride/attachments/W5001/manifest.json $g28U")
+Assert-Exit "28i: a non-GET with -o is refused" 2 (Invoke-G28Guard "curl -sS -X POST -o $g28T $g28U")
+Assert-Exit "28i: a pipe into jq on an attachments path is still refused" 2 (Invoke-G28Guard "curl -sS $g28U | jq .")
+Assert-Exit "28i: a stdout redirect on an attachments path is still refused" 2 (Invoke-G28Guard "curl -sS $g28U > $g28T")
+Assert-Exit "28i: an exempt curl cannot carry a second, unsafe one" 2 (Invoke-G28Guard "curl -sS -o $g28T $g28U; curl -sS -o out.json https://www.stridelikeaboss.com/api/tasks/1/complete")
+Assert-Exit "28i: a non-attachments path with the exempt target is refused" 2 (Invoke-G28Guard "curl -sS -o $g28T https://www.stridelikeaboss.com/api/tasks/77/complete")
+Assert-Exit "28i: a `$VAR-prefixed target is refused" 2 (Invoke-G28Guard "curl -sS -o `"`$CLAUDE_PROJECT_DIR/.stride/attachments/W5001/812-shot.png`" $g28U")
+Assert-Exit "28i: --location-trusted is not on the allowlist" 2 (Invoke-G28Guard "curl -sS --location-trusted -o $g28T $g28U")
+Assert-Exit "28i: -v is not on the allowlist" 2 (Invoke-G28Guard "curl -v -o $g28T $g28U")
+Assert-Exit "28i: a relative target is refused" 2 (Invoke-G28Guard "curl -sS -o .stride/attachments/W5001/812-shot.png $g28U")
+Assert-Exit "28i: a second URL is refused" 2 (Invoke-G28Guard "curl -sS -o $g28T $g28U https://www.stridelikeaboss.com/x")
+Assert-Exit "28i: a pipe into tee is refused" 2 (Invoke-G28Guard "curl -sS -o $g28T $g28U | tee x")
+Assert-Exit "28i: a && list is refused" 2 (Invoke-G28Guard "curl -sS -o $g28T $g28U && echo done")
+Assert-Exit "28i: an unquoted glob in an option value is refused" 2 (Invoke-G28Guard "curl -sS -H X:* -o $g28T $g28U")
+Assert-Exit "28i: an unquoted brace expansion is refused" 2 (Invoke-G28Guard "curl -sS -A a{b,c} -o $g28T $g28U")
+# The stride twin uses `-A x|tee -o ...`, which this port's guard already
+# permits (the -o belongs to a tee stage); a redirect operator exercises the
+# exemption's refusal instead.
+Assert-Exit "28i: an operator inside an option value is refused" 2 (Invoke-G28Guard "curl -sS -A x>y -o $g28T $g28U")
+Assert-Exit "28i: a command substitution is never exempt" 2 (Invoke-G28Guard "curl -sS -o $g28T `"`$(cat u)/api/tasks/77/attachments/812`"")
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Host ""

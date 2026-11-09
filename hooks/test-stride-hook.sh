@@ -9661,6 +9661,709 @@ else
 fi
 
 # ============================================================
+# Test Group 43: task attachments downloaded by the claim hook (W2526, port of stride W2522)
+# ============================================================
+# A proven claim downloads every listed attachment into
+# .stride/attachments/<STEM>/ and writes manifest.json LAST, under the contract
+# in docs/porting-attachments.md. Hermetic: a python3 HTTP server on 127.0.0.1
+# stands in for the API (the contract allows plain http only for a loopback API
+# URL), so real curl runs and no request leaves the machine. The PowerShell
+# half is Test Group 28 of its suite; the cross-half byte comparison lives here
+# because the ps1 suite cannot run bash.
+echo ""
+echo "=== Test Group 43: task attachments downloaded from the proven claim (W2526) ==="
+
+G43_DIR="$TMPDIR_TEST/w2526"
+G43_TOKEN="g43_fake_tok_7f3a9c"
+G43_SRV_PID=""
+mkdir -p "$G43_DIR"
+
+if ! command -v jq > /dev/null 2>&1 || ! command -v python3 > /dev/null 2>&1 \
+   || ! command -v curl > /dev/null 2>&1; then
+  echo "  SKIP: 43a-43s: jq, python3 or curl missing -- Group 43 needs all three"
+else
+  # The stand-in API: serves $1/<path> as a file; <path>.status holds a status
+  # (and an optional Location) to answer instead; <path>.extra holds bytes to
+  # send AFTER the declared Content-Length body (a server that lies about the
+  # length); <path>.chunked sends the body chunked, with no length at all,
+  # and <path>.drip with it keeps streaming 1 KiB chunks for ~10 s more;
+  # <path>.sleep holds seconds to stall after the headers; every request's
+  # path, User-Agent and Authorization are logged.
+  cat > "$G43_DIR/srv.py" <<'G43PY'
+import http.server, json, os, socketserver, sys, time
+root, portfile, logfile = sys.argv[1], sys.argv[2], sys.argv[3]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        with open(logfile, "a") as f:
+            f.write(json.dumps({"path": self.path, "ua": self.headers.get("User-Agent"),
+                                "auth": self.headers.get("Authorization")}) + "\n")
+        p = os.path.normpath(os.path.join(root, self.path.lstrip("/").split("?")[0]))
+        status, loc, body = 200, None, b""
+        if os.path.isfile(p + ".status"):
+            spec = open(p + ".status").read().split()
+            status = int(spec[0])
+            loc = spec[1] if len(spec) > 1 else None
+        if p.startswith(root) and os.path.isfile(p):
+            body = open(p, "rb").read()
+        elif status == 200:
+            status = 404
+        extra = open(p + ".extra", "rb").read() if os.path.isfile(p + ".extra") else b""
+        if os.path.isfile(p + ".chunked"):
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(status)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                for part in (body, extra):
+                    if part: self.wfile.write(b"%x\r\n%s\r\n" % (len(part), part))
+                if os.path.isfile(p + ".drip"):
+                    # Keep streaming for ~10 s after the declared body.
+                    for _ in range(200):
+                        self.wfile.write(b"400\r\n" + b"d" * 1024 + b"\r\n")
+                        self.wfile.flush()
+                        time.sleep(0.05)
+                self.wfile.write(b"0\r\n\r\n")
+            except OSError:
+                pass
+            return
+        self.send_response(status)
+        if loc: self.send_header("Location", loc)
+        self.send_header("Content-Length", str(len(body) + len(extra)))
+        self.end_headers()
+        if os.path.isfile(p + ".sleep"):
+            self.wfile.flush()
+            time.sleep(float(open(p + ".sleep").read().strip()))
+        try:
+            self.wfile.write(body + extra)
+        except OSError:
+            pass
+class S(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+s = S(("127.0.0.1", 0), H)
+with open(portfile + ".tmp", "w") as f: f.write(str(s.server_address[1]))
+os.replace(portfile + ".tmp", portfile)
+s.serve_forever()
+G43PY
+  G43_SRV="$G43_DIR/srv"
+  G43_LOG="$G43_DIR/requests.log"
+  mkdir -p "$G43_SRV/api/tasks/77/attachments"
+  python3 "$G43_DIR/srv.py" "$G43_SRV" "$G43_DIR/port" "$G43_LOG" > /dev/null 2>&1 &
+  G43_SRV_PID=$!
+  for _g43_i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$G43_DIR/port" ] && break
+    sleep 0.25
+  done
+  G43_PORT=$(cat "$G43_DIR/port" 2>/dev/null)
+  G43_API="http://127.0.0.1:$G43_PORT"
+  G43_CLAIM_CMD="curl -sS -X POST $G43_API/api/tasks/claim -d @c.json | tee r.json"
+
+  g43_body() { # $1=attachment id $2=bytes (printf format, no newline added)
+    printf "$2" > "$G43_SRV/api/tasks/77/attachments/$1"
+  }
+  g43_sha() { # $1=file -> lowercase sha256
+    local _s
+    _s=$(shasum -a 256 "$1" 2>/dev/null || sha256sum "$1" 2>/dev/null)
+    printf '%s' "${_s%% *}"
+  }
+  g43_att() { # $1=id $2=filename -> one server-shaped entry for the served body
+    local _f="$G43_SRV/api/tasks/77/attachments/$1"
+    jq -nc --argjson id "$1" --arg fn "$2" --argjson size "$(wc -c < "$_f" | tr -d ' ')" \
+      --arg sha "$(g43_sha "$_f")" \
+      '{id: $id, filename: $fn, content_type: "application/octet-stream", byte_size: $size,
+        sha256: $sha, comment_id: null, uploaded_at: "2026-11-08T10:00:00Z",
+        download_url: ("/api/tasks/77/attachments/" + ($id | tostring))}'
+  }
+  g43_task() { # $1=JSON array of entries -> the claim response
+    jq -nc --argjson a "$1" '{data: {id: 77, identifier: "W5001", title: "attach", attachments: $a}}'
+  }
+  g43_proj() { # $1=name -> a project whose API URL is the stand-in server
+    local _d="$G43_DIR/proj-$1"
+    rm -rf "$_d"; mkdir -p "$_d/.stride"
+    printf '## before_doing\n```bash\necho ready\n```\n\n## before_review\n```bash\n```\n' > "$_d/.stride.md"
+    printf -- '- **API URL:** `%s`\n- **API Token:** `%s`\n' "$G43_API" "$G43_TOKEN" > "$_d/.stride_auth.md"
+    printf '%s' "$_d"
+  }
+  g43_claim() { # $1=project $2=stdout payload [$3=hook script] -> sets G43_RC/OUT/ERR
+    local _script="${3:-$HOOK_SCRIPT}" _runner=bash
+    case "$_script" in *.ps1) _runner="pwsh -NoProfile -File" ;; esac
+    : > "$G43_LOG"
+    jq -nc --arg c "$G43_CLAIM_CMD" --arg r "$2" \
+      '{session_id:"s",tool_input:{command:$c},tool_response:{stdout:$r}}' \
+      | CLAUDE_PROJECT_DIR="$1" $_runner "$_script" post > "$G43_DIR/out" 2> "$G43_DIR/err"
+    G43_RC=$?
+    G43_OUT=$(cat "$G43_DIR/out")
+    G43_ERR=$(cat "$G43_DIR/err")
+  }
+  g43_m() { # $1=project $2=jq filter -> the filter applied to the W5001 manifest
+    jq -c "$2" "$1/.stride/attachments/W5001/manifest.json" 2>/dev/null
+  }
+  g43_requested() { # $1=path -> yes when the stand-in server saw that path
+    grep -qF "\"path\": \"$1\"" "$G43_LOG" 2>/dev/null && echo yes || echo no
+  }
+
+  g43_body 812 '\x89PNG\r\n\x1a\nfake-png'
+  g43_body 813 '%%PDF-1.4 fake pdf'
+  g43_body 814 'plain text notes\n'
+  G43_THREE="[$(g43_att 812 screenshot.png),$(g43_att 813 spec.pdf),$(g43_att 814 notes.txt)]"
+
+  # 43a: the happy path -- three files, verified, manifest last, .gitignore.
+  G43_D=$(g43_proj a)
+  g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43a: the claim hook still exits 0" "0" "$G43_RC"
+  assert_eq "43a: each file is saved as <id>-<sanitised name>" \
+    "812-screenshot.png 813-spec.pdf 814-notes.txt manifest.json" \
+    "$(ls "$G43_D/.stride/attachments/W5001" | tr '\n' ' ' | sed 's/ $//')"
+  assert_eq "43a: the saved bytes are the served bytes" "same" \
+    "$(cmp -s "$G43_SRV/api/tasks/77/attachments/812" "$G43_D/.stride/attachments/W5001/812-screenshot.png" && echo same || echo differ)"
+  assert_eq "43a: every entry is downloaded with a null reason" \
+    '[["downloaded",null],["downloaded",null],["downloaded",null]]' \
+    "$(g43_m "$G43_D" '[.attachments[] | [.status, .reason]]')"
+  assert_eq "43a: manifest top-level keys are in contract order" \
+    '["manifest_version","task","caps","attachments"]' "$(g43_m "$G43_D" 'keys_unsorted')"
+  assert_eq "43a: entry keys are in contract order" \
+    '["id","filename","local_file","content_type","byte_size","sha256","comment_id","uploaded_at","download_path","status","reason"]' \
+    "$(g43_m "$G43_D" '.attachments[0] | keys_unsorted')"
+  assert_eq "43a: task and caps carry the contract values" \
+    '{"task":{"id":77,"identifier":"W5001"},"caps":{"file_bytes":26214400,"files":20,"total_bytes":104857600,"budget_seconds":120}}' \
+    "$(g43_m "$G43_D" '{task, caps}')"
+  assert_eq "43a: download_path is the relative server path, never an absolute URL" \
+    '"/api/tasks/77/attachments/812"' "$(g43_m "$G43_D" '.attachments[0].download_path')"
+  assert_eq "43a: manifest.json is compact with exactly one trailing LF" "1 0a" \
+    "$(wc -l < "$G43_D/.stride/attachments/W5001/manifest.json" | tr -d ' ') $(tail -c 1 "$G43_D/.stride/attachments/W5001/manifest.json" | od -An -tx1 | tr -d ' ')"
+  assert_eq "43a: .stride/attachments/.gitignore holds exactly *" "*" \
+    "$(cat "$G43_D/.stride/attachments/.gitignore" 2>/dev/null)"
+  assert_eq "43a: no staging temp survives" "0" \
+    "$(find "$G43_D/.stride/attachments" -name '.part.*' -o -name '.manifest.*' -o -name '.gitignore.*' | wc -l | tr -d ' ')"
+  assert_contains "43a: one summary line on stderr" \
+    "stride: attachments W5001: 3 downloaded, 0 skipped, 0 failed" "$G43_ERR"
+
+  # 43b: hook stdout is the same single JSON document with or without the
+  # download -- budget 0 downloads nothing and is otherwise the same claim.
+  G43_D=$(g43_proj b)
+  STRIDE_ATTACHMENT_BUDGET_SECONDS=0 g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  G43_OUT_NONE=$(printf '%s' "$G43_OUT" | sed -E 's/"duration_ms": *[0-9]+/"duration_ms":0/g')
+  G43_D=$(g43_proj b2)
+  g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  # duration_ms is the section's own wall clock, so it is the one field that
+  # may differ between two runs; everything else must be identical.
+  # Compared as raw text, so a stray line on stdout is a difference rather
+  # than a parse error that empties both sides.
+  assert_eq "43b: hook stdout is unchanged by the download" "$G43_OUT_NONE" \
+    "$(printf '%s' "$G43_OUT" | sed -E 's/"duration_ms": *[0-9]+/"duration_ms":0/g')"
+  assert_eq "43b: and it is exactly one JSON document" "ok" \
+    "$(printf '%s' "$G43_OUT" | python3 -c 'import json,sys; json.loads(sys.stdin.read()); print("ok")' 2>/dev/null)"
+
+  # 43c: no attachments key, null, [] or a non-array -> no directory at all.
+  for g43_case in '{"data":{"id":77,"identifier":"W5001"}}' \
+                  '{"data":{"id":77,"identifier":"W5001","attachments":null}}' \
+                  '{"data":{"id":77,"identifier":"W5001","attachments":[]}}' \
+                  '{"data":{"id":77,"identifier":"W5001","attachments":"x"}}'; do
+    G43_D=$(g43_proj c)
+    g43_claim "$G43_D" "$g43_case"
+    assert_eq "43c: $(printf '%s' "$g43_case" | jq -c '.data.attachments') creates no attachments directory" \
+      "absent" "$([ -e "$G43_D/.stride/attachments" ] && echo present || echo absent)"
+  done
+
+  # 43d: caps, judged on the declared byte_size before any request.
+  G43_D=$(g43_proj d)
+  G43_CAPS=$(jq -nc '[{id: 901, filename: "big.bin", byte_size: 26214401, sha256: ("0" * 64),
+                        download_url: "/api/tasks/77/attachments/901"}]
+                     + [range(0; 21) | {id: (920 + .), filename: "f", byte_size: 1, sha256: ("0" * 64),
+                        download_url: ("/api/tasks/77/attachments/" + ((920 + .) | tostring))}]')
+  STRIDE_ATTACHMENT_BUDGET_SECONDS=0 g43_claim "$G43_D" "$(g43_task "$G43_CAPS")"
+  assert_eq "43d: a file over 26,214,400 bytes is skipped too_large" '["skipped","too_large"]' \
+    "$(g43_m "$G43_D" '.attachments[0] | [.status, .reason]')"
+  assert_eq "43d: the 21st accepted-size entry is skipped count_cap" '["skipped","count_cap"]' \
+    "$(g43_m "$G43_D" '.attachments[21] | [.status, .reason]')"
+  g43_claim "$G43_D" "$(g43_task "$G43_CAPS")"
+  assert_eq "43d: a too_large file is never requested" "no" \
+    "$(g43_requested /api/tasks/77/attachments/901)"
+  assert_eq "43d: nor a count_cap one" "no" "$(g43_requested /api/tasks/77/attachments/940)"
+  G43_SIZES='[{"id":905,"filename":"s","byte_size":"12","sha256":"x","download_url":"/api/tasks/77/attachments/905"},{"id":906,"filename":"s","byte_size":-1,"sha256":"x","download_url":"/api/tasks/77/attachments/906"},{"id":907,"filename":"s","byte_size":1.5,"sha256":"x","download_url":"/api/tasks/77/attachments/907"},{"id":908,"filename":"s","sha256":"x","download_url":"/api/tasks/77/attachments/908"}]'
+  g43_claim "$G43_D" "$(g43_task "$G43_SIZES")"
+  assert_eq "43d: a string, negative, fractional or missing byte_size is skipped too_large" \
+    '["too_large","too_large","too_large","too_large"]' "$(g43_m "$G43_D" '[.attachments[].reason]')"
+  assert_eq "43d: and none of them is requested" "0" "$(wc -l < "$G43_LOG" | tr -d ' ')"
+  G43_D=$(g43_proj d2)
+  # total_cap counts ACCEPTED entries only: four 25 MiB entries fill the 100
+  # MiB exactly, so the fifth and a 1-byte sixth are over; a skipped entry adds
+  # nothing, so a 0-byte seventh is still accepted.
+  G43_TOT=$(jq -nc '[range(0; 5) | {id: (950 + .), filename: "t", byte_size: 26214400, sha256: ("0" * 64),
+                      download_url: ("/api/tasks/77/attachments/" + ((950 + .) | tostring))}]
+                    + [{id: 960, filename: "one", byte_size: 1, sha256: ("0" * 64), download_url: "/api/tasks/77/attachments/960"},
+                       {id: 961, filename: "zero", byte_size: 0, sha256: ("0" * 64), download_url: "/api/tasks/77/attachments/961"}]')
+  STRIDE_ATTACHMENT_BUDGET_SECONDS=0 g43_claim "$G43_D" "$(g43_task "$G43_TOT")"
+  assert_eq "43d: past 104,857,600 bytes in total the rest are skipped total_cap, counting accepted entries only" \
+    '["time_budget","time_budget","time_budget","time_budget","total_cap","total_cap","time_budget"]' \
+    "$(g43_m "$G43_D" '[.attachments[].reason]')"
+
+  # 43e: the time budget. 0 skips every accepted entry; a larger override is
+  # ignored, so nothing can push the download past the hook timeout.
+  G43_D=$(g43_proj e)
+  STRIDE_ATTACHMENT_BUDGET_SECONDS=0 g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43e: an exhausted budget skips every accepted entry time_budget" \
+    '[["skipped","time_budget"],["skipped","time_budget"],["skipped","time_budget"]]' \
+    "$(g43_m "$G43_D" '[.attachments[] | [.status, .reason]]')"
+  assert_eq "43e: and records the budget it ran with" "0" "$(g43_m "$G43_D" '.caps.budget_seconds')"
+  assert_eq "43e: nothing was requested" "0" "$(wc -l < "$G43_LOG" | tr -d ' ')"
+  STRIDE_ATTACHMENT_BUDGET_SECONDS=999 g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43e: a budget over 120 s is ignored" "120" "$(g43_m "$G43_D" '.caps.budget_seconds')"
+
+  # 43f: a body longer or shorter than byte_size, and a sha256 mismatch, are
+  # removed and recorded as failed.
+  g43_body 830 'abc'
+  printf 'TRAILING' > "$G43_SRV/api/tasks/77/attachments/830.extra"
+  g43_body 831 'short'
+  g43_body 833 'abc'
+  printf 'MORE-THAN-DECLARED' > "$G43_SRV/api/tasks/77/attachments/833.extra"
+  : > "$G43_SRV/api/tasks/77/attachments/833.chunked"
+  g43_body 832 'right size, wrong hash'
+  G43_BAD=$(jq -nc --argjson a "$(g43_att 830 long.bin)" --argjson b "$(g43_att 831 short.bin)" \
+    --argjson c "$(g43_att 832 hash.bin)" --argjson d "$(g43_att 833 chunked.bin)" \
+    '[$a, ($b | .byte_size = 50), ($c | .sha256 = ("0" * 64)), $d]')
+  G43_D=$(g43_proj f)
+  g43_claim "$G43_D" "$(g43_task "$G43_BAD")"
+  assert_eq "43f: longer, shorter and over-long chunked bodies fail size_mismatch, a bad hash sha256_mismatch" \
+    '[["failed","size_mismatch",null],["failed","size_mismatch",null],["failed","sha256_mismatch",null],["failed","size_mismatch",null]]' \
+    "$(g43_m "$G43_D" '[.attachments[] | [.status, .reason, .local_file]]')"
+  assert_eq "43f: and no file is left for any of them" "manifest.json" \
+    "$(ls -A "$G43_D/.stride/attachments/W5001" | tr '\n' ' ' | sed 's/ $//')"
+  # A curl older than 8.4.0 ignores --max-filesize for a chunked body. The
+  # wrapper drops the option to stand in for one: the body must still be cut
+  # one byte past byte_size, so a server that keeps streaming cannot hold the
+  # download until --max-time.
+  g43_body 834 'abc'
+  printf 'MORE' > "$G43_SRV/api/tasks/77/attachments/834.extra"
+  : > "$G43_SRV/api/tasks/77/attachments/834.chunked"
+  : > "$G43_SRV/api/tasks/77/attachments/834.drip"
+  G43_OLD="$G43_DIR/oldcurl"; mkdir -p "$G43_OLD"
+  G43_REAL_CURL=$(command -v curl)
+  cat > "$G43_OLD/curl" <<G43OLD
+#!/usr/bin/env bash
+args=()
+while [ \$# -gt 0 ]; do
+  case "\$1" in --max-filesize) shift 2; continue ;; esac
+  args+=("\$1"); shift
+done
+exec "$G43_REAL_CURL" "\${args[@]}"
+G43OLD
+  chmod +x "$G43_OLD/curl"
+  G43_D=$(g43_proj f2)
+  G43_T0=$(date +%s)
+  PATH="$G43_OLD:$PATH" g43_claim "$G43_D" "$(g43_task "[$(g43_att 834 drip.bin)]")"
+  G43_T1=$(date +%s)
+  assert_eq "43f: without --max-filesize an over-long streamed body still fails size_mismatch" '["failed","size_mismatch"]' \
+    "$(g43_m "$G43_D" '.attachments[0] | [.status, .reason]')"
+  assert_eq "43f: and is cut off at once rather than read for the ~10 s the server streams" "yes" \
+    "$([ $((G43_T1 - G43_T0)) -lt 6 ] && echo yes || echo no)"
+
+  # 43g: unsafe filenames are sanitised inside the task directory.
+  g43_body 840 'x'
+  G43_LONG=$(printf 'a%.0s' $(seq 1 120))
+  G43_NAMES=$(jq -nc --argjson e "$(g43_att 840 x)" --arg long "$G43_LONG" \
+    '[("../../etc/passwd", "..", ".env", "C:\\temp\\.env", "café résumé.pdf", "smile 😀.png",
+       "tab\there", ($long + ".tar.gz"), "same.txt", "same.txt") as $fn
+      | $e | .filename = $fn] | to_entries | map(.value.id = (840 + .key)
+      | .value.download_url = ("/api/tasks/77/attachments/" + ((840 + .key) | tostring)) | .value)')
+  G43_D=$(g43_proj g2)
+  for g43_i in 1 2 3 4 5 6 7 8 9; do cp "$G43_SRV/api/tasks/77/attachments/840" "$G43_SRV/api/tasks/77/attachments/$((840 + g43_i))"; done
+  g43_claim "$G43_D" "$(g43_task "$G43_NAMES")"
+  assert_eq "43g: each name is sanitised per code point, dots stripped, length capped" \
+    "[\"840-passwd\",\"841-attachment\",\"842-env\",\"843-env\",\"844-caf__r_sum_.pdf\",\"845-smile__.png\",\"846-tab_here\",\"847-$(printf 'a%.0s' $(seq 1 97)).gz\",\"848-same.txt\",\"849-same.txt\"]" \
+    "$(g43_m "$G43_D" '[.attachments[].local_file]')"
+  assert_eq "43g: no name left the task directory" "0" \
+    "$(find "$G43_D" -name passwd | wc -l | tr -d ' ')"
+  assert_eq "43g: two attachments with the same filename are two files" "yes" \
+    "$([ -f "$G43_D/.stride/attachments/W5001/848-same.txt" ] && [ -f "$G43_D/.stride/attachments/W5001/849-same.txt" ] && echo yes || echo no)"
+  assert_eq "43g: the original filename is kept as data" '"../../etc/passwd"' \
+    "$(g43_m "$G43_D" '.attachments[0].filename')"
+
+  # 43h: an unsafe id or download_url is refused with no request made.
+  G43_UNSAFE=$(jq -nc --argjson e "$(g43_att 840 x)" '[
+      ($e | .id = "../x"), ($e | .id = "a b"), ($e | .id = 1.5),
+      ($e | .download_url = "https://evil.example/x"), ($e | .download_url = "//evil.example/api/x"),
+      ($e | .download_url = "/api/../x"), ($e | .download_url = "/api/tasks/77/attachments/840?x=y"),
+      ($e | .download_url = "/api/tasks/78/attachments/840"), ($e | .download_url = "/api/tasks/77/attachments/%38%34%30")]')
+  G43_D=$(g43_proj h)
+  g43_claim "$G43_D" "$(g43_task "$G43_UNSAFE")"
+  assert_eq "43h: unsafe ids are skipped unsafe_id, unsafe URLs unsafe_url" \
+    '["unsafe_id","unsafe_id","unsafe_id","unsafe_url","unsafe_url","unsafe_url","unsafe_url","unsafe_url","unsafe_url"]' \
+    "$(g43_m "$G43_D" '[.attachments[].reason]')"
+  assert_eq "43h: an unsafe URL is never recorded as a download_path" "[null]" \
+    "$(g43_m "$G43_D" '[.attachments[3:][].download_path] | unique')"
+  assert_eq "43h: no request was made for any of them" "0" "$(wc -l < "$G43_LOG" | tr -d ' ')"
+  # A number id must be plain digits (1e3 renders differently in the two
+  # halves), and an id longer than 64 characters is refused too.
+  G43_D=$(g43_proj h2)
+  g43_claim "$G43_D" '{"data":{"id":77,"identifier":"W5001","attachments":[{"id":1e3,"filename":"n","byte_size":3,"download_url":"/api/tasks/77/attachments/1000"},{"id":"'"$(printf 'a%.0s' $(seq 1 65))"'","filename":"n","byte_size":3,"download_url":"/api/tasks/77/attachments/840"},{"id":-5,"filename":"n","byte_size":3,"download_url":"/api/tasks/77/attachments/840"}]}}'
+  assert_eq "43h: an exponent id, a 65-character id and a negative id are skipped unsafe_id" \
+    '["unsafe_id","unsafe_id","unsafe_id"]' "$(g43_m "$G43_D" '[.attachments[].reason]')"
+  assert_eq "43h: and none of them is requested" "0" "$(wc -l < "$G43_LOG" | tr -d ' ')"
+
+  # 43i: one server error does not stop the others, and a redirect is not
+  # followed -- so the token never reaches the redirect target.
+  g43_body 850 'ok one'
+  g43_body 851 'never served'
+  printf '500\n' > "$G43_SRV/api/tasks/77/attachments/851.status"
+  g43_body 852 'moved'
+  printf '302 %s/elsewhere/852\n' "$G43_API" > "$G43_SRV/api/tasks/77/attachments/852.status"
+  g43_body 853 'ok two'
+  G43_D=$(g43_proj i)
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 850 a),$(g43_att 851 b),$(g43_att 852 c),$(g43_att 853 d)]")"
+  assert_eq "43i: a 500 records http_500 and a 302 http_302, the rest still download" \
+    '["downloaded","http_500","http_302","downloaded"]' \
+    "$(g43_m "$G43_D" '[.attachments[] | .reason // .status]')"
+  assert_eq "43i: the hook exit code is unchanged" "0" "$G43_RC"
+  assert_eq "43i: the redirect target is never requested" "no" "$(g43_requested /elsewhere/852)"
+
+  # 43j: a transport failure (nothing listening) is recorded, never fatal.
+  G43_D=$(g43_proj j)
+  printf -- '- **API URL:** `http://127.0.0.1:9`\n- **API Token:** `%s`\n' "$G43_TOKEN" > "$G43_D/.stride_auth.md"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 850 a)]")"
+  assert_eq "43j: a refused connection is recorded as transport" '["failed","transport"]' \
+    "$(g43_m "$G43_D" '.attachments[0] | [.status, .reason]')"
+  assert_eq "43j: and the hook still exits 0" "0" "$G43_RC"
+  # A plain-http API URL that is not spelled as loopback is refused. 127.1
+  # reaches the stand-in server, so a request would be visible in its log.
+  printf -- '- **API URL:** `http://127.1:%s`\n- **API Token:** `%s`\n' "$G43_PORT" "$G43_TOKEN" > "$G43_D/.stride_auth.md"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 850 a)]")"
+  assert_eq "43j: a non-loopback http API URL is never fetched" '["failed","transport"] 0' \
+    "$(g43_m "$G43_D" '.attachments[0] | [.status, .reason]') $(wc -l < "$G43_LOG" | tr -d ' ')"
+  # No token, or no API URL at all: recorded as transport and nothing is
+  # requested -- the stand-in server sees no request for either.
+  printf -- '- **API URL:** `%s`\n' "$G43_API" > "$G43_D/.stride_auth.md"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 850 a)]")"
+  assert_eq "43j: no API token fetches nothing and records transport" '["failed","transport"] 0' \
+    "$(g43_m "$G43_D" '.attachments[0] | [.status, .reason]') $(wc -l < "$G43_LOG" | tr -d ' ')"
+  printf -- '- **API Token:** `%s`\n' "$G43_TOKEN" > "$G43_D/.stride_auth.md"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 850 a)]")"
+  assert_eq "43j: no API URL fetches nothing and records transport" '["failed","transport"] 0' \
+    "$(g43_m "$G43_D" '.attachments[0] | [.status, .reason]') $(wc -l < "$G43_LOG" | tr -d ' ')"
+  # A URL in the intercepted command is never a fallback for the auth file.
+  assert_eq "43j: the claim command's own URL is not used instead" "no" \
+    "$(g43_requested /api/tasks/77/attachments/850)"
+
+  # 43k: only a claim whose OWN response proved the identity downloads. A
+  # truncated stdout resolves the previous claim from the canonical file.
+  G43_D=$(g43_proj k)
+  g43_task "$G43_THREE" > "$G43_D/.stride/.last-api-response.json"
+  g43_claim "$G43_D" '{"data":{"id":77,"identifier":"W5001","attach'
+  assert_eq "43k: a claim that does not prove its identity downloads nothing" "absent" \
+    "$([ -e "$G43_D/.stride/attachments" ] && echo present || echo absent)"
+  assert_eq "43k: and requests nothing" "0" "$(wc -l < "$G43_LOG" | tr -d ' ')"
+
+  # 43l: symlinks are refused and nothing is written through them.
+  G43_D=$(g43_proj l); mkdir -p "$G43_DIR/elsewhere-l"
+  ln -s "$G43_DIR/elsewhere-l" "$G43_D/.stride/attachments"
+  g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43l: a symlinked .stride/attachments is refused" "0" \
+    "$(find "$G43_DIR/elsewhere-l" -mindepth 1 | wc -l | tr -d ' ')"
+  assert_contains "43l: and says so on stderr" "symlink" "$G43_ERR"
+  G43_D=$(g43_proj l2); mkdir -p "$G43_DIR/elsewhere-l2" "$G43_D/.stride/attachments"
+  ln -s "$G43_DIR/elsewhere-l2" "$G43_D/.stride/attachments/W5001"
+  g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43l: a symlinked task directory is refused" "0 absent" \
+    "$(find "$G43_DIR/elsewhere-l2" -mindepth 1 | wc -l | tr -d ' ') $([ -e "$G43_D/.stride/attachments/W5001/manifest.json" ] && echo present || echo absent)"
+  assert_eq "43l: and the link itself is left alone" "yes" \
+    "$([ -L "$G43_D/.stride/attachments/W5001" ] && echo yes || echo no)"
+  G43_D=$(g43_proj l3); mkdir -p "$G43_DIR/elsewhere-l3"
+  mv "$G43_D/.stride" "$G43_DIR/elsewhere-l3/stride"; ln -s "$G43_DIR/elsewhere-l3/stride" "$G43_D/.stride"
+  g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43l: a symlinked .stride is refused" "absent" \
+    "$([ -e "$G43_DIR/elsewhere-l3/stride/attachments" ] && echo present || echo absent)"
+
+  # 43m: a re-claim replaces the directory; the manifest is the last write.
+  G43_D=$(g43_proj m)
+  mkdir -p "$G43_D/.stride/attachments/W5001"
+  printf 'stale\n' > "$G43_D/.stride/attachments/W5001/999-stale.txt"
+  printf '{"manifest_version":1,"stale":true}\n' > "$G43_D/.stride/attachments/W5001/manifest.json"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 812 screenshot.png)]")"
+  assert_eq "43m: a re-claim replaces the previous directory" "812-screenshot.png manifest.json" \
+    "$(ls "$G43_D/.stride/attachments/W5001" | tr '\n' ' ' | sed 's/ $//')"
+  assert_eq "43m: and its manifest describes this claim" "null" "$(g43_m "$G43_D" '.stale')"
+  # Last write: the manifest's mtime is not older than any saved file.
+  assert_eq "43m: the manifest is written after every file" "0" \
+    "$(find "$G43_D/.stride/attachments/W5001" -type f -newer "$G43_D/.stride/attachments/W5001/manifest.json" | wc -l | tr -d ' ')"
+  g43_claim "$G43_D" '{"data":{"id":77,"identifier":"W5001","attachments":[]}}'
+  assert_eq "43m: a re-claim with no attachments removes the stale directory" "absent" \
+    "$([ -e "$G43_D/.stride/attachments/W5001" ] && echo present || echo absent)"
+
+  # 43n: the token stays in the request header: never in argv, a file, stdout
+  # or stderr, and every request carries a curl-like User-Agent.
+  G43_D=$(g43_proj n)
+  mkdir -p "$G43_D/.stride/attachments/W5001"
+  printf '{"manifest_version":1,"stale":true}\n' > "$G43_D/.stride/attachments/W5001/manifest.json"
+  G43_WRAP="$G43_DIR/wrap"; mkdir -p "$G43_WRAP"
+  G43_REAL_CURL=$(command -v curl)
+  # The wrapper also records whether a manifest exists while each request
+  # runs: the old one must already be gone and the new one not yet written.
+  cat > "$G43_WRAP/curl" <<G43WRAP
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$G43_DIR/argv.log"
+case "\$*" in *attachments/*)
+  if [ -e "$G43_D/.stride/attachments/W5001/manifest.json" ]; then echo present; else echo absent; fi >> "$G43_DIR/manifest-during.log" ;;
+esac
+exec "$G43_REAL_CURL" "\$@"
+G43WRAP
+  chmod +x "$G43_WRAP/curl"; : > "$G43_DIR/argv.log"; : > "$G43_DIR/manifest-during.log"
+  PATH="$G43_WRAP:$PATH" g43_claim "$G43_D" "$(g43_task "$G43_THREE")"
+  assert_eq "43n: the downloads went through the wrapped curl" "yes" \
+    "$(grep -q 'attachments/812' "$G43_DIR/argv.log" && echo yes || echo no)"
+  assert_eq "43n: no manifest exists while any request runs" "absent absent absent" \
+    "$(tr '\n' ' ' < "$G43_DIR/manifest-during.log" | sed 's/ $//')"
+  assert_eq "43n: the token is in no curl argv" "no" \
+    "$(grep -qF "$G43_TOKEN" "$G43_DIR/argv.log" && echo yes || echo no)"
+  assert_eq "43n: nor in any file the hook wrote under .stride/" "no" \
+    "$(grep -rqF "$G43_TOKEN" "$G43_D/.stride" && echo yes || echo no)"
+  assert_eq "43n: nor on stdout or stderr" "no" \
+    "$(printf '%s%s' "$G43_OUT" "$G43_ERR" | grep -qF "$G43_TOKEN" && echo yes || echo no)"
+  assert_eq "43n: but the API did receive it as the Authorization header" "3" \
+    "$(grep -cF "\"auth\": \"Bearer $G43_TOKEN\"" "$G43_LOG")"
+  assert_eq "43n: with a curl-like User-Agent on every request" "3" \
+    "$(grep -c '"ua": "curl/' "$G43_LOG")"
+  assert_eq "43n: the manifest holds no absolute URL" "no" \
+    "$(grep -q 'http' "$G43_D/.stride/attachments/W5001/manifest.json" && echo yes || echo no)"
+
+  # 43o: only the claim downloads; a completion with an attachments-shaped
+  # body never does.
+  G43_D=$(g43_proj o)
+  jq -nc --arg c "curl -sS -X PATCH $G43_API/api/tasks/77/complete -d @p.json | tee r.json" \
+    --arg r "$(g43_task "$G43_THREE")" '{session_id:"s",tool_input:{command:$c},tool_response:{stdout:$r}}' \
+    | CLAUDE_PROJECT_DIR="$G43_D" bash "$HOOK_SCRIPT" post > /dev/null 2>&1
+  assert_eq "43o: a completion does not download" "absent" \
+    "$([ -e "$G43_D/.stride/attachments" ] && echo present || echo absent)"
+
+  # 43r: a .gitignore that is a symlink is replaced, never written through;
+  # one that is a directory stops the download.
+  G43_D=$(g43_proj r); mkdir -p "$G43_D/.stride/attachments"
+  printf 'outside\n' > "$G43_DIR/outside-gitignore"
+  ln -s "$G43_DIR/outside-gitignore" "$G43_D/.stride/attachments/.gitignore"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 812 screenshot.png)]")"
+  assert_eq "43r: a symlinked .gitignore is replaced by a regular file holding *" "file * outside" \
+    "$([ -f "$G43_D/.stride/attachments/.gitignore" ] && [ ! -L "$G43_D/.stride/attachments/.gitignore" ] && echo file || echo other) $(cat "$G43_D/.stride/attachments/.gitignore") $(cat "$G43_DIR/outside-gitignore")"
+  # A link to a directory is the case a plain rename gets wrong: mv would
+  # move the staged file INTO the directory and leave the link in place.
+  G43_D=$(g43_proj r3); mkdir -p "$G43_D/.stride/attachments" "$G43_DIR/outside-gidir"
+  ln -s "$G43_DIR/outside-gidir" "$G43_D/.stride/attachments/.gitignore"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 812 screenshot.png)]")"
+  assert_eq "43r: a .gitignore linked to a directory is replaced, nothing lands inside it" "file 0" \
+    "$([ -f "$G43_D/.stride/attachments/.gitignore" ] && [ ! -L "$G43_D/.stride/attachments/.gitignore" ] && echo file || echo other) $(find "$G43_DIR/outside-gidir" -mindepth 1 | wc -l | tr -d ' ')"
+  G43_D=$(g43_proj r2); mkdir -p "$G43_D/.stride/attachments/.gitignore"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 812 screenshot.png)]")"
+  assert_eq "43r: a .gitignore that is a directory downloads nothing" "absent" \
+    "$([ -e "$G43_D/.stride/attachments/W5001" ] && echo present || echo absent)"
+  assert_contains "43r: and says so on stderr" ".gitignore is not a regular file" "$G43_ERR"
+
+  # 43q: the budget is a wall clock across the whole download: a request that
+  # stalls past it is cut off and recorded time_budget, and the entries after
+  # it are skipped time_budget without a request.
+  g43_body 870 'slow body'
+  printf '5\n' > "$G43_SRV/api/tasks/77/attachments/870.sleep"
+  g43_body 871 'never reached'
+  G43_D=$(g43_proj q)
+  G43_T0=$(date +%s)
+  STRIDE_ATTACHMENT_BUDGET_SECONDS=2 g43_claim "$G43_D" "$(g43_task "[$(g43_att 870 slow),$(g43_att 871 next)]")"
+  G43_T1=$(date +%s)
+  assert_eq "43q: a stalled request fails time_budget and the next is skipped time_budget" \
+    '[["failed","time_budget"],["skipped","time_budget"]]' "$(g43_m "$G43_D" '[.attachments[] | [.status, .reason]]')"
+  assert_eq "43q: the download stopped near the 2 s budget, not at the 5 s stall" "yes" \
+    "$([ $((G43_T1 - G43_T0)) -lt 5 ] && echo yes || echo no)"
+  assert_eq "43q: the entry after the deadline was never requested" "no" "$(g43_requested /api/tasks/77/attachments/871)"
+
+  # 43p: the two halves write byte-identical manifests for the same claim,
+  # with filenames that carry every escaping hazard a serialiser varies on.
+  if command -v pwsh > /dev/null 2>&1; then
+    G43_ESC=$(jq -nc --argjson e "$(g43_att 840 x)" '[
+        ($e | .filename = "quote\" back\\slash <tag> & apos'"'"' café 😀 \u0001\u007f\u2028.txt"),
+        ($e | .id = 841 | .download_url = "/api/tasks/77/attachments/841" | .filename = "dl.bin"),
+        ($e | .id = "../x"), ($e | .byte_size = 26214401), "not an object",
+        ($e | .id = 851 | .download_url = "/api/tasks/77/attachments/851")]')
+    G43_DB=$(g43_proj p-bash); G43_DP=$(g43_proj p-ps)
+    g43_claim "$G43_DB" "$(g43_task "$G43_ESC")"
+    g43_claim "$G43_DP" "$(g43_task "$G43_ESC")" "$SCRIPT_DIR/stride-hook.ps1"
+    assert_eq "43p: the PowerShell half exits 0" "0" "$G43_RC"
+    assert_eq "43p: the PowerShell half writes the same manifest bytes as the bash half" "same" \
+      "$(cmp -s "$G43_DB/.stride/attachments/W5001/manifest.json" "$G43_DP/.stride/attachments/W5001/manifest.json" && echo same || echo differ)"
+    assert_eq "43p: the manifest exercised downloaded, skipped and failed entries" \
+      '["downloaded","downloaded","skipped","skipped","skipped","failed"]' \
+      "$(g43_m "$G43_DP" '[.attachments[].status]')"
+    assert_eq "43p: the PowerShell manifest has no byte-order mark" "no-bom" \
+      "$(head -c 3 "$G43_DP/.stride/attachments/W5001/manifest.json" | od -An -tx1 | tr -d ' \n' | grep -q '^efbbbf' && echo bom || echo no-bom)"
+    assert_eq "43p: and the same .gitignore bytes" "same" \
+      "$(cmp -s "$G43_DB/.stride/attachments/.gitignore" "$G43_DP/.stride/attachments/.gitignore" && echo same || echo differ)"
+    assert_contains "43p: and the same stderr summary" \
+      "stride: attachments W5001: 2 downloaded, 3 skipped, 1 failed" "$G43_ERR"
+  else
+    echo "  SKIP: 43p: pwsh not installed"
+  fi
+
+  # 43s: copilot's own-call gate also asks the COMMAND. A saved-output
+  # notice is this call's own response, but its path came out of response
+  # text, so it counts only when the command itself names the identifier
+  # that came back; and a command naming another identifier never downloads.
+  G43_PERSIST="$G43_DIR/persisted-s.json"
+  g43_task "[$(g43_att 812 screenshot.png)]" > "$G43_PERSIST"
+  G43_SAVED_CMD=$G43_CLAIM_CMD
+  G43_CLAIM_CMD="jq -n --arg identifier W5001 '{identifier: \$identifier}' | curl -sS -X POST $G43_API/api/tasks/claim -d @- | tee r.json"
+  G43_D=$(g43_proj s)
+  g43_claim "$G43_D" "Full output saved to: $G43_PERSIST"
+  assert_eq "43s: a saved-output claim whose command names the identifier downloads" '["downloaded"]' \
+    "$(g43_m "$G43_D" '[.attachments[].status]')"
+  G43_CLAIM_CMD=$G43_SAVED_CMD
+  G43_D=$(g43_proj s2)
+  g43_claim "$G43_D" "Full output saved to: $G43_PERSIST"
+  assert_eq "43s: a saved-output claim whose command names no identifier downloads nothing" "absent 0" \
+    "$([ -e "$G43_D/.stride/attachments" ] && echo present || echo absent) $(wc -l < "$G43_LOG" | tr -d ' ')"
+  G43_CLAIM_CMD="jq -n --arg identifier W9999 '{identifier: \$identifier}' | curl -sS -X POST $G43_API/api/tasks/claim -d @- | tee r.json"
+  G43_D=$(g43_proj s3)
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 812 screenshot.png)]")"
+  assert_eq "43s: a claim whose command names a different identifier downloads nothing" "absent 0" \
+    "$([ -e "$G43_D/.stride/attachments" ] && echo present || echo absent) $(wc -l < "$G43_LOG" | tr -d ' ')"
+  G43_CLAIM_CMD=$G43_SAVED_CMD
+
+  # 43t: the download runs after the ## before_doing section and never
+  # changes its result: a failing section still exits with its own code and
+  # still downloads, because PostToolUse cannot veto a claim that succeeded.
+  G43_D=$(g43_proj t)
+  printf '## before_doing\n```bash\nexit 3\n```\n' > "$G43_D/.stride.md"
+  g43_claim "$G43_D" "$(g43_task "[$(g43_att 812 screenshot.png)]")"
+  assert_eq "43t: a failing before_doing section keeps its own exit code" "2" "$G43_RC"
+  assert_eq "43t: and the proven claim's attachments are still downloaded" '["downloaded"]' \
+    "$(g43_m "$G43_D" '[.attachments[].status]')"
+
+  kill "$G43_SRV_PID" 2>/dev/null
+  wait "$G43_SRV_PID" 2>/dev/null
+fi
+
+# ============================================================
+# Test Group 44: the curl-guard exemption for an attachment re-fetch (W2526, port of stride W2522)
+# ============================================================
+# The ONE -o the guard allows: a GET of /api/tasks/<id>/attachments/<id>
+# whose target is an absolute path under <project>/.stride/attachments/. Every
+# other -o, redirect and pipe shape stays refused.
+echo ""
+echo "=== Test Group 44: attachment re-fetch guard exemption (W2526) ==="
+
+G44_PROJ="$TMPDIR_TEST/w2526-guard"
+mkdir -p "$G44_PROJ/.stride/attachments/W5001"
+printf '## after_doing\n```bash\n```\n' > "$G44_PROJ/.stride.md"
+G44_ROOT=$(cd "$G44_PROJ" && pwd)
+G44_T="$G44_ROOT/.stride/attachments/W5001/812-shot.png"
+G44_U="https://www.stridelikeaboss.com/api/tasks/77/attachments/812"
+g44_run() { # $1 = command -> sets G44_RC
+  jq -nc --arg c "$1" '{tool_input:{command:$c}}' \
+    | CLAUDE_PROJECT_DIR="$G44_PROJ" bash "$HOOK_SCRIPT" pre > /dev/null 2>&1
+  G44_RC=$?
+}
+if command -v jq > /dev/null 2>&1; then
+  g44_run "curl -sS -H \"Authorization: Bearer \$T\" -o \"$G44_T\" \"$G44_U\""
+  assert_exit "44a: a GET of an attachments path with -o under .stride/attachments/ is allowed" 0 "$G44_RC"
+  g44_run "curl -sSo $G44_T \"\$STRIDE_API_URL/api/tasks/77/attachments/812\""
+  assert_exit "44a: a clustered -o and a quoted \$VAR base are allowed" 0 "$G44_RC"
+  g44_run "curl -sSo $G44_T \$STRIDE_API_URL/api/tasks/77/attachments/812"
+  assert_exit "44b: an unquoted \$VAR base is refused (the shell could split it)" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T '' $G44_U"
+  assert_exit "44b: an empty word is refused (curl would read it as a second URL)" 2 "$G44_RC"
+  g44_run "curl -sS -A '' -o $G44_T $G44_U"
+  assert_exit "44b: an empty option value is refused too" 2 "$G44_RC"
+  # A quoted "$@", "${a[@]}" or "$*" can expand to zero or several words,
+  # which would re-pair the words after it; only a plain $NAME is allowed.
+  g44_run "curl -sS -A \"\$@\" -o $G44_T $G44_U"
+  assert_exit "44b: a quoted \"\$@\" is refused (it can expand to zero words)" 2 "$G44_RC"
+  g44_run "curl -sS -A \"\${a[@]}\" -o $G44_T $G44_U"
+  assert_exit "44b: a quoted \"\${a[@]}\" is refused" 2 "$G44_RC"
+  g44_run "curl -sS -A \"\$*\" -o $G44_T $G44_U"
+  assert_exit "44b: a quoted \"\$*\" is refused" 2 "$G44_RC"
+  g44_run "curl -sS -A \"\$UA\" -o $G44_T $G44_U"
+  assert_exit "44a: a quoted plain \$NAME option value is allowed" 0 "$G44_RC"
+  g44_run "curl --output=$G44_T -X GET $G44_U"
+  assert_exit "44a: --output=VALUE with an explicit -X GET is allowed" 0 "$G44_RC"
+
+  g44_run "curl -sS -o /tmp/812.png $G44_U"
+  assert_exit "44b: -o outside .stride/attachments/ is still refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_ROOT/.stride/812.png $G44_U"
+  assert_exit "44b: -o elsewhere under .stride/ is still refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_ROOT/.stride/attachments/.gitignore $G44_U"
+  assert_exit "44b: -o onto the attachments .gitignore is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_ROOT/.stride/attachments/W5001/manifest.json $G44_U"
+  assert_exit "44b: -o onto a manifest is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_ROOT/.stride/attachments/W5001/../../x $G44_U"
+  assert_exit "44b: a .. segment in the target is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o \"\$CLAUDE_PROJECT_DIR/.stride/attachments/W5001/812-shot.png\" $G44_U"
+  assert_exit "44b: a \$VAR-prefixed target is refused (where it lands is unknowable)" 2 "$G44_RC"
+  g44_run "curl -sS -X POST -o $G44_T $G44_U"
+  assert_exit "44b: a non-GET with -o is refused" 2 "$G44_RC"
+  g44_run "curl -sS -d x=1 -o $G44_T $G44_U"
+  assert_exit "44b: a data flag with -o is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T -o /tmp/y $G44_U"
+  assert_exit "44b: a second -o is refused" 2 "$G44_RC"
+  g44_run "curl -sS -O $G44_U"
+  assert_exit "44b: -O on an attachments path is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T https://www.stridelikeaboss.com/api/tasks/77/complete"
+  assert_exit "44b: -o under .stride/attachments/ on a non-attachments path is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T '$G44_U?x=1'"
+  assert_exit "44b: a query on the attachments path is refused" 2 "$G44_RC"
+  g44_run "curl -sS $G44_U | jq ."
+  assert_exit "44b: a pipe into jq on an attachments path is still refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T $G44_U | jq ."
+  assert_exit "44b: an exempt -o with a jq pipe is refused" 2 "$G44_RC"
+  g44_run "curl -sS $G44_U > $G44_T"
+  assert_exit "44b: a stdout redirect on an attachments path is still refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T $G44_U; curl -sS -o out.json https://www.stridelikeaboss.com/api/tasks/1/complete"
+  assert_exit "44b: an exempt curl cannot carry a second, unsafe one" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T \"\$(cat u)/api/tasks/77/attachments/812\""
+  assert_exit "44b: a command substitution is never exempt" 2 "$G44_RC"
+  # Every option must be on the allowlist, so one this exemption does not
+  # know means the ordinary rules judge the command.
+  g44_run "curl -sS --location-trusted -o $G44_T $G44_U"
+  assert_exit "44b: --location-trusted is not on the allowlist" 2 "$G44_RC"
+  g44_run "curl -v -o $G44_T $G44_U"
+  assert_exit "44b: -v is not on the allowlist" 2 "$G44_RC"
+  g44_run "curl -sS --proxy=http://127.0.0.1:1 -o $G44_T $G44_U"
+  assert_exit "44b: --proxy is not on the allowlist" 2 "$G44_RC"
+  g44_run "curl -sS -o .stride/attachments/W5001/812-shot.png $G44_U"
+  assert_exit "44b: a relative target is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T $G44_U https://www.stridelikeaboss.com/x"
+  assert_exit "44b: a second URL is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T $G44_U | tee x"
+  assert_exit "44b: a pipe into tee is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o $G44_T $G44_U && echo done"
+  assert_exit "44b: a && list is refused" 2 "$G44_RC"
+  # Glob, brace and operator characters inside an option's VALUE, where no
+  # other rule would see them: the shell would split or expand that word.
+  g44_run "curl -sS -H X:* -o $G44_T $G44_U"
+  assert_exit "44b: an unquoted glob in an option value is refused" 2 "$G44_RC"
+  g44_run "curl -sS -A a{b,c} -o $G44_T $G44_U"
+  assert_exit "44b: an unquoted brace expansion is refused" 2 "$G44_RC"
+  # stride's twin of this case is `-A x|tee -o ...`. This port's guard
+  # already permits that shape without any exemption -- the -o belongs to a
+  # tee stage, and the curl's stdout flows into the tee -- so a redirect
+  # operator is the case that exercises the exemption's refusal here.
+  g44_run "curl -sS -A x>y -o $G44_T $G44_U"
+  assert_exit "44b: an operator inside an option value is refused" 2 "$G44_RC"
+  g44_run "curl -sS -o ~/x/.stride/attachments/W5001/812-shot.png $G44_U"
+  assert_exit "44b: a tilde target is refused" 2 "$G44_RC"
+  g44_run "curl -sS --fail --max-time 30 -A curl/8 -o $G44_T \"\${STRIDE_API_URL}/api/tasks/77/attachments/812\""
+  assert_exit "44a: allowlisted options and a quoted \${VAR} base are allowed" 0 "$G44_RC"
+  mkdir -p "$TMPDIR_TEST/w2526-guard-elsewhere"
+  ln -s "$TMPDIR_TEST/w2526-guard-elsewhere" "$G44_PROJ/.stride/attachments/W5002"
+  g44_run "curl -sS -o $G44_ROOT/.stride/attachments/W5002/812-shot.png $G44_U"
+  assert_exit "44b: a symlinked task directory target is refused" 2 "$G44_RC"
+else
+  echo "  SKIP: 44a-44b: jq not installed"
+fi
+
+# 44c: the documentation names the exemption and the download.
+# Each needle occurs once in the README, in the paragraph it names, so
+# losing that paragraph fails the assertion.
+assert_contains "44c: README documents the attachment download" \
+  "**Task attachments (since W2526).** When a claim proves its response is its own" "$(cat "$SCRIPT_DIR/../README.md")"
+assert_contains "44c: README documents the re-fetch exemption" \
+  "**Attachment re-fetch exemption (since W2526).** The one \`-o\` the guard allows" "$(cat "$SCRIPT_DIR/../README.md")"
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
