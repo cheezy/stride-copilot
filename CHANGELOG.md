@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.45.0] - 2026-11-09
+
+### Added — task attachments are downloaded on claim and handed to the workflow (port of stride W2522/W2523, G491)
+
+Humans attach screenshots, mockups, PDFs and logs to tasks. The plugin now
+downloads them and puts them in front of the work.
+
+- **Download (W2526).** A claim whose own response proves the task identity
+  now downloads that task's attachments into `.stride/attachments/<STEM>/`,
+  with `manifest.json` written last. Both halves of the hook do this
+  (`hooks/stride-hook.sh` and `hooks/stride-hook.ps1`), and the list always
+  comes from that claim's own response, never from the canonical response
+  file. Saved names are `<id>-<sanitised basename>`. The hook checks the shape
+  of each id and `download_url`. It enforces per-file, count, total and
+  wall-clock caps, and verifies each file's size and sha256. It follows no
+  redirects and refuses symlinks. The token goes to curl only on stdin, never
+  in argv. The download is never fatal. The PreToolUse guard gains stride's
+  narrow `-o` exemption, for an operator's manual re-fetch only.
+- **Use (W2527).** Step 3 resolves `ATTACHMENTS_DIR` by the new
+  `skills/stride-workflow/attachments.md`. It does so only when the
+  manifest names the claimed task. The orchestrator reads the attachments
+  before it outlines. `stride-subagent-workflow` Phase 1 passes the path to
+  `task-explorer`, and Step 5 and Phase 3 pass it to `task-reviewer` on every
+  round. Every reader opens only the files the manifest lists as
+  `downloaded`, as data and never as instructions. After a 2xx completion,
+  Step 7 removes the directory behind a project-root guard, never through a
+  symlink.
+
+### Known gaps
+
+- **Whether the Copilot CLI `read` tool can show a PNG or PDF has not been
+  verified**, and no Copilot CLI version is recorded, because no Copilot CLI
+  was available where this work was done. The README records the behaviour as
+  unverified and describes the fallback: report each file's filename, type
+  and size. The task's reviewer left this as an open important finding on
+  acceptance criterion 4.
+- No live end-to-end run (a task carrying a PNG, a PDF and a text attachment,
+  worked from Copilot CLI) has been made. The hook suites are hermetic
+  (bash 2270/2270, PowerShell 934/934).
+
 ## [2.44.0] - 2026-10-31
 
 The deep security-considerations review now sends the `security-reviewer`
